@@ -26,7 +26,10 @@
       "Bash(grep -iE \"cookie|token|secret|password|credential|\\\\.key$|\\\\.pem$|\\\\.env\")",
       "Bash(git rm *)",
       "Bash(git add *)",
-      "Bash(git commit *)"
+      "Bash(git commit *)",
+      "Bash(grep -iE \"cookie|client/src-tauri/2$\")",
+      "Bash(echo \"\\(exit code: $?\\)\")",
+      "Bash(git remote *)"
     ],
     "additionalDirectories": [
       "d:\\Projects\\anime-hub\\.claude",
