@@ -1,0 +1,534 @@
+// pages/LibraryPage.tsx
+import { useEffect, useLayoutEffect, useState, useRef } from "react";
+import { Play, FolderOpen, ArrowLeft, CheckCircle2 } from "lucide-react";
+import { invoke } from '@tauri-apps/api/core';
+import { isTauri } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
+
+interface LibraryAnime {
+  id: number;
+  folder_name: string;
+  display_title: string;
+  bgm_id: number | null;
+  cover_url: string | null;
+  summary: string;
+  latest_activity_at: string | null;
+  last_watched_at: string | null;
+}
+
+type SortMode = "default" | "recent_watched" | "recent_updated";
+
+interface Episode {
+  filename: string;
+  rel_path: string;
+  is_watched?: boolean;
+  watched_at?: string;
+}
+
+interface AnimeDetail {
+  folder_name: string;
+  seasons: Record<string, Episode[]>;
+}
+
+// 定义设置项的类型
+interface AppSettings {
+  library_root: string;
+  potplayer_path: string;
+  player_mode: "builtin" | "external";
+}
+
+interface LibraryPageProps {
+  onSelectAnime?: (bgmId: number) => void;
+  onManualMatch?: (folderName: string) => void;
+}
+
+const API_BASE = "http://127.0.0.1:8080";
+
+// 分季排序:TV季数从新到旧排最前,然后剧场版,再OVA,Other/无法识别的兜底桶排最后
+// (对应后端 rename_engine.py / routers/library.py 实际会产出的分类桶名)
+function seasonSortKey(name: string): [number, number] {
+  const seasonMatch = name.match(/^season\s*(\d+)/i);
+  if (seasonMatch) {
+    const num = parseInt(seasonMatch[1], 10);
+    if (num === 0) return [2, 0]; // "Season 00" 是OVA专用桶,不算正常TV季
+    return [0, -num]; // 数字取负,配合升序排序实现"季数越大越靠前"
+  }
+  if (/剧场版|劇場版|movie/i.test(name)) return [1, 0];
+  if (/\bova\b/i.test(name)) return [2, 0];
+  return [3, 0];
+}
+
+function compareSeasonNames(a: string, b: string): number {
+  const [tierA, subA] = seasonSortKey(a);
+  const [tierB, subB] = seasonSortKey(b);
+  if (tierA !== tierB) return tierA - tierB;
+  if (subA !== subB) return subA - subB;
+  return a.localeCompare(b, undefined, { numeric: true });
+}
+
+// 从mpv上报的完整路径反推出 folder_name/filename,不依赖"当前正在看哪部番"这种UI状态
+// ——mpv连播是后台进行的,用户可能已经切走详情页,甚至切到别的番。
+function parseLibraryPath(
+  fullPath: string,
+  libraryRoot: string,
+): { folderName: string; filename: string } | null {
+  const normalizedRoot = libraryRoot.replace(/[/\\]$/, "").replace(/\//g, "\\").toLowerCase();
+  const normalizedFull = fullPath.replace(/\//g, "\\");
+  if (!normalizedFull.toLowerCase().startsWith(normalizedRoot)) return null;
+  const rel = normalizedFull.slice(normalizedRoot.length).replace(/^\\/, "");
+  const parts = rel.split("\\");
+  if (parts.length < 2) return null;
+  return { folderName: parts[0], filename: parts[parts.length - 1] };
+}
+
+export default function LibraryPage({ onManualMatch }: LibraryPageProps) {
+  const [animes, setAnimes] = useState<LibraryAnime[]>([]);
+  const [selectedAnime, setSelectedAnime] = useState<LibraryAnime | null>(null);
+  const [detail, setDetail] = useState<AnimeDetail | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [sort, setSort] = useState<SortMode>("default");
+  // 重新匹配总开关:打开后所有卡片(不止未匹配的)都显示重新匹配按钮
+  const [matchMode, setMatchMode] = useState(false);
+  const isPlayingRef = useRef(false); // 新增：播放锁
+  // 吸顶头部(封面+简介+分季快捷按钮)的实际高度,用来给每个分季区块留出滚动余量,
+  // 避免点快捷按钮跳转后,区块顶部被吸顶头部盖住
+  const headerRef = useRef<HTMLDivElement>(null);
+  const [headerHeight, setHeaderHeight] = useState(0);
+  const seasonRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  // 新增：全局设置状态，赋予默认值防崩溃
+  const [settings, setSettings] = useState<AppSettings>({
+    library_root: "D:\\AnimeLibrary",
+    potplayer_path: "C:\\Program Files\\DAUM\\PotPlayer\\PotPlayer64.exe",
+    player_mode: "external",
+  });
+
+  // 组件挂载时，先拉取设置，再拉取影视库
+  useEffect(() => {
+    fetchSettings();
+    fetchAnimes();
+  }, []);
+
+  // 从后端或本地获取设置
+  const fetchSettings = () => {
+    // 假设你后端有一个提供 config 的接口，请根据实际情况修改 URL
+    fetch(`${API_BASE}/settings`)
+      .then((res) => {
+        if (!res.ok) throw new Error("设置接口未就绪");
+        return res.json();
+      })
+      .then((data) => {
+        setSettings({
+          library_root: data.library_root || settings.library_root,
+          potplayer_path: data.potplayer_path || settings.potplayer_path,
+          player_mode: data.player_mode === "builtin" ? "builtin" : "external",
+        });
+      })
+      .catch((err: any) => {
+        console.warn("无法从后端获取配置，尝试使用 localStorage 兜底", err);
+        // 如果后端接口没写好，可以先作为过渡从 localStorage 拿
+        const localRoot = localStorage.getItem("library_root");
+        const localPlayer = localStorage.getItem("potplayer_path");
+        if (localRoot || localPlayer) {
+          setSettings(prev => ({
+            ...prev,
+            library_root: localRoot || prev.library_root,
+            potplayer_path: localPlayer || prev.potplayer_path
+          }));
+        }
+      });
+  };
+
+  const fetchAnimes = (sortValue: SortMode = sort) => {
+    setLoading(true);
+    fetch(`${API_BASE}/library/animes?sort=${sortValue}`)
+      .then((res) => res.json())
+      .then((data) => {
+        setAnimes(data);
+        setLoading(false);
+      })
+      .catch(() => setLoading(false));
+  };
+
+  const handleSortChange = (sortValue: SortMode) => {
+    setSort(sortValue);
+    fetchAnimes(sortValue);
+  };
+
+  // 点击某部动漫后，获取具体季、集数据
+  const handleSelectAnime = (anime: LibraryAnime) => {
+    setSelectedAnime(anime);
+    setDetailLoading(true);
+    fetch(`${API_BASE}/library/detail/${encodeURIComponent(anime.folder_name)}`)
+      .then((res) => res.json())
+      .then((data) => {
+        setDetail(data);
+        setDetailLoading(false);
+      })
+      .catch(() => setDetailLoading(false));
+  };
+
+  const handleBack = () => {
+    setSelectedAnime(null);
+    setDetail(null);
+  };
+
+  // 头部内容(简介行数、快捷按钮是否显示)会变,量出来的高度也要跟着更新
+  useLayoutEffect(() => {
+    const el = headerRef.current;
+    if (!el) return;
+    const update = () => setHeaderHeight(el.offsetHeight);
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [selectedAnime, detail]);
+
+  const scrollToSeason = (seasonName: string) => {
+    seasonRefs.current[seasonName]?.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
+  };
+
+  // 标记已看:乐观标记,不等真的播完——点开/切到这一集就算。
+  // folderName来自调用方各自的上下文(选中的番,或者从mpv上报路径反推出来的),
+  // 不用同一个"当前选中番"假设,因为mpv连播时用户可能已经切走界面。
+  const markWatched = (folderName: string, filename: string) => {
+    fetch(`${API_BASE}/library/watch`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ folder_name: folderName, filename }),
+    }).catch((err: any) => console.error("标记进度失败", err));
+
+    const nowStr = new Date().toLocaleString("zh-CN", { hour12: false }).replace(/\//g, "-");
+    setDetail((prev) => {
+      if (!prev || prev.folder_name !== folderName) return prev;
+      const newSeasons = { ...prev.seasons };
+      for (const season in newSeasons) {
+        newSeasons[season] = newSeasons[season].map((item) =>
+          item.filename === filename
+            ? { ...item, is_watched: true, watched_at: nowStr }
+            : item
+        );
+      }
+      return { ...prev, seasons: newSeasons };
+    });
+  };
+
+  // 找到这一集所在的季,以及从这一集开始(含)往后的剩余集数(升序,即"接下来该看的顺序")
+  const findRemainingEpisodesInSeason = (ep: Episode): Episode[] => {
+    if (!detail) return [ep];
+    for (const episodes of Object.values(detail.seasons)) {
+      const idx = episodes.findIndex((e) => e.filename === ep.filename);
+      if (idx !== -1) return episodes.slice(idx);
+    }
+    return [ep];
+  };
+
+  // 内置mpv自动连播切到下一集时,mpv上报start-file事件,乐观标记那一集已看
+  // (跟点击那一集的语义一样,不等播完)。第一集是点击时就已经标记过的,这里
+  // 只负责补上自动连播切到的后续集数。
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+
+    listen<{ path: string }>("mpv-episode-started", (event) => {
+      const parsed = parseLibraryPath(event.payload.path, settings.library_root);
+      if (!parsed) return;
+      markWatched(parsed.folderName, parsed.filename);
+    }).then((fn) => {
+      if (cancelled) fn();
+      else unlisten = fn;
+    });
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings.library_root]);
+
+  // 播放处理（基于动态拉取的设置拼接路径）
+  const handlePlay = async (ep: Episode) => {
+    if (!selectedAnime) return;
+
+    // 防止双击：如果正在处理上一次播放请求，直接忽略这次点击
+    if (isPlayingRef.current) return;
+    isPlayingRef.current = true;
+
+    try {
+      const cleanRoot = settings.library_root.replace(/[/\\]$/, "");
+
+      // 乐观标记:点开/切到这一集就算已看,内置mpv和外置播放器统一行为,
+      // 不做"播到多少才算看完"这种判断。
+      markWatched(selectedAnime.folder_name, ep.filename);
+
+      if (settings.player_mode === "builtin") {
+        // 内置mpv:把从这一集开始的剩余集数整季喂给它连播;自动连播切到的后续集数
+        // 靠mpv上报的start-file事件补标记(见上面的useEffect),这里只标记点开的这一集。
+        const remaining = findRemainingEpisodesInSeason(ep);
+        const videoPaths = remaining.map(
+          (e) => `${cleanRoot}\\${e.rel_path.replace(/\//g, "\\")}`,
+        );
+        if (await isTauri()) {
+          await invoke("open_builtin_player", { videoPaths }).catch((err: any) =>
+            console.error("拉起内置播放器失败:", err),
+          );
+        } else {
+          console.log("[开发调试] 模拟内置mpv播放列表:", videoPaths);
+        }
+      } else {
+        const localVideoPath = `${cleanRoot}\\${ep.rel_path.replace(/\//g, "\\")}`;
+        if (await isTauri()) {
+          await invoke("open_external_player", {
+            videoPath: localVideoPath,
+            playerPath: settings.potplayer_path,
+          }).catch((err: any) => console.error("唤起播放器失败:", err));
+        } else {
+          console.log(`[开发调试] 模拟拉起播放器:\n播放器: ${settings.potplayer_path}\n视频: "${localVideoPath}"`);
+        }
+      }
+    } finally {
+      // 解锁：延迟一小段时间再解锁,避免快速双击在极短时间内仍然连续触发
+      setTimeout(() => {
+        isPlayingRef.current = false;
+      }, 1000); // 1秒内的重复点击都会被忽略
+    }
+  };
+
+  const sortedSeasons = detail
+    ? Object.entries(detail.seasons).sort(([a], [b]) => compareSeasonNames(a, b))
+    : [];
+
+  return (
+    <div className="text-paper">
+      {selectedAnime ? (
+        /* 详情视图:头部(返回+封面+简介+分季快捷跳转)吸顶固定,滚动集数列表时始终可见,
+           跟Excel冻结表头一个道理 */
+        <div>
+          <div
+            ref={headerRef}
+            className="sticky top-0 z-10 bg-ink px-8 pb-4 pt-8"
+          >
+            <button
+              onClick={handleBack}
+              className="mb-6 flex items-center gap-2 font-mono text-xs text-muted hover:text-vermillion transition-colors"
+            >
+              <ArrowLeft size={16} /> 返回影视库
+            </button>
+
+            <div className="flex flex-col md:flex-row gap-6">
+              <div className="w-40 aspect-[2/3] shrink-0 rounded-md bg-surface overflow-hidden shadow-lg">
+                {selectedAnime.cover_url ? (
+                  <img
+                    src={selectedAnime.cover_url}
+                    alt={selectedAnime.folder_name}
+                    className="h-full w-full object-cover"
+                  />
+                ) : (
+                  <div className="flex h-full w-full items-center justify-center text-muted">
+                    <FolderOpen size={40} />
+                  </div>
+                )}
+              </div>
+              <div className="min-w-0">
+                <h1 className="text-2xl font-bold mb-2">{selectedAnime.display_title || selectedAnime.folder_name}</h1>
+                <p className="text-sm text-muted line-clamp-4 max-w-2xl">
+                  {selectedAnime.summary}
+                </p>
+              </div>
+            </div>
+
+            {/* 分季/剧场版快捷跳转:按实际扫到的分季动态生成,只有一季时不用显示 */}
+            {sortedSeasons.length > 1 && (
+              <div className="flex flex-wrap gap-2 pt-4">
+                {sortedSeasons.map(([seasonName]) => (
+                  <button
+                    key={seasonName}
+                    onClick={() => scrollToSeason(seasonName)}
+                    className="rounded border border-border bg-surface px-3 py-1.5 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion"
+                  >
+                    {seasonName}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="px-8 pb-8">
+            {detailLoading ? (
+              <div className="font-mono text-xs text-muted">正在读取硬盘文件结构...</div>
+            ) : sortedSeasons.length > 0 ? (
+              <div className="space-y-6">
+                {sortedSeasons.map(([seasonName, episodes]) => (
+                  <div
+                    key={seasonName}
+                    ref={(el) => {
+                      seasonRefs.current[seasonName] = el;
+                    }}
+                    style={{ scrollMarginTop: headerHeight + 16 }}
+                    className="border border-border rounded-lg bg-surface p-4"
+                  >
+                    <h3 className="font-display text-lg mb-3 border-b border-border pb-1.5 text-vermillion">
+                      {seasonName}
+                    </h3>
+                    <div className="flex flex-col gap-2">
+                      {[...episodes].reverse().map((ep, idx) => (
+                        <div
+                          key={idx}
+                          className="flex items-center justify-between gap-3 p-3 rounded hover:bg-paper/5 transition-colors group border border-transparent hover:border-border/50"
+                        >
+                          {/* 左侧：文件名与播放时间信息,宽度不够时文件名省略号截断,不挤开右侧播放按钮 */}
+                          <div className="flex min-w-0 flex-1 flex-col">
+                            <div className="flex min-w-0 items-center gap-2">
+                              <span
+                                className={`min-w-0 flex-1 truncate font-mono text-sm ${
+                                  ep.is_watched ? "text-muted line-through" : "text-paper"
+                                }`}
+                              >
+                                {ep.filename}
+                              </span>
+                              {ep.is_watched && (
+                                <CheckCircle2 size={14} className="shrink-0 text-green-500/80" />
+                              )}
+                            </div>
+
+                            {/* 渲染最后播放时间 */}
+                            {ep.is_watched && ep.watched_at && (
+                              <span className="text-[10px] text-green-500/70 mt-1 font-mono">
+                                上次观看: {ep.watched_at}
+                              </span>
+                            )}
+                          </div>
+
+                          {/* 右侧：播放按钮,固定宽度,不随文件名长短被挤压/挤出屏幕 */}
+                          <button
+                            onClick={() => handlePlay(ep)}
+                            className={`flex w-28 shrink-0 items-center justify-center gap-1 text-xs px-3 py-1.5 rounded transition-colors ${
+                              ep.is_watched
+                                ? "bg-surface border border-border text-muted hover:bg-paper/10 hover:text-paper"
+                                : "bg-vermillion text-white hover:bg-vermillion/90"
+                            }`}
+                          >
+                            <Play size={12} fill="currentColor" />
+                            {ep.is_watched ? "再次播放" : "播放"}
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="font-mono text-xs text-muted py-8">
+                该文件夹下未找到符合格式的视频文件。
+              </div>
+            )}
+          </div>
+        </div>
+      ) : (
+        /* 列表视图 */
+        <div className="p-8">
+          <div className="flex justify-between items-center mb-6">
+            <div>
+              <h1 className="font-display text-2xl tracking-tight">影视库</h1>
+              <p className="font-mono text-xs text-muted mt-1">
+                关联目录：{settings.library_root} | 发现 {animes.length} 部动画
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="flex rounded border border-border overflow-hidden font-mono text-xs">
+                {(
+                  [
+                    { value: "default", label: "默认" },
+                    { value: "recent_watched", label: "最近观看" },
+                    { value: "recent_updated", label: "最新更新" },
+                  ] as { value: SortMode; label: string }[]
+                ).map((opt) => (
+                  <button
+                    key={opt.value}
+                    onClick={() => handleSortChange(opt.value)}
+                    className={`px-3 py-1.5 transition-colors ${
+                      sort === opt.value
+                        ? "bg-vermillion text-white"
+                        : "bg-surface hover:bg-paper/5"
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+              <button
+                onClick={() => fetchAnimes()}
+                className="font-mono text-xs border border-border px-3 py-1.5 rounded bg-surface hover:bg-paper/5 transition-colors"
+              >
+                刷新 & 扫盘
+              </button>
+              <button
+                onClick={() => setMatchMode((v) => !v)}
+                className={`font-mono text-xs border px-3 py-1.5 rounded transition-colors ${
+                  matchMode
+                    ? "bg-vermillion text-white border-vermillion"
+                    : "border-border bg-surface hover:bg-paper/5"
+                }`}
+              >
+                {matchMode ? "结束匹配" : "重新匹配"}
+              </button>
+            </div>
+          </div>
+
+          {loading ? (
+            <div className="font-mono text-xs text-muted">正在扫盘中...</div>
+          ) : (
+            <div className="grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-4">
+              {animes.map((anime) => (
+                <div
+                  key={anime.id}
+                  onClick={() => handleSelectAnime(anime)}
+                  className="group cursor-pointer"
+                >
+                  <div className="relative aspect-[2/3] overflow-hidden rounded-md bg-surface shadow-md">
+                    {anime.cover_url ? (
+                      <img
+                        src={anime.cover_url}
+                        alt={anime.folder_name}
+                        className="h-full w-full object-cover transition-transform group-hover:scale-105"
+                      />
+                    ) : (
+                      <div className="flex h-full w-full flex-col items-center justify-center gap-2 text-muted bg-surface border border-border">
+                        <FolderOpen size={32} strokeWidth={1.5} />
+                        <span className="text-[10px] font-mono">No Cover</span>
+                      </div>
+                    )}
+                    {(matchMode || !anime.bgm_id) && (
+                      <div className="absolute inset-0 flex items-center justify-center bg-ink/60">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onManualMatch?.(anime.folder_name);
+                          }}
+                          className="rounded border border-vermillion bg-vermillion/80 px-2 py-1 text-[10px] font-mono text-white transition-colors hover:bg-vermillion"
+                        >
+                          {anime.bgm_id ? "重新匹配" : "指定动漫"}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  <div className="mt-2 line-clamp-2 text-sm font-medium leading-snug group-hover:text-vermillion transition-colors">
+                    {anime.display_title || anime.folder_name}
+                  </div>
+                </div>
+              ))}
+              {animes.length === 0 && (
+                <div className="col-span-full py-16 text-center font-mono text-xs text-muted">
+                  {settings.library_root} 下没有发现任何子目录，请先往该目录下载动画。
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}

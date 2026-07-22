@@ -1,0 +1,93 @@
+from pydantic import BaseModel
+from typing import Optional
+from datetime import datetime
+
+class AnimeCreate(BaseModel):
+    title: str
+    title_original: Optional[str] = None
+    summary: Optional[str] = None
+    cover_url: Optional[str] = None
+    air_date: Optional[str] = None
+    total_eps: Optional[int] = None
+
+
+class AnimeResponse(AnimeCreate):
+    id: int
+    status: str
+
+    class Config:
+        from_attributes = True
+
+class RenamePreviewRequest(BaseModel):
+    anime_title: str  # 兜底用:拿不到bgm_id对应的官方名时,使用这个
+    bgm_id: Optional[int] = None  # 有值时,优先用Bangumi官方中文名做文件夹/文件名
+    titles: list[str]
+
+
+class DownloadItem(BaseModel):
+    title: str
+    magnet: str
+    fansub_name: Optional[str] = None
+
+
+class DownloadRequest(BaseModel):
+    anime_title: str
+    bgm_id: Optional[int] = None
+    keyword: str
+    source: str  # "dmhy" 或 "animegarden",画面强制二选一,不再提供"不限"/自动切换
+    fansub_name: Optional[str] = None
+    quality: Optional[str] = None
+    subtitle: Optional[str] = None
+    format: Optional[str] = None
+    release_type: Optional[str] = None
+    subscribe: bool = False
+    auto_rename: bool = True
+    items: list[DownloadItem]
+
+class SettingsUpdate(BaseModel):
+    download_root: str
+    library_root: str
+    potplayer_path: str
+    rename_poll_interval_seconds: int = 300
+    player_mode: str = "external"  # external / builtin
+
+class RssSubscriptionResponse(BaseModel):
+    """RSS订阅一览页用的单条记录。"""
+
+    id: int
+    anime_title: str
+    bgm_id: Optional[int] = None
+    keyword: str
+    source: str
+    fansub_name: Optional[str] = None
+    quality: Optional[str] = None
+    subtitle: Optional[str] = None
+    format: Optional[str] = None
+    release_type: Optional[str] = None
+    auto_rename: bool
+    enabled: bool
+    rss_url: Optional[str] = None
+    last_error: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class RssToggleRequest(BaseModel):
+    enabled: bool
+
+
+class BatchDeleteTasksRequest(BaseModel):
+    hashes: list[str]
+
+
+class QbitTestRequest(BaseModel):
+    host: str
+    port: int
+    username: str
+    password: str
+
+
+class QbitApplyRequest(QbitTestRequest):
+    apply_recommended: bool = True

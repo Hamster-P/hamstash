@@ -1,0 +1,12 @@
+services:
+  server:
+    build: ./server
+    container_name: hamstash-server
+    ports:
+      - "8080:8000"
+    environment:
+      - QBIT_HOST=host.docker.internal  # 让 Docker 镜像能继续读取到这个配置
+    volumes:
+      - ./server:/app
+      - "D:/AnimeLibrary:/AnimeLibrary"
+    restart: unless-stopped

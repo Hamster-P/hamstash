@@ -1,0 +1,116 @@
+@import "tailwindcss";
+
+/* ===== 设计Token =====
+   语义化色名(ink/surface/border/vermillion/gold/paper/muted)保持不变,
+   实际取值通过 --tone-* 变量按主题覆盖,组件className无需感知主题切换。 */
+@theme inline {
+  --color-ink: var(--tone-ink);
+  --color-surface: var(--tone-surface);
+  --color-surface-hover: var(--tone-surface-hover);
+  --color-border: var(--tone-border);
+  --color-vermillion: var(--tone-accent);
+  --color-gold: var(--tone-accent-2);
+  --color-paper: var(--tone-paper);
+  --color-muted: var(--tone-muted);
+  --color-toggle-on: var(--tone-toggle-on);
+
+  --font-display: "Space Grotesk", "Segoe UI", ui-sans-serif, sans-serif;
+  --font-body: "Inter", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Code", Consolas,
+    monospace;
+}
+
+:root {
+  /* 深色版(默认):深蓝黑背景 + 蓝/青高亮 */
+  --tone-ink: #0b1020;
+  --tone-surface: #131a2e;
+  --tone-surface-hover: #1a2440;
+  --tone-border: #232d4a;
+  --tone-accent: #4f8cff;
+  --tone-accent-2: #38bdf8;
+  --tone-paper: #eef1f7;
+  --tone-muted: #7c88a8;
+  --tone-toggle-on: #4f8cff;
+}
+
+[data-theme="light"] {
+  /* 浅色版:浅灰白背景 + 深蓝黑文字,同色系蓝高亮 */
+  --tone-ink: #f6f7fb;
+  --tone-surface: #ffffff;
+  --tone-surface-hover: #eef1f7;
+  --tone-border: #dde3ef;
+  --tone-accent: #2f6fed;
+  --tone-accent-2: #0891b2;
+  --tone-paper: #101526;
+  --tone-muted: #6b7690;
+  /* 开关打开态专用色,比主强调色更柔和一档,避免浅色背景下过于抢眼 */
+  --tone-toggle-on: #8fb4f0;
+}
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+    margin: 0;
+  }
+
+  body {
+    background-color: var(--color-ink);
+    color: var(--color-paper);
+    font-family: var(--font-body);
+    -webkit-font-smoothing: antialiased;
+    transition: background-color 0.2s ease, color 0.2s ease;
+  }
+
+  /* 浅色版下用微妙阴影替代深色版依赖的强边框,呼应界面留白+层级感 */
+  [data-theme="light"] .bg-surface {
+    box-shadow: 0 1px 2px rgba(16, 21, 38, 0.06), 0 1px 1px rgba(16, 21, 38, 0.04);
+  }
+
+  ::selection {
+    background-color: var(--color-vermillion);
+    color: var(--color-ink);
+  }
+
+  /* 细滚动条,符合极客工具的克制感 */
+  ::-webkit-scrollbar {
+    width: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background-color: var(--color-border);
+    border-radius: 4px;
+  }
+}
+
+/* ===== 签名元素:呼吸的"正在放送"指示灯 ===== */
+@keyframes on-air-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.on-air-dot {
+  animation: on-air-pulse 1.8s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .on-air-dot {
+    animation: none;
+  }
+
+  body {
+    transition: none;
+  }
+}

@@ -1,0 +1,9 @@
+server/venv/
+__pycache__/
+*.pyc
+.env
+server/anime_hub.db
+server/data/
+server/build/
+server/*.spec
+cookies.txt

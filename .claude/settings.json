@@ -1,0 +1,36 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls -la \"/c/ProgramData/anime-hub/\" 2>&1)",
+      "Read(//c/ProgramData/anime-hub//**)",
+      "Bash(taskkill //F //PID 30216)",
+      "Bash(rm -rf \"/c/ProgramData/anime-hub\")",
+      "Bash(grep -c \"backend\\\\\\\\\\\\\\\\anime-hub-server\" \"/d/Projects/anime-hub/client/src-tauri/target/release/nsis/x64/installer.nsi\")",
+      "Bash(grep \"backend\\\\\\\\\\\\\\\\anime-hub-server\\\\\\\\\\\\\\\\anime-hub-server.exe\" \"/d/Projects/anime-hub/client/src-tauri/target/release/nsis/x64/installer.nsi\")",
+      "Read(//c/Users/godpan/Downloads/**)",
+      "Read(//c/Users/godpan/Desktop/**)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" \"http://127.0.0.1:8080/\")",
+      "Bash(mkdir -p \"d:/Projects/anime-hub/.claude/agents\" \"d:/Projects/anime-hub/client/src/theme\")",
+      "Bash(curl -s -o /dev/null -w \"backend status: %{http_code}\\\\n\" \"http://127.0.0.1:8080/\")",
+      "Bash(npx --no-install tsc --noEmit -p .)",
+      "Bash(xargs -I{} echo {})",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('routers/library.py', encoding='utf-8'\\).read\\(\\)\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('database.py', encoding='utf-8'\\).read\\(\\)\\); ast.parse\\(open\\('paths.py', encoding='utf-8'\\).read\\(\\)\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('routers/settings.py', encoding='utf-8'\\).read\\(\\)\\)\")",
+      "Bash(python -c ' *)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('database.py', encoding='utf-8'\\).read\\(\\)\\)\")",
+      "Bash(cd d:/Projects/anime-hub/server && mv anime-hub-server.spec hamstash-server.spec && echo done)",
+      "Bash(python -c \"import json; json.load\\(open\\('tauri.conf.json', encoding='utf-8'\\)\\); print\\('JSON_OK'\\)\")",
+      "Bash(git config *)",
+      "Bash(git bundle *)",
+      "Bash(grep -iE \"cookie|token|secret|password|credential|\\\\.key$|\\\\.pem$|\\\\.env\")",
+      "Bash(git rm *)",
+      "Bash(git add *)",
+      "Bash(git commit *)"
+    ],
+    "additionalDirectories": [
+      "d:\\Projects\\anime-hub\\.claude",
+      "d:\\Projects\\anime-hub\\server"
+    ]
+  }
+}
