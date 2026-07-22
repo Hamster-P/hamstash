@@ -32,10 +32,11 @@ interface DownloadPageProps {
 
 const API_BASE = "http://127.0.0.1:8080";
 const QUALITY_OPTIONS = ["不限", "1080p", "720p", "2160p"];
-// 数据源:不提供"全部"/"不限",强制二选一,保证搜索结果和RSS订阅内容一致
-const SOURCE_OPTIONS: { value: "dmhy" | "animegarden"; label: string }[] = [
+// 数据源:不提供"全部"/"不限",强制单选,保证搜索结果和RSS订阅内容一致
+const SOURCE_OPTIONS: { value: "dmhy" | "animegarden" | "nyaa"; label: string }[] = [
   { value: "dmhy", label: "dmhy(全量历史)" },
   { value: "animegarden", label: "AnimeGarden(近期资源)" },
+  { value: "nyaa", label: "nyaa.si(英语圈综合站)" },
 ];
 // 1. 新增：细化的字幕语言与文件格式选项
 const SUBTITLE_OPTIONS = ["不限", "纯简体", "繁体", "简繁", "简日", "繁日", "RAW", "日文/无字"];
@@ -63,7 +64,7 @@ export default function DownloadPage({
   const [searchBox, setSearchBox] = useState(initialKeyword ?? "");
   const [bgmId] = useState<number | null>(initialBgmId);
   const [fansubFilter, setFansubFilter] = useState("全部");
-  const [source, setSource] = useState<"dmhy" | "animegarden">("dmhy");
+  const [source, setSource] = useState<"dmhy" | "animegarden" | "nyaa">("dmhy");
 
   // 2. 状态扩展：全面控管筛选条件
   const [quality, setQuality] = useState("不限");
@@ -83,16 +84,17 @@ export default function DownloadPage({
   const [submitting, setSubmitting] = useState(false);
   const [resultMessage, setResultMessage] = useState<string | null>(null);
 
-  const handleSearch = async (keywordOverride?: string) => {
+  const handleSearch = async (keywordOverride?: string, sourceOverride?: typeof source) => {
     const kw = keywordOverride ?? searchBox;
     if (!kw.trim()) return;
+    const src = sourceOverride ?? source;
     setLoading(true);
     setHasSearched(true);
     setSelected(new Set());
     setResultMessage(null);
     try {
       const res = await fetch(
-        `${API_BASE}/resources/search?keyword=${encodeURIComponent(kw)}&source=${source}${
+        `${API_BASE}/resources/search?keyword=${encodeURIComponent(kw)}&source=${src}${
           bgmId ? `&bgm_id=${bgmId}` : ""
         }`,
       );
@@ -105,11 +107,25 @@ export default function DownloadPage({
     }
   };
 
-  // 从详情页跳转过来时,自动带着关键词执行一次搜索
+  // 挂载时先拿设置里配置的默认数据源,再(如果是从详情页带关键词跳转过来的)
+  // 用这个刚拿到的值发起自动搜索——不能先用旧的source state搜一次再等设置回来,
+  // 否则从详情页跳转这次自动搜索会抢跑,用到还没来得及更新的默认值。
   useEffect(() => {
-    if (initialKeyword) {
-      handleSearch(initialKeyword);
-    }
+    fetch(`${API_BASE}/settings`)
+      .then((res) => res.json())
+      .then((data) => {
+        const validSources = ["dmhy", "animegarden", "nyaa"] as const;
+        const fetchedSource = validSources.includes(data.default_source)
+          ? (data.default_source as typeof source)
+          : "dmhy";
+        setSource(fetchedSource);
+        if (initialKeyword) {
+          handleSearch(initialKeyword, fetchedSource);
+        }
+      })
+      .catch(() => {
+        if (initialKeyword) handleSearch(initialKeyword);
+      });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -292,7 +308,7 @@ export default function DownloadPage({
         <select
           value={source}
           onChange={(e) => {
-            const next = e.target.value as "dmhy" | "animegarden";
+            const next = e.target.value as "dmhy" | "animegarden" | "nyaa";
             setSource(next);
             setResults([]);
             setSelected(new Set());
@@ -350,7 +366,8 @@ export default function DownloadPage({
         </button>
       </div>
       <p className="mb-4 font-mono text-[11px] text-muted">
-        搜索结果和RSS订阅都来自你选择的数据源,不会自动切换——dmhy覆盖全量历史,AnimeGarden仅覆盖近期资源
+        搜索结果和RSS订阅都来自你选择的数据源,不会自动切换——dmhy覆盖全量历史,AnimeGarden仅覆盖近期资源,
+        nyaa.si是英语圈综合站点(同样仅覆盖近期资源),以英文/罗马音标题为主,中文关键词可能搜不到结果
       </p>
 
       {loading && (

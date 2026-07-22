@@ -19,6 +19,7 @@ def get_settings(db: Session = Depends(get_db)):
         "library_root": get_setting(db, "library_root", config_store.DEFAULTS["library_root"]),
         "potplayer_path": get_setting(db, "potplayer_path", config_store.DEFAULTS["potplayer_path"]),
         "player_mode": get_setting(db, "player_mode", config_store.DEFAULTS["player_mode"]),
+        "default_source": get_setting(db, "default_source", config_store.DEFAULTS["default_source"]),
         "rename_poll_interval_seconds": int(
             get_setting(
                 db,
@@ -46,6 +47,7 @@ def update_settings(payload: SettingsUpdate, db: Session = Depends(get_db)):
         "potplayer_path": payload.potplayer_path,
         "player_mode": payload.player_mode,
         "rename_poll_interval_seconds": str(payload.rename_poll_interval_seconds),
+        "default_source": payload.default_source,
     }
     for key, value in values.items():
         row = db.query(AppSetting).filter(AppSetting.key == key).first()

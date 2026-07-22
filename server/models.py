@@ -28,7 +28,7 @@ class SubscriptionRule(Base):
     anime_title = Column(String, nullable=False)
     bgm_id = Column(Integer, nullable=True)
     keyword = Column(String, nullable=False)  # 完整检索关键词,后续轮询用它去搜新种子
-    source = Column(String, nullable=False, default="dmhy")  # 这条订阅的RSS来自dmhy还是animegarden
+    source = Column(String, nullable=False, default="dmhy")  # 这条订阅的RSS来自dmhy、animegarden还是nyaa
     fansub_name = Column(String, nullable=True)  # 为空代表不限字幕组
     quality = Column(String, nullable=True)  # 1080p / 720p,为空代表不限
     subtitle = Column(String, nullable=True)  # 简体/繁体/简日双语/繁日双语,为空代表不限

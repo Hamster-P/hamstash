@@ -34,7 +34,7 @@ class DownloadRequest(BaseModel):
     anime_title: str
     bgm_id: Optional[int] = None
     keyword: str
-    source: str  # "dmhy" 或 "animegarden",画面强制二选一,不再提供"不限"/自动切换
+    source: str  # "dmhy"/"animegarden"/"nyaa",画面强制单选,不再提供"不限"/自动切换
     fansub_name: Optional[str] = None
     quality: Optional[str] = None
     subtitle: Optional[str] = None
@@ -50,6 +50,7 @@ class SettingsUpdate(BaseModel):
     potplayer_path: str
     rename_poll_interval_seconds: int = 300
     player_mode: str = "external"  # external / builtin
+    default_source: str = "dmhy"  # 下载页默认选中的数据源: dmhy / animegarden / nyaa
 
 class RssSubscriptionResponse(BaseModel):
     """RSS订阅一览页用的单条记录。"""

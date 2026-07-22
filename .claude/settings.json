@@ -29,7 +29,8 @@
       "Bash(git commit *)",
       "Bash(grep -iE \"cookie|client/src-tauri/2$\")",
       "Bash(echo \"\\(exit code: $?\\)\")",
-      "Bash(git remote *)"
+      "Bash(git remote *)",
+      "Bash(python -c \"import json; json.load\\(open\\('client/src-tauri/tauri.conf.json', encoding='utf-8'\\)\\); print\\('JSON_OK'\\)\")"
     ],
     "additionalDirectories": [
       "d:\\Projects\\anime-hub\\.claude",

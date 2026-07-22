@@ -1,12 +1,15 @@
 import re
 import xml.etree.ElementTree as ET
-from urllib.parse import urlencode
+from urllib.parse import urlencode, quote
 
 import httpx
 
 ANIMEGARDEN_URL = "https://api.animes.garden/resources"
 ANIMEGARDEN_FEED_URL = "https://api.animes.garden/feed.xml"
 DMHY_RSS_URL = "https://dmhy.org/topics/rss/rss.xml"
+NYAA_URL = "https://nyaa.si"
+NYAA_ANIME_CATEGORY = "1_0"  # nyaa的Anime大类(含全部字幕/生肉子分类),不含漫画/音乐等其他大类
+NYAA_NAMESPACES = {"nyaa": "https://nyaa.si/xmlns/nyaa"}
 
 HEADERS = {"User-Agent": "hamstash/0.1 (personal project)"}
 
@@ -75,6 +78,72 @@ async def _search_dmhy_fallback(keyword: str):
         )
     return results
 
+def _parse_nyaa_size(size_text: str | None) -> int | None:
+    """nyaa:size是"38.0 GiB"这种人类可读字符串,不是字节数——
+    前端formatSize()跟AnimeGarden的size字段一样,期望拿到的是原始字节数再自己换算显示单位,
+    这里转换成一致的数值类型,不然前端拿字符串做除法会得到NaN。
+    """
+    if not size_text:
+        return None
+    match = re.match(r"([\d.]+)\s*([KMGT]?i?B)", size_text.strip(), re.IGNORECASE)
+    if not match:
+        return None
+    value = float(match.group(1))
+    multipliers = {
+        "B": 1,
+        "KIB": 1024, "KB": 1024,
+        "MIB": 1024**2, "MB": 1024**2,
+        "GIB": 1024**3, "GB": 1024**3,
+        "TIB": 1024**4, "TB": 1024**4,
+    }
+    return int(value * multipliers.get(match.group(2).upper(), 1))
+
+
+async def _search_nyaa(keyword: str):
+    """补充源:nyaa.si,英语圈老牌综合BT站,限定只搜"Anime"大类(c=1_0)。
+    没有bgm_id/字幕组这层服务器端归一化,字幕组名靠标题粗略提取,用法上跟dmhy一致。
+    注意:nyaa上绝大多数资源用英文/罗马音标题,拿中文关键词搜大概率没有结果,
+    这是站点本身的特性,不是这里要修的问题。
+    """
+    async with httpx.AsyncClient(headers=HEADERS, timeout=15.0) as client:
+        resp = await client.get(
+            NYAA_URL,
+            params={"page": "rss", "c": NYAA_ANIME_CATEGORY, "f": 0, "q": keyword},
+        )
+        resp.raise_for_status()
+        xml_text = resp.text
+
+    root = ET.fromstring(xml_text)
+    results = []
+    for item in root.iter("item"):
+        title = item.findtext("title") or ""
+        link = item.findtext("link") or ""  # .torrent直链,不是磁力链,仅在没有infoHash时兜底
+        info_hash = item.findtext("nyaa:infoHash", namespaces=NYAA_NAMESPACES)
+        pub_date = item.findtext("pubDate")
+        size_text = item.findtext("nyaa:size", namespaces=NYAA_NAMESPACES)
+
+        match = re.match(r"^[\[【]([^\]】]+)[\]】]", title)
+        fansub_name = match.group(1) if match else "未知字幕组"
+
+        magnet = (
+            f"magnet:?xt=urn:btih:{info_hash}&dn={quote(title)}" if info_hash else link
+        )
+
+        results.append(
+            {
+                "source": "nyaa",
+                "provider": "nyaa",
+                "title": title,
+                "fansub_name": fansub_name,
+                "magnet": magnet,
+                "size": _parse_nyaa_size(size_text),
+                "created_at": pub_date,
+                "bgm_id": None,
+            }
+        )
+    return results
+
+
 async def _search_animegarden_by_subject(bgm_id: int, page_size: int = 50):
     """
     直接按Bangumi ID查AnimeGarden,比关键词文本匹配更精确——
@@ -118,7 +187,9 @@ async def search_by_source(keyword: str, source: str, bgm_id: int | None = None)
         return await _search_animegarden(keyword)
     if source == "dmhy":
         return await _search_dmhy_fallback(keyword)
-    raise ValueError(f"未知数据源: {source}") 
+    if source == "nyaa":
+        return await _search_nyaa(keyword)
+    raise ValueError(f"未知数据源: {source}")
 
 def build_dmhy_rss_url(keyword: str) -> str:
     """
@@ -165,8 +236,7 @@ def build_animegarden_rss_url(keyword: str, fansub_name: str | None = None) -> s
     return f"{ANIMEGARDEN_FEED_URL}?{query}"
 
 
-
-SOURCE_SEARCH_FUNCS = {
-    "dmhy": None,  # 占位,下面赋值,避免函数定义顺序问题
-    "animegarden": None,
-}
+def build_nyaa_rss_url(keyword: str) -> str:
+    """构建nyaa.si按关键词过滤、限定Anime大类的RSS订阅地址,交给qBittorrent长期订阅用。"""
+    query = urlencode({"page": "rss", "c": NYAA_ANIME_CATEGORY, "f": 0, "q": keyword})
+    return f"{NYAA_URL}/?{query}"

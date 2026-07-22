@@ -42,6 +42,7 @@ interface SavedSnapshot {
   potplayerPath: string;
   playerMode: "builtin" | "external";
   pollMinutes: number;
+  defaultSource: "dmhy" | "animegarden" | "nyaa";
 }
 
 const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function SettingsPage(
@@ -53,6 +54,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
   // 新增：PotPlayer 路径状态
   const [potplayerPath, setPotplayerPath] = useState("");
   const [playerMode, setPlayerMode] = useState<"builtin" | "external">("external");
+  const [defaultSource, setDefaultSource] = useState<"dmhy" | "animegarden" | "nyaa">("dmhy");
   const [pollMinutes, setPollMinutes] = useState(5);
   const [saving, setSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
@@ -77,12 +79,18 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
           pollMinutes: clampPollMinutes(
             Math.round((data.rename_poll_interval_seconds ?? 300) / 60),
           ),
+          defaultSource: (["dmhy", "animegarden", "nyaa"] as const).includes(
+            data.default_source,
+          )
+            ? data.default_source
+            : "dmhy",
         };
         setDownloadRoot(next.downloadRoot);
         setLibraryRoot(next.libraryRoot);
         setPotplayerPath(next.potplayerPath);
         setPlayerMode(next.playerMode);
         setPollMinutes(next.pollMinutes);
+        setDefaultSource(next.defaultSource);
         setSavedSnapshot(next);
       })
       .catch(() => {});
@@ -96,7 +104,8 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
       libraryRoot !== savedSnapshot.libraryRoot ||
       potplayerPath !== savedSnapshot.potplayerPath ||
       playerMode !== savedSnapshot.playerMode ||
-      pollMinutes !== savedSnapshot.pollMinutes);
+      pollMinutes !== savedSnapshot.pollMinutes ||
+      defaultSource !== savedSnapshot.defaultSource);
 
   const checkQbStatus = () => {
     setQbStatus("checking");
@@ -140,6 +149,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
           potplayer_path: potplayerPath, // 新增：提交给后端的播放器路径
           player_mode: playerMode,
           rename_poll_interval_seconds: clampPollMinutes(pollMinutes) * 60,
+          default_source: defaultSource,
         }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -149,7 +159,14 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
           ? "已保存 — 媒体库目录已变更,请重启程序以完成数据库迁移"
           : "已保存",
       );
-      setSavedSnapshot({ downloadRoot, libraryRoot, potplayerPath, playerMode, pollMinutes });
+      setSavedSnapshot({
+        downloadRoot,
+        libraryRoot,
+        potplayerPath,
+        playerMode,
+        pollMinutes,
+        defaultSource,
+      });
     } catch (err) {
       setSaveMessage("保存失败,请检查后端连接");
       console.error(err);
@@ -259,6 +276,25 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
             外置播放器
           </label>
         </div>
+      </div>
+
+      {/* 新增：默认下载数据源 */}
+      <div className="mb-6 rounded-md border border-border bg-surface p-4">
+        <div className="mb-1 text-sm">默认下载数据源</div>
+        <p className="mb-3 font-mono text-[11px] text-muted">
+          打开下载页时默认选中的数据源,之后仍然可以在下载页临时切换。
+        </p>
+        <select
+          value={defaultSource}
+          onChange={(e) =>
+            setDefaultSource(e.target.value as "dmhy" | "animegarden" | "nyaa")
+          }
+          className="rounded border border-border bg-ink px-2 py-1.5 font-mono text-xs text-paper outline-none focus:border-vermillion"
+        >
+          <option value="dmhy">dmhy(全量历史)</option>
+          <option value="animegarden">AnimeGarden(近期资源)</option>
+          <option value="nyaa">nyaa.si(英语圈综合站)</option>
+        </select>
       </div>
 
       {/* PotPlayer 路径输入框:只有外置模式才需要 */}

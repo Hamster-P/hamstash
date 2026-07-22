@@ -37,6 +37,8 @@ async def activate_subscription(db: Session, rule: SubscriptionRule, download_ro
                 rule.rss_url = resource_client.build_animegarden_rss_url(
                     rule.keyword, rule.fansub_name
                 )
+        elif rule.source == "nyaa":
+            rule.rss_url = resource_client.build_nyaa_rss_url(rule.keyword)
         else:
             rule.rss_url = resource_client.build_dmhy_rss_url(rule.keyword)
     if not rule.rss_path:

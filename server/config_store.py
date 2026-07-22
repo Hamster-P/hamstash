@@ -17,6 +17,7 @@ DEFAULTS = {
     "rename_poll_interval_seconds": "300",
     "potplayer_path": r"C:\Program Files\DAUM\PotPlayer\PotPlayerMini64.exe",
     "player_mode": "external",  # external=用户指定的PotPlayer等外置播放器 / builtin=内置mpv
+    "default_source": "dmhy",  # 下载页默认选中的数据源: dmhy / animegarden / nyaa
     "qbit_host": os.getenv("QBIT_HOST", "127.0.0.1"),
     "qbit_port": os.getenv("QBIT_PORT", "8080"),
     "qbit_username": os.getenv("QBIT_USERNAME", "admin"),
