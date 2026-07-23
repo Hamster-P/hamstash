@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, ExternalLink } from "lucide-react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 
 interface ResourceItem {
   source: string;
@@ -10,6 +11,9 @@ interface ResourceItem {
   size: number | null;
   created_at: string | null;
   bgm_id: number | null;
+  // 种子在源站的详情页地址,目前只有dmhy/nyaa有(AnimeGarden是聚合站,
+  // 没有自己的规范详情页,后端固定给null,这里为null时不渲染详情按钮)。
+  detail_url: string | null;
 }
 
 interface RenamePreview {
@@ -77,6 +81,9 @@ export default function DownloadPage({
   // 是否已经执行过至少一次检索,用来判断"还没搜"和"搜了但真的没有结果"
   const [hasSearched, setHasSearched] = useState(false);
   const [selected, setSelected] = useState<Set<number>>(new Set());
+  // 记录最近一次点开的详情页地址(用detail_url本身当key,天然跨源唯一),
+  // 让对应那一行的"详情"按钮高亮,方便用户从浏览器切回来后找到自己刚才点的是哪条
+  const [lastOpenedDetail, setLastOpenedDetail] = useState<string | null>(null);
 
   const [subscribe, setSubscribe] = useState(initialSubscribe);
   const [autoRename, setAutoRename] = useState(true);
@@ -418,6 +425,27 @@ export default function DownloadPage({
                     <span className="uppercase">{item.source}</span>
                   </div>
                 </div>
+                {item.detail_url && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      // 整行是个<label>,点击默认会转发给里面的checkbox触发勾选——
+                      // 这个按钮要单独响应,不能让选中状态跟着变。
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setLastOpenedDetail(item.detail_url);
+                      openUrl(item.detail_url!);
+                    }}
+                    className={`flex shrink-0 items-center gap-1 rounded border px-2 py-1 font-mono text-[11px] transition-colors ${
+                      lastOpenedDetail === item.detail_url
+                        ? "border-vermillion bg-vermillion text-ink"
+                        : "border-border text-muted hover:border-vermillion hover:text-vermillion"
+                    }`}
+                  >
+                    <ExternalLink size={12} />
+                    详情
+                  </button>
+                )}
               </label>
             ))}
           </div>

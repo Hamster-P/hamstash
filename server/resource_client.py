@@ -38,9 +38,12 @@ async def _search_animegarden(keyword: str, page_size: int = 50):
                 "title": item.get("title", ""),
                 "fansub_name": fansub.get("name", "未知字幕组"),
                 "magnet": item.get("magnet"),
-                "size": item.get("size"),
+                "size": _animegarden_size_to_bytes(item.get("size")),
                 "created_at": item.get("createdAt"),
                 "bgm_id": item.get("subjectId"),
+                # AnimeGarden是聚合多个上游站点的二道源,同一条资源背后可能是dmhy/nyaa/
+                # 其他站点里的任意一个,没有它自己的规范详情页,详情按钮只在dmhy/nyaa实现。
+                "detail_url": None,
             }
         )
     return results
@@ -76,13 +79,27 @@ async def _search_dmhy_fallback(keyword: str):
                 "size": None,
                 "created_at": pub_date,
                 "bgm_id": None,
+                # dmhy的<link>本来就是种子详情页(share.dmhy.org/topics/view/...),
+                # 有enclosure时上面只把它当磁力链兜底用,这里顺手作为详情页地址暴露出去。
+                "detail_url": link or None,
             }
         )
     return results
 
+def _animegarden_size_to_bytes(size_kb) -> int | None:
+    """AnimeGarden的size字段单位是KB,不是字节——拿真实API数据核对过:
+    某集芙莉莲的size=557158,当字节数解读只有0.53MB(比一张截图还小,明显不对),
+    当KB解读换算出544MB才是1080p WEB-DL单集该有的体积。统一转换成字节,
+    跟下面_parse_nyaa_size()以及前端formatSize()"size永远是字节数"的约定保持一致。
+    """
+    if not size_kb:
+        return None
+    return int(size_kb) * 1024
+
+
 def _parse_nyaa_size(size_text: str | None) -> int | None:
     """nyaa:size是"38.0 GiB"这种人类可读字符串,不是字节数——
-    前端formatSize()跟AnimeGarden的size字段一样,期望拿到的是原始字节数再自己换算显示单位,
+    前端formatSize()期望拿到的是原始字节数再自己换算显示单位,
     这里转换成一致的数值类型,不然前端拿字符串做除法会得到NaN。
     """
     if not size_text:
@@ -120,6 +137,9 @@ async def _search_nyaa(keyword: str):
     for item in root.iter("item"):
         title = item.findtext("title") or ""
         link = item.findtext("link") or ""  # .torrent直链,不是磁力链,仅在没有infoHash时兜底
+        # 种子详情页(如 https://nyaa.si/view/2136263)在<guid isPermaLink="true">里,
+        # 不是<link>——后者是.torrent直链,两个字段职责不同,别搞混了。
+        detail_url = item.findtext("guid") or None
         info_hash = item.findtext("nyaa:infoHash", namespaces=NYAA_NAMESPACES)
         pub_date = item.findtext("pubDate")
         size_text = item.findtext("nyaa:size", namespaces=NYAA_NAMESPACES)
@@ -141,6 +161,7 @@ async def _search_nyaa(keyword: str):
                 "size": _parse_nyaa_size(size_text),
                 "created_at": pub_date,
                 "bgm_id": None,
+                "detail_url": detail_url,
             }
         )
     return results
@@ -171,9 +192,10 @@ async def _search_animegarden_by_subject(bgm_id: int, page_size: int = 50):
                 "title": item.get("title", ""),
                 "fansub_name": fansub.get("name", "未知字幕组"),
                 "magnet": item.get("magnet"),
-                "size": item.get("size"),
+                "size": _animegarden_size_to_bytes(item.get("size")),
                 "created_at": item.get("createdAt"),
                 "bgm_id": item.get("subjectId"),
+                "detail_url": None,  # 同上,AnimeGarden没有自己的规范详情页
             }
         )
     return results
