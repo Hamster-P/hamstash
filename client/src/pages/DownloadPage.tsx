@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ArrowLeft, ExternalLink } from "lucide-react";
+import { ArrowLeft, ExternalLink, Loader2 } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
 interface ResourceItem {
@@ -88,6 +88,9 @@ export default function DownloadPage({
   const [subscribe, setSubscribe] = useState(initialSubscribe);
   const [autoRename, setAutoRename] = useState(true);
   const [previews, setPreviews] = useState<RenamePreview[]>([]);
+  // 改名规则(季度序号)可能还在后台算——不在预览请求里同步现算阻塞交互,
+  // 命中缓存才是"ready",没命中是"pending",UI据此显示"计算中"而不是空白/报错
+  const [previewStatus, setPreviewStatus] = useState<"ready" | "pending">("ready");
   const [submitting, setSubmitting] = useState(false);
   const [resultMessage, setResultMessage] = useState<string | null>(null);
 
@@ -135,6 +138,24 @@ export default function DownloadPage({
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // 下载页一打开、带着bgmId进来(比如从详情页跳转过来),就让后端在后台把这部番
+  // 的改名规则(季度序号)提前算好——用户还在选字幕组/画质/种子的这段时间里
+  // 计算已经在悄悄进行,等真正点开预览时大概率已经是热缓存,不用再等。
+  // bgmId是从initialBgmId初始化后就不再变的常量(见上面的useState),这个effect
+  // 依赖数组只写[bgmId]本质就是"仅挂载时触发一次",不需要每次搜索/切换都重发。
+  useEffect(() => {
+    if (!bgmId) return;
+    fetch(`${API_BASE}/resources/prefetch-rename-cache`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        anime_title: searchBox.trim() || "未命名番剧",
+        bgm_id: bgmId,
+      }),
+    }).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bgmId]);
 
   const fansubOptions = useMemo(() => {
     const names = new Set(results.map((r) => r.fansub_name));
@@ -233,24 +254,48 @@ export default function DownloadPage({
 
   const selectedItems = filteredResults.filter((_, i) => selected.has(i));
 
+  // 改名规则可能还在后台算(比如首次遇到这部番,家族解析要联网爬关联图谱)——
+  // 后端命中缓存才会返回status="ready",没命中返回"pending"且顺手在后台补一次
+  // 预热。这里遇到pending就隔几秒自己再问一次,直到变成ready或者依赖变化/组件
+  // 卸载(用cancelled旗标+清timeout,避免旧的轮询在新一轮请求发出后还继续跑)。
   useEffect(() => {
     if (!autoRename || selectedItems.length === 0) {
       setPreviews([]);
+      setPreviewStatus("ready");
       return;
     }
     const animeTitle = searchBox.trim() || "未命名番剧";
-    fetch(`${API_BASE}/resources/preview-rename`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        anime_title: animeTitle,
-        bgm_id: bgmId,
-        titles: selectedItems.map((i) => i.title),
-      }),
-    })
-      .then((res) => res.json())
-      .then(setPreviews)
-      .catch(() => setPreviews([]));
+    const titles = selectedItems.map((i) => i.title);
+    let cancelled = false;
+    let retryTimer: number | undefined;
+
+    const fetchPreview = () => {
+      fetch(`${API_BASE}/resources/preview-rename`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ anime_title: animeTitle, bgm_id: bgmId, titles }),
+      })
+        .then((res) => res.json())
+        .then((data: { status: "ready" | "pending"; previews: RenamePreview[] }) => {
+          if (cancelled) return;
+          setPreviewStatus(data.status);
+          setPreviews(data.previews ?? []);
+          if (data.status === "pending") {
+            retryTimer = window.setTimeout(fetchPreview, 3000);
+          }
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setPreviewStatus("ready"); // 请求失败就不再重试,退回空预览而不是一直转圈
+          setPreviews([]);
+        });
+    };
+
+    fetchPreview();
+    return () => {
+      cancelled = true;
+      window.clearTimeout(retryTimer);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoRename, selected, searchBox, bgmId]);
 
@@ -478,6 +523,13 @@ export default function DownloadPage({
             checked={autoRename}
             onChange={setAutoRename}
           />
+
+          {autoRename && selectedItems.length > 0 && previewStatus === "pending" && (
+            <div className="mt-2 flex items-center gap-2 rounded border border-border bg-ink p-3 font-mono text-[11px] text-muted">
+              <Loader2 size={12} className="animate-spin" />
+              改名规则计算中(首次识别这部番需要联网查询关联季度信息)…不等也没关系,提交下载后台会继续算
+            </div>
+          )}
 
           {autoRename && previews.length > 0 && (
             <div className="mt-2 rounded border border-border bg-ink p-3">

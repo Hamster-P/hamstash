@@ -273,6 +273,39 @@ async def resolve_tv_season_ordinal_cached(
     return result["season_ordinal"] if result else None
 
 
+# 进程内存,防止同一个bgm_id短时间内被并发触发多次重复的家族预热计算——
+# 只是节流,不是正确性保证:即使真的撞了并发,两次算出来的结果应该一致,
+# 顶多白打一遍Bangumi API,不会产生错误数据。进程重启后自然清空,不需要持久化。
+_prefetching_bgm_ids: set[int] = set()
+
+
+async def prefetch_rename_cache_task(bgm_id: int, anime_title: str) -> None:
+    """
+    后台任务版本:下载页一打开(带着bgm_id进来的场景)就调用,提前把这部番的
+    家族解析结果算出来、写进AnimeFamilyCache——开一个新的独立DB session,
+    不复用请求处理函数里的db(请求结束后那个session可能已经被关闭),
+    跟services/subscription.py的activate_subscription_task是同一种模式。
+
+    用户在下载页搜索/选种子/切换设置的这段时间里,这个后台任务在悄悄把结果
+    算好;等用户真正点了预览、或者种子下载完触发organize_loop整理时,
+    大概率已经是热缓存,不用再等——这是"两层"设计里负责后台预热的那一层,
+    另一层(命中判断+pending状态展示)在/resources/preview-rename里。
+    """
+    if bgm_id in _prefetching_bgm_ids:
+        return
+    _prefetching_bgm_ids.add(bgm_id)
+    db = SessionLocal()
+    try:
+        _, main_bgm_id, _ = await resolve_series_identity(bgm_id, anime_title)
+        if main_bgm_id:
+            await resolve_tv_season_ordinal_cached(db, bgm_id, main_bgm_id)
+    except Exception as e:
+        print(f"[PREFETCH] 预热改名缓存失败 bgm_id={bgm_id}: {e}")
+    finally:
+        db.close()
+        _prefetching_bgm_ids.discard(bgm_id)
+
+
 def sanitize_path_segment(text: str) -> str:
     """去掉qBittorrent RSS路径分隔符\\和/以及首尾空白,避免层级错乱。"""
     return re.sub(r"[\\/]+", "_", text).strip() or "未命名"

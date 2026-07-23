@@ -41,6 +41,13 @@ class RenamePreviewRequest(BaseModel):
     titles: list[str]
 
 
+class PrefetchRenameCacheRequest(BaseModel):
+    """下载页一打开(带着bgm_id)就调用,让家族改名规则在后台提前算好,
+    不用等用户真正点预览才现算。"""
+    anime_title: str
+    bgm_id: Optional[int] = None
+
+
 class DownloadItem(BaseModel):
     title: str
     magnet: str

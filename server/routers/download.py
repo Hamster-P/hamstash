@@ -7,10 +7,11 @@ import rename_engine
 import resource_client
 import qbittorrent_client
 from database import get_db
-from models import DownloadTask, SubscriptionRule
-from schemas import DownloadRequest, RenamePreviewRequest
+from models import AnimeFamilyCache, DownloadTask, SubscriptionRule
+from schemas import DownloadRequest, PrefetchRenameCacheRequest, RenamePreviewRequest
 from services.common import (
     get_setting,
+    prefetch_rename_cache_task,
     resolve_series_identity,
     staging_folder,
     upsert_anime_folder,
@@ -26,16 +27,81 @@ async def search_resources(keyword: str, source: str = "dmhy", bgm_id: int | Non
     return results
 
 
+@router.post("/resources/prefetch-rename-cache")
+async def prefetch_rename_cache(payload: PrefetchRenameCacheRequest, background_tasks: BackgroundTasks):
+    """
+    下载页一打开(带着bgm_id进来的场景,比如从详情页跳转过来)就调用一次,
+    后台把这部番的家族改名规则提前算好、写进AnimeFamilyCache缓存表——用户
+    还在搜索/选种子的这段时间里,计算已经在悄悄进行,等真正点开预览或者
+    种子下载完触发整理时大概率已经是热缓存,不用再等。
+
+    不返回计算结果本身(前端要看结果走/resources/preview-rename,那边负责
+    读缓存);没有bgm_id时什么都不用做,直接确认收到。
+    """
+    if payload.bgm_id:
+        background_tasks.add_task(prefetch_rename_cache_task, payload.bgm_id, payload.anime_title)
+    return {"status": "accepted"}
+
+
 @router.post("/resources/preview-rename")
-async def preview_rename_batch(payload: RenamePreviewRequest, db: Session = Depends(get_db)):
-    """给选中的种子标题,批量算出改名预览结果。优先使用Bangumi官方中文名命名。"""
-    anime_title, _, _ = await resolve_series_identity(payload.bgm_id, payload.anime_title)
+async def preview_rename_batch(
+    payload: RenamePreviewRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    """
+    给选中的种子标题,批量算出改名预览结果。
+
+    有bgm_id时优先查AnimeFamilyCache缓存表,不摸网络:命中就用缓存里的
+    platform/season_ordinal生成预览,跟organize_loop真正改名时用的是
+    同一套结果,不会对不上。没命中(这个bgm_id还没被/resources/prefetch-rename-cache
+    或之前的整理任务解析过)不在这里同步现算、阻塞用户的交互操作,返回
+    status="pending"让前端自己决定怎么显示("规则计算中"之类),同时顺手
+    在后台补一次预热请求,不需要一直等前端来触发。
+
+    没有bgm_id(纯关键词搜索、没关联具体的Bangumi条目)沿用原来的纯文本
+    猜测,这条路径从来没有网络依赖,不存在pending的概念。
+    """
     library_root = get_setting(db, "library_root", config_store.DEFAULTS["library_root"])
+
+    if not payload.bgm_id:
+        previews = [
+            rename_engine.preview_rename(payload.anime_title, title, library_root)
+            for title in payload.titles
+        ]
+        return {"status": "ready", "previews": previews}
+
+    cached_self = (
+        db.query(AnimeFamilyCache).filter(AnimeFamilyCache.bgm_id == payload.bgm_id).first()
+    )
+    if not cached_self:
+        background_tasks.add_task(prefetch_rename_cache_task, payload.bgm_id, payload.anime_title)
+        return {"status": "pending", "previews": []}
+
+    # 家族根节点自己的那一行缓存了它的官方标题,拿来当anime_title(全家共用的
+    # 文件夹名);根节点本身没有独立成行是不该发生的反常状态,兜底退回请求里带的标题。
+    cached_root = (
+        db.query(AnimeFamilyCache)
+        .filter(AnimeFamilyCache.bgm_id == cached_self.source_bgm_id)
+        .first()
+    )
+    anime_title = (cached_root.name if cached_root else None) or payload.anime_title
+    folder_bgm_id = cached_self.source_bgm_id
+
     previews = [
-        rename_engine.preview_rename(anime_title, title, library_root)
+        rename_engine.preview_rename_file(
+            anime_title=anime_title,
+            file_name=title,
+            torrent_title=title,
+            library_root=library_root,
+            bgm_id=folder_bgm_id,
+            season_hint=cached_self.name,
+            season_ordinal=cached_self.season_ordinal,
+            platform=cached_self.platform,
+        )
         for title in payload.titles
     ]
-    return previews
+    return {"status": "ready", "previews": previews}
 
 
 @router.post("/download/execute")

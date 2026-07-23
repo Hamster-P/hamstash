@@ -18,6 +18,38 @@ interface SearchPageProps {
 
 const API_BASE = "http://127.0.0.1:8080";
 
+// 搜索页从追更/搜索点进详情页时会整个卸载(App.tsx用selectedBgmId整页切换出DetailPage),
+// 回来就是重新mount——关键词、年份/季度筛选、结果列表、翻页状态都要整体存起来一起恢复,
+// 不然只存了results会出现"列表还在,但搜索框/筛选条件/加载更多状态都回到初始值"这种半吊子情况。
+interface SearchSessionState {
+  keyword: string;
+  selectedYear: string;
+  selectedQuarter: string;
+  results: BangumiSubject[];
+  offset: number;
+  hasMore: boolean;
+}
+
+const SEARCH_SESSION_KEY = "search_session_state_v1";
+
+function loadSearchSession(): SearchSessionState | null {
+  try {
+    const raw = sessionStorage.getItem(SEARCH_SESSION_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw) as SearchSessionState;
+  } catch {
+    return null;
+  }
+}
+
+function saveSearchSession(state: SearchSessionState) {
+  try {
+    sessionStorage.setItem(SEARCH_SESSION_KEY, JSON.stringify(state));
+  } catch {
+    // 存储满/被禁用时降级为纯内存,不影响本次渲染
+  }
+}
+
 const YEAR_OPTIONS = ["不限", ...Array.from({ length: 8 }, (_, i) => String(2026 - i))];
 const QUARTER_OPTIONS = [
   { label: "不限", value: "" },
@@ -28,29 +60,19 @@ const QUARTER_OPTIONS = [
 ];
 
 export default function SearchPage({ onSelectAnime, manualMatchFolder }: SearchPageProps) {
-  const [keyword, setKeyword] = useState("");
-  const [selectedYear, setSelectedYear] = useState("不限");
-  const [selectedQuarter, setSelectedQuarter] = useState("");
-  const [results, setResults] = useState<BangumiSubject[]>([]);
+  // 1. 初始化时整体恢复上一次的搜索会话(关键词/筛选/结果/翻页状态),
+  // 没有缓存就是全新状态,等用户自己点检索,不自动搜索
+  const [initialSession] = useState(loadSearchSession);
+  const [keyword, setKeyword] = useState(initialSession?.keyword ?? "");
+  const [selectedYear, setSelectedYear] = useState(initialSession?.selectedYear ?? "不限");
+  const [selectedQuarter, setSelectedQuarter] = useState(initialSession?.selectedQuarter ?? "");
+  const [results, setResults] = useState<BangumiSubject[]>(initialSession?.results ?? []);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [offset, setOffset] = useState(0);
-  const [hasMore, setHasMore] = useState(false);
+  const [offset, setOffset] = useState(initialSession?.offset ?? 0);
+  const [hasMore, setHasMore] = useState(initialSession?.hasMore ?? false);
   // 是否已经执行过至少一次搜索,用来区分"还没搜索"和"搜索了但没结果"两种空状态
-  const [hasSearched, setHasSearched] = useState(false);
-
-  // 1. 初始化时尝试读取缓存,没有缓存就等用户自己点检索,不自动搜索
-  useEffect(() => {
-    const saved = sessionStorage.getItem("last_search_results");
-    if (saved) {
-      try {
-        setResults(JSON.parse(saved));
-        setHasSearched(true);
-      } catch (e) {
-        console.error("缓存解析失败", e);
-      }
-    }
-  }, []);
+  const [hasSearched, setHasSearched] = useState(initialSession !== null);
 
   // 2. 联动逻辑
   useEffect(() => {
@@ -87,11 +109,19 @@ export default function SearchPage({ onSelectAnime, manualMatchFolder }: SearchP
       // 不能拿 rawCount 和我们请求的 limit 比(rawCount 基本永远够不到 limit)。
       const bangumiTotal = data?.bangumi_total ?? nextOffset;
       const combined = append ? [...results, ...newResults] : newResults;
+      const stillHasMore = rawCount > 0 && nextOffset < bangumiTotal;
 
       setResults(combined);
       setOffset(nextOffset);
-      setHasMore(rawCount > 0 && nextOffset < bangumiTotal);
-      sessionStorage.setItem("last_search_results", JSON.stringify(combined));
+      setHasMore(stillHasMore);
+      saveSearchSession({
+        keyword: currentKeyword,
+        selectedYear,
+        selectedQuarter,
+        results: combined,
+        offset: nextOffset,
+        hasMore: stillHasMore,
+      });
     } catch (err) {
       console.error("搜索失败", err);
     } finally {

@@ -307,6 +307,15 @@ async def resolve_family_season_map(main_bgm_id: int | None) -> dict[int, dict]:
 
     details = await get_subject_details_batch(list(visited))
 
+    # main_bgm_id自己的详情都没查到,说明网络压根不通(BFS第一层的关联请求同样会
+    # 静默失败,visited这时通常也就只有main_bgm_id自己)——整个当作失败处理,返回空
+    # 字典而不是"一个空壳成员"的家族。调用方(resolve_tv_season_ordinal_cached)
+    # 见到空字典就不会写缓存,避免网络暂时不通时把一条platform=None的假数据焊死进
+    # 缓存表:命中缓存是不会重试的,这条假数据会让这个bgm_id"永久失忆",网络恢复
+    # 之后也测不出来。
+    if details.get(main_bgm_id) is None:
+        return {}
+
     candidates: list[tuple[int, str]] = []
     for bid in visited:
         if bid not in season_eligible:
