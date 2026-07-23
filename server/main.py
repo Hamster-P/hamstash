@@ -6,7 +6,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 import config_store
 from db_migrate import upgrade_db
-from routers import backup, detail, download, downloads, library, rss, search, settings, setup, tracking
+from routers import backup, detail, download, downloads, library, media, rss, search, settings, setup, tracking
+from services.common import init_proxy_url_cache
 from services.organize import organize_loop
 
 config_store.DEFAULTS["library_root"] = r"D:\AnimeLibrary"  # 找不到用户配置时的默认值
@@ -16,6 +17,7 @@ Base.metadata.create_all(bind=engine)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    init_proxy_url_cache()  # 填充内存缓存,之后get_proxy_url()不再查DB(见services/common.py)
     task = asyncio.create_task(organize_loop())
     yield
     task.cancel()
@@ -48,4 +50,5 @@ app.include_router(rss.router)       # RssPage      RSS订阅一览
 app.include_router(settings.router)  # SettingsPage 设置
 app.include_router(setup.router)     # QbittorrentSetupPage 首次引导
 app.include_router(backup.router)    # SettingsPage 备份与迁移
+app.include_router(media.router)     # 通用图片代理,跨页面复用
 

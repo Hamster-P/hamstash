@@ -4,6 +4,7 @@ import { Play, FolderOpen, ArrowLeft, CheckCircle2 } from "lucide-react";
 import { invoke } from '@tauri-apps/api/core';
 import { isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { proxiedImageUrl } from "../utils/proxiedImage";
 
 interface LibraryAnime {
   id: number;
@@ -322,7 +323,7 @@ export default function LibraryPage({ onManualMatch }: LibraryPageProps) {
               <div className="w-40 aspect-[2/3] shrink-0 rounded-md bg-surface overflow-hidden shadow-lg">
                 {selectedAnime.cover_url ? (
                   <img
-                    src={selectedAnime.cover_url}
+                    src={proxiedImageUrl(selectedAnime.cover_url)}
                     alt={selectedAnime.folder_name}
                     className="h-full w-full object-cover"
                   />
@@ -491,7 +492,7 @@ export default function LibraryPage({ onManualMatch }: LibraryPageProps) {
                   <div className="relative aspect-[2/3] overflow-hidden rounded-md bg-surface shadow-md">
                     {anime.cover_url ? (
                       <img
-                        src={anime.cover_url}
+                        src={proxiedImageUrl(anime.cover_url)}
                         alt={anime.folder_name}
                         className="h-full w-full object-cover transition-transform group-hover:scale-105"
                       />

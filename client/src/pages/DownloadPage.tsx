@@ -310,10 +310,18 @@ export default function DownloadPage({
           onChange={(e) => {
             const next = e.target.value as "dmhy" | "animegarden" | "nyaa";
             setSource(next);
+            // 换数据源等于换了一批完全不同的结果,之前基于旧结果选的筛选条件
+            // 大概率对不上新数据源(比如字幕组名不一样),干脆一起重置
+            setFansubFilter("全部");
+            setQuality("不限");
+            setSubtitle("不限");
+            setFormat("不限");
+            setReleaseType("不限");
             setResults([]);
             setSelected(new Set());
             setPreviews([]);
             setResultMessage(null);
+            handleSearch(undefined, next);
           }}
           className={controlClass}
         >
@@ -431,6 +439,11 @@ export default function DownloadPage({
             checked={subscribe}
             onChange={setSubscribe}
           />
+          {subscribe && fansubFilter === "全部" && (
+            <div className="rounded border border-vermillion/40 bg-ink p-3 font-mono text-[11px] text-vermillion">
+              还没选择字幕组——RSS规则会匹配所有字幕组发布的种子,同一集可能被多个字幕组重复下载,建议先在上面选定一个字幕组再开启订阅
+            </div>
+          )}
           <ToggleRow
             label="自动改名"
             description="下载后自动整理为刮削友好的文件夹结构(优先用Bangumi官方译名)"

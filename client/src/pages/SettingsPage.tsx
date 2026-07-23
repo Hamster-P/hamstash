@@ -5,7 +5,7 @@ import {
   useState,
   type ChangeEvent,
 } from "react";
-import { CheckCircle2, XCircle, Loader2, Moon, Sun } from "lucide-react";
+import { AlertTriangle, CheckCircle2, XCircle, Loader2, Moon, Sun } from "lucide-react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { writeFile } from "@tauri-apps/plugin-fs";
 import { isTauri } from "@tauri-apps/api/core";
@@ -27,6 +27,19 @@ function looksLikePotPlayerExe(fullPath: string): boolean {
   return /potplayer/i.test(basename) && /\.exe$/i.test(basename);
 }
 
+// 从FastAPI的错误响应里提取人话版错误信息(比如proxy_url格式校验失败时),
+// 不然只会显示"保存失败,请检查后端连接"这种文不对题的提示,看不出是哪项设置填错了。
+function extractValidationMessage(body: unknown): string | null {
+  if (!body || typeof body !== "object") return null;
+  const detail = (body as { detail?: unknown }).detail;
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail) && detail.length > 0) {
+    const first = detail[0] as { msg?: unknown } | undefined;
+    if (first && typeof first.msg === "string") return first.msg;
+  }
+  return null;
+}
+
 interface SettingsPageProps {
   onReconfigureQbittorrent?: () => void;
 }
@@ -43,6 +56,7 @@ interface SavedSnapshot {
   playerMode: "builtin" | "external";
   pollMinutes: number;
   defaultSource: "dmhy" | "animegarden" | "nyaa";
+  proxyUrl: string;
 }
 
 const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function SettingsPage(
@@ -55,6 +69,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
   const [potplayerPath, setPotplayerPath] = useState("");
   const [playerMode, setPlayerMode] = useState<"builtin" | "external">("external");
   const [defaultSource, setDefaultSource] = useState<"dmhy" | "animegarden" | "nyaa">("dmhy");
+  const [proxyUrl, setProxyUrl] = useState("");
   const [pollMinutes, setPollMinutes] = useState(5);
   const [saving, setSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
@@ -84,6 +99,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
           )
             ? data.default_source
             : "dmhy",
+          proxyUrl: data.proxy_url ?? "",
         };
         setDownloadRoot(next.downloadRoot);
         setLibraryRoot(next.libraryRoot);
@@ -91,6 +107,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
         setPlayerMode(next.playerMode);
         setPollMinutes(next.pollMinutes);
         setDefaultSource(next.defaultSource);
+        setProxyUrl(next.proxyUrl);
         setSavedSnapshot(next);
       })
       .catch(() => {});
@@ -105,7 +122,8 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
       potplayerPath !== savedSnapshot.potplayerPath ||
       playerMode !== savedSnapshot.playerMode ||
       pollMinutes !== savedSnapshot.pollMinutes ||
-      defaultSource !== savedSnapshot.defaultSource);
+      defaultSource !== savedSnapshot.defaultSource ||
+      proxyUrl !== savedSnapshot.proxyUrl);
 
   const checkQbStatus = () => {
     setQbStatus("checking");
@@ -150,9 +168,13 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
           player_mode: playerMode,
           rename_poll_interval_seconds: clampPollMinutes(pollMinutes) * 60,
           default_source: defaultSource,
+          proxy_url: proxyUrl.trim(),
         }),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        const errorBody = await res.json().catch(() => null);
+        throw new Error(extractValidationMessage(errorBody) ?? `HTTP ${res.status}`);
+      }
       const data = await res.json();
       setSaveMessage(
         data.restart_required
@@ -166,9 +188,10 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
         playerMode,
         pollMinutes,
         defaultSource,
+        proxyUrl: proxyUrl.trim(),
       });
     } catch (err) {
-      setSaveMessage("保存失败,请检查后端连接");
+      setSaveMessage(err instanceof Error ? err.message : "保存失败,请检查后端连接");
       console.error(err);
     } finally {
       setSaving(false);
@@ -278,26 +301,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
         </div>
       </div>
 
-      {/* 新增：默认下载数据源 */}
-      <div className="mb-6 rounded-md border border-border bg-surface p-4">
-        <div className="mb-1 text-sm">默认下载数据源</div>
-        <p className="mb-3 font-mono text-[11px] text-muted">
-          打开下载页时默认选中的数据源,之后仍然可以在下载页临时切换。
-        </p>
-        <select
-          value={defaultSource}
-          onChange={(e) =>
-            setDefaultSource(e.target.value as "dmhy" | "animegarden" | "nyaa")
-          }
-          className="rounded border border-border bg-ink px-2 py-1.5 font-mono text-xs text-paper outline-none focus:border-vermillion"
-        >
-          <option value="dmhy">dmhy(全量历史)</option>
-          <option value="animegarden">AnimeGarden(近期资源)</option>
-          <option value="nyaa">nyaa.si(英语圈综合站)</option>
-        </select>
-      </div>
-
-      {/* PotPlayer 路径输入框:只有外置模式才需要 */}
+      {/* PotPlayer 路径输入框:只有外置模式才需要,紧跟在播放方式后面,两者关联性强 */}
       {playerMode === "external" && (
         <div className="mb-6 rounded-md border border-border bg-surface p-4">
           <div className="mb-1 text-sm">本地播放器路径 (PotPlayer)</div>
@@ -324,6 +328,45 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
           )}
         </div>
       )}
+
+      {/* 新增：默认下载数据源 */}
+      <div className="mb-6 rounded-md border border-border bg-surface p-4">
+        <div className="mb-1 text-sm">默认下载数据源</div>
+        <p className="mb-3 font-mono text-[11px] text-muted">
+          打开下载页时默认选中的数据源,之后仍然可以在下载页临时切换。
+        </p>
+        <select
+          value={defaultSource}
+          onChange={(e) =>
+            setDefaultSource(e.target.value as "dmhy" | "animegarden" | "nyaa")
+          }
+          className="rounded border border-border bg-ink px-2 py-1.5 font-mono text-xs text-paper outline-none focus:border-vermillion"
+        >
+          <option value="dmhy">dmhy(全量历史)</option>
+          <option value="animegarden">AnimeGarden(近期资源)</option>
+          <option value="nyaa">nyaa.si(英语圈综合站)</option>
+        </select>
+      </div>
+
+      {/* 新增：访问外部动漫资源站(Bangumi/dmhy/AnimeGarden/nyaa)用的代理 */}
+      <div className="mb-6 rounded-md border border-border bg-surface p-4">
+        <div className="mb-1 text-sm">网络代理</div>
+        <p className="mb-3 font-mono text-[11px] text-muted">
+          只用于访问Bangumi/dmhy/AnimeGarden/nyaa等外部站点(以及详情页内嵌的Bangumi页面),
+          不影响本地qBittorrent连接。填 HTTP 代理地址,例如
+          http://127.0.0.1:8000(Clash等工具的本地端口)。
+          留空时会自动沿用系统代理(Windows"设置-网络和Internet-代理"里配的那个);
+          按进程分流(比如Proxifier)或TUN/增强模式探测不到,前者需要在这里手动填,
+          后者本来就是透明转发、留空直连即可。
+        </p>
+        <input
+          value={proxyUrl}
+          onChange={(e) => setProxyUrl(e.target.value)}
+          placeholder="http://127.0.0.1:8000"
+          className="w-full rounded border border-border bg-ink px-3 py-2 text-sm text-paper outline-none placeholder:text-muted/60 focus:border-vermillion focus:ring-1 focus:ring-vermillion"
+        />
+        <ProxyTestSection proxyUrl={proxyUrl} />
+      </div>
 
       <div className="mb-6 rounded-md border border-border bg-surface p-4">
         <div className="mb-1 text-sm">整理任务轮询间隔</div>
@@ -405,6 +448,156 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
 });
 
 export default SettingsPage;
+
+interface ProxyCheck {
+  name: string;
+  url: string;
+  note: string;
+  level: "ok" | "warn" | "fail";
+  status: number | null;
+  elapsed_ms: number;
+  detail: string;
+}
+
+interface ProxyTestResult {
+  proxy_in_use: string;
+  proxy_source: "manual" | "system" | "none";
+  system_proxy_detected: string;
+  checks: ProxyCheck[];
+}
+
+const PROXY_SOURCE_LABEL: Record<ProxyTestResult["proxy_source"], string> = {
+  manual: "设置页手填",
+  system: "自动探测到的系统代理",
+  none: "直连(没有手填,也没探测到系统代理)",
+};
+
+// 把结果拍平成纯文本,方便一键复制整段贴给别人看——排查网络问题基本都要贴日志,
+// 让用户对着界面一条条手抄不现实。
+function formatProxyReport(result: ProxyTestResult): string {
+  const lines = [
+    `[代理诊断] ${new Date().toLocaleString()}`,
+    `实际使用: ${result.proxy_in_use || "(直连)"}  来源: ${PROXY_SOURCE_LABEL[result.proxy_source]}`,
+    `探测到的系统代理: ${result.system_proxy_detected || "(无)"}`,
+    "",
+  ];
+  for (const c of result.checks) {
+    const mark = c.level === "ok" ? "OK  " : c.level === "warn" ? "WARN" : "FAIL";
+    lines.push(`${mark} ${c.name} (${c.elapsed_ms}ms) ${c.detail}`);
+    lines.push(`     ${c.url}`);
+  }
+  return lines.join("\n");
+}
+
+function ProxyTestSection({ proxyUrl }: { proxyUrl: string }) {
+  const [testing, setTesting] = useState(false);
+  const [result, setResult] = useState<ProxyTestResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  const handleTest = async () => {
+    setTesting(true);
+    setError(null);
+    setResult(null);
+    setCopied(false);
+    try {
+      const res = await fetch(`${API_BASE}/settings/proxy-test`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ proxy_url: proxyUrl.trim() }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        throw new Error(extractValidationMessage(body) ?? `HTTP ${res.status}`);
+      }
+      setResult(body as ProxyTestResult);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "测试失败,请检查后端连接");
+      console.error(err);
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const handleCopy = async () => {
+    if (!result) return;
+    await navigator.clipboard.writeText(formatProxyReport(result));
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div className="mt-3">
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          onClick={handleTest}
+          disabled={testing}
+          className="flex items-center gap-1.5 rounded border border-border px-3 py-1.5 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion disabled:opacity-40"
+        >
+          {testing && <Loader2 size={13} className="animate-spin" />}
+          {testing ? "测试中..." : "测试代理"}
+        </button>
+        <span className="font-mono text-[11px] text-muted">
+          测的是输入框里当前的值,不用先保存
+        </span>
+        {result && (
+          <button
+            type="button"
+            onClick={handleCopy}
+            className="ml-auto font-mono text-[11px] text-muted underline hover:text-paper"
+          >
+            {copied ? "已复制" : "复制日志"}
+          </button>
+        )}
+      </div>
+
+      {error && (
+        <p className="mt-2 font-mono text-[11px] text-vermillion">{error}</p>
+      )}
+
+      {result && (
+        <div className="mt-3 rounded border border-border bg-ink p-3">
+          <div className="mb-2 border-b border-border pb-2 font-mono text-[11px] text-muted">
+            <div>
+              实际使用:{" "}
+              <span className="text-paper">{result.proxy_in_use || "(直连)"}</span>
+              {"  ·  "}
+              {PROXY_SOURCE_LABEL[result.proxy_source]}
+            </div>
+            <div>
+              探测到的系统代理:{" "}
+              <span className="text-paper">
+                {result.system_proxy_detected || "(无)"}
+              </span>
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            {result.checks.map((c) => (
+              <div key={c.url} className="font-mono text-[11px] leading-snug">
+                <div className="flex items-baseline gap-2">
+                  {c.level === "ok" && <CheckCircle2 size={12} className="shrink-0 translate-y-0.5 text-gold" />}
+                  {c.level === "warn" && <AlertTriangle size={12} className="shrink-0 translate-y-0.5 text-gold" />}
+                  {c.level === "fail" && <XCircle size={12} className="shrink-0 translate-y-0.5 text-vermillion" />}
+                  <span className="text-paper">{c.name}</span>
+                  <span className="text-muted">{c.elapsed_ms}ms</span>
+                  <span
+                    className={`min-w-0 break-all ${
+                      c.level === "fail" ? "text-vermillion" : "text-muted"
+                    }`}
+                  >
+                    {c.detail}
+                  </span>
+                </div>
+                <div className="pl-[18px] text-muted/70">{c.note}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function AppearanceSection() {
   const { theme, setTheme } = useTheme();

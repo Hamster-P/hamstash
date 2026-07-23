@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { proxiedImageUrl } from "../utils/proxiedImage";
 
 interface ScheduleItem {
   bgm_id: number | null;
@@ -190,7 +191,7 @@ function AnimeCard({
       <div className="aspect-[2/3] w-full shrink-0 overflow-hidden rounded bg-ink">
         {anime.cover_url && (
           <img
-            src={anime.cover_url}
+            src={proxiedImageUrl(anime.cover_url)}
             alt=""
             loading="lazy"
             onLoad={() => setLoaded(true)}

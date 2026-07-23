@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { Search as SearchIcon } from "lucide-react";
+import { proxiedImageUrl } from "../utils/proxiedImage";
 
 interface BangumiSubject {
   id: number;
@@ -165,7 +166,12 @@ export default function SearchPage({ onSelectAnime, manualMatchFolder }: SearchP
             className="flex cursor-pointer items-center gap-4 rounded border border-border p-3 hover:border-vermillion transition-colors"
           >
             <div className="h-12 w-16 shrink-0 rounded bg-muted overflow-hidden">
-              {item.images?.common && <img src={item.images.common} className="h-full w-full object-cover" />}
+              {item.images?.common && (
+                <img
+                  src={proxiedImageUrl(item.images.common)}
+                  className="h-full w-full object-cover"
+                />
+              )}
             </div>
             <div className="flex-1 min-w-0">
               <div className="truncate text-sm">{item.name_cn || item.name}</div>

@@ -4,6 +4,8 @@ from urllib.parse import urlencode, quote
 
 import httpx
 
+from services.common import get_proxy_url
+
 ANIMEGARDEN_URL = "https://api.animes.garden/resources"
 ANIMEGARDEN_FEED_URL = "https://api.animes.garden/feed.xml"
 DMHY_RSS_URL = "https://dmhy.org/topics/rss/rss.xml"
@@ -17,7 +19,7 @@ HEADERS = {"User-Agent": "hamstash/0.1 (personal project)"}
 async def _search_animegarden(keyword: str, page_size: int = 50):
     """主力源:AnimeGarden,用search参数做服务端关键词过滤,数据结构好
     (自带字幕组名和Bangumi编号)。"""
-    async with httpx.AsyncClient(headers=HEADERS, timeout=15.0) as client:
+    async with httpx.AsyncClient(headers=HEADERS, timeout=15.0, proxy=get_proxy_url(), follow_redirects=True) as client:
         resp = await client.get(
             ANIMEGARDEN_URL,
             params={"page": 1, "pageSize": page_size, "search": keyword},
@@ -47,7 +49,7 @@ async def _search_animegarden(keyword: str, page_size: int = 50):
 async def _search_dmhy_fallback(keyword: str):
     """备用源:AnimeGarden连不上时才用dmhy直连,字幕组名靠标题粗略提取,
     准确度不如AnimeGarden,也没有Bangumi编号。"""
-    async with httpx.AsyncClient(headers=HEADERS, timeout=15.0) as client:
+    async with httpx.AsyncClient(headers=HEADERS, timeout=15.0, proxy=get_proxy_url(), follow_redirects=True) as client:
         resp = await client.get(DMHY_RSS_URL, params={"keyword": keyword})
         resp.raise_for_status()
         xml_text = resp.text
@@ -105,7 +107,7 @@ async def _search_nyaa(keyword: str):
     注意:nyaa上绝大多数资源用英文/罗马音标题,拿中文关键词搜大概率没有结果,
     这是站点本身的特性,不是这里要修的问题。
     """
-    async with httpx.AsyncClient(headers=HEADERS, timeout=15.0) as client:
+    async with httpx.AsyncClient(headers=HEADERS, timeout=15.0, proxy=get_proxy_url(), follow_redirects=True) as client:
         resp = await client.get(
             NYAA_URL,
             params={"page": "rss", "c": NYAA_ANIME_CATEGORY, "f": 0, "q": keyword},
@@ -150,7 +152,7 @@ async def _search_animegarden_by_subject(bgm_id: int, page_size: int = 50):
     不同字幕组标题写法差异(繁简、有无虚词、罗马音)在这里天然不是问题,
     因为AnimeGarden服务器端已经把这些种子都关联到了同一个bgm_id。
     """
-    async with httpx.AsyncClient(headers=HEADERS, timeout=15.0) as client:
+    async with httpx.AsyncClient(headers=HEADERS, timeout=15.0, proxy=get_proxy_url(), follow_redirects=True) as client:
         resp = await client.get(
             ANIMEGARDEN_URL,
             params={"page": 1, "pageSize": page_size, "subject": bgm_id},

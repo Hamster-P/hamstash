@@ -30,11 +30,27 @@
       "Bash(grep -iE \"cookie|client/src-tauri/2$\")",
       "Bash(echo \"\\(exit code: $?\\)\")",
       "Bash(git remote *)",
-      "Bash(python -c \"import json; json.load\\(open\\('client/src-tauri/tauri.conf.json', encoding='utf-8'\\)\\); print\\('JSON_OK'\\)\")"
+      "Bash(python -c \"import json; json.load\\(open\\('client/src-tauri/tauri.conf.json', encoding='utf-8'\\)\\); print\\('JSON_OK'\\)\")",
+      "Bash(cd d:/Projects/anime-hub/server && sed -i 's/async with httpx.AsyncClient\\(\\) as client:/async with httpx.AsyncClient\\(proxy=get_proxy_url\\(\\)\\) as client:/g' bangumi_client.py && grep -n \"httpx.AsyncClient\" bangumi_client.py)",
+      "Bash(cd d:/Projects/anime-hub/server && sed -i 's/async with httpx.AsyncClient\\(headers=HEADERS, timeout=15.0\\) as client:/async with httpx.AsyncClient\\(headers=HEADERS, timeout=15.0, proxy=get_proxy_url\\(\\)\\) as client:/g' resource_client.py && grep -n \"httpx.AsyncClient\" resource_client.py)",
+      "Bash(npx vite *)",
+      "Bash(python -m py_compile config_store.py schemas.py routers/settings.py services/common.py bangumi_client.py resource_client.py)",
+      "WebFetch(domain:api.bgm.tv)",
+      "WebFetch(domain:bgm.tv)",
+      "Bash(python -m py_compile routers/media.py main.py)",
+      "WebFetch(domain:docs.rs)",
+      "Bash(python -m py_compile routers/media.py)",
+      "Bash(python -m py_compile services/common.py main.py routers/settings.py routers/media.py)",
+      "Bash(python -c \"import main; print\\('IMPORT OK'\\)\")",
+      "PowerShell(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $_.LocalPort -in 7890,7891,7897,1080,10808,10809,8000,8080,8082,2080,7078 } | Select-Object LocalAddress,LocalPort,OwningProcess | Sort-Object LocalPort -Unique | Format-Table -AutoSize)",
+      "Read(//c/Users/godpan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-2.11.5/src/**)",
+      "Read(//c/Users/godpan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-2.11.5/src/webview/**)",
+      "Bash(echo \"tsc exit: $?\")"
     ],
     "additionalDirectories": [
       "d:\\Projects\\anime-hub\\.claude",
-      "d:\\Projects\\anime-hub\\server"
+      "d:\\Projects\\anime-hub\\server",
+      "D:\\Projects\\anime-hub\\client"
     ]
   }
 }

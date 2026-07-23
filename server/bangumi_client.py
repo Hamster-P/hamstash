@@ -2,6 +2,8 @@ import httpx
 import asyncio
 import re
 
+from services.common import get_proxy_url
+
 BASE_URL = "https://api.bgm.tv"
 HEADERS = {
     "User-Agent": "hamstash/0.1 (personal project)",
@@ -50,7 +52,7 @@ async def search_anime(keyword: str, limit: int = 100, year: int | None = None, 
     # 控制返回上限数量，这里支持传入 100
     params = {"limit": limit}
 
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(proxy=get_proxy_url(), follow_redirects=True) as client:
         response = await client.post(
             url, json=payload, params=params, headers=HEADERS, timeout=10.0
         )
@@ -81,7 +83,7 @@ async def search_anime(keyword: str, limit: int = 100, year: int | None = None, 
 async def get_subject_detail(bgm_id: int):
     url = f"{BASE_URL}/v0/subjects/{bgm_id}"
 
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(proxy=get_proxy_url(), follow_redirects=True) as client:
         response = await client.get(url, headers=HEADERS, timeout=10.0)
         response.raise_for_status()
         return response.json()
@@ -105,7 +107,7 @@ async def get_subject_details_batch(bgm_ids: list[int]):
 async def get_calendar():
     """获取 Bangumi 每日放送 API"""
     url = f"{BASE_URL}/calendar"
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(proxy=get_proxy_url(), follow_redirects=True) as client:
         response = await client.get(url, headers=HEADERS, timeout=15.0)
         response.raise_for_status()
         return response.json()
@@ -116,7 +118,7 @@ async def get_subject_relations(bgm_id: int) -> list[dict]:
     对应 GET /v0/subjects/{subject_id}/subjects
     """
     url = f"{BASE_URL}/v0/subjects/{bgm_id}/subjects"
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(proxy=get_proxy_url(), follow_redirects=True) as client:
         response = await client.get(url, headers=HEADERS, timeout=10.0)
         response.raise_for_status()
         return response.json()
