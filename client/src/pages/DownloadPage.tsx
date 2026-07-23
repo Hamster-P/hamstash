@@ -403,11 +403,11 @@ export default function DownloadPage({
               全选({selected.size}/{filteredResults.length})
             </span>
           </div>
-          <div className="flex flex-col divide-y divide-border px-3">
+          <div className="flex flex-col divide-y divide-border">
             {filteredResults.map((item, index) => (
               <label
                 key={index}
-                className="flex cursor-pointer items-center gap-3 py-2.5 hover:bg-surface"
+                className="flex cursor-pointer items-center gap-3 px-3 py-2.5 hover:bg-surface"
               >
                 <input
                   type="checkbox"
