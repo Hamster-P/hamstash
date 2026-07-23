@@ -17,7 +17,6 @@ interface SearchPageProps {
 }
 
 const API_BASE = "http://127.0.0.1:8080";
-const SEARCH_LIMIT = 100;
 
 const YEAR_OPTIONS = ["不限", ...Array.from({ length: 8 }, (_, i) => String(2026 - i))];
 const QUARTER_OPTIONS = [
@@ -82,11 +81,16 @@ export default function SearchPage({ onSelectAnime, manualMatchFolder }: SearchP
 
       const newResults = data?.data ?? [];
       const rawCount = data?.raw_count ?? newResults.length;
+      const nextOffset = currentOffset + rawCount;
+      // Bangumi 单次请求实际固定只返回一小批，不管传的 limit 是多少；
+      // 真正的"还有没有下一页"要用它自己报的 bangumi_total 和已经翻到的位置比,
+      // 不能拿 rawCount 和我们请求的 limit 比(rawCount 基本永远够不到 limit)。
+      const bangumiTotal = data?.bangumi_total ?? nextOffset;
       const combined = append ? [...results, ...newResults] : newResults;
 
       setResults(combined);
-      setOffset(currentOffset + rawCount);
-      setHasMore(rawCount >= SEARCH_LIMIT);
+      setOffset(nextOffset);
+      setHasMore(rawCount > 0 && nextOffset < bangumiTotal);
       sessionStorage.setItem("last_search_results", JSON.stringify(combined));
     } catch (err) {
       console.error("搜索失败", err);

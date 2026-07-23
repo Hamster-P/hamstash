@@ -71,10 +71,15 @@ async def search_anime(keyword: str, limit: int = 100, year: int | None = None, 
         response.raise_for_status()
 
         raw_data = response.json()  # 拿到 Bangumi 返回的带杂质的原始数据
-        
+
         # ------------------ 核心改造：后端手动清洗（模拟短语/精确匹配） ------------------
         if "data" in raw_data and isinstance(raw_data["data"], list):
             raw_list = raw_data["data"]
+            # Bangumi 不管传多大的 limit，单次请求实际固定只返回20条左右，
+            # 真正的匹配总数在它自己的 total 字段里（这里先存下来，
+            # 下面会用我们过滤后的数量覆盖掉 raw_data["total"]，
+            # 所以要在覆盖前保留一份，供前端判断是否还有下一页）。
+            bangumi_total = raw_data.get("total", len(raw_list))
             keyword_norm = _normalize_for_match(keyword)
 
             if keyword_norm:
@@ -93,7 +98,8 @@ async def search_anime(keyword: str, limit: int = 100, year: int | None = None, 
 
             raw_data["data"] = filtered_list
             raw_data["total"] = len(filtered_list)
-            raw_data["raw_count"] = len(raw_list)  # 供前端判断是否还有下一页
+            raw_data["raw_count"] = len(raw_list)  # 这一页Bangumi实际返回的原始条数
+            raw_data["bangumi_total"] = bangumi_total  # Bangumi报告的真实匹配总数，供前端翻页判断
         # -------------------------------------------------------------------------
         return raw_data
     
