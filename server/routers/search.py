@@ -11,16 +11,18 @@ router = APIRouter(tags=["搜索"])
 
 @router.get("/bangumi/search")
 async def search_bangumi(
-    keyword: str = "", 
-    year: int | None = None, 
-    month: int | None = None
+    keyword: str = "",
+    year: int | None = None,
+    month: int | None = None,
+    offset: int = 0,
 ):
     # 默认将 limit 顶满到 100 条，并传入筛选条件
     result = await bangumi_client.search_anime(
-        keyword=keyword, 
-        limit=100, 
-        year=year, 
-        month=month
+        keyword=keyword,
+        limit=100,
+        year=year,
+        month=month,
+        offset=offset,
     )
     return result
 

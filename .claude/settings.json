@@ -45,7 +45,13 @@
       "PowerShell(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $_.LocalPort -in 7890,7891,7897,1080,10808,10809,8000,8080,8082,2080,7078 } | Select-Object LocalAddress,LocalPort,OwningProcess | Sort-Object LocalPort -Unique | Format-Table -AutoSize)",
       "Read(//c/Users/godpan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-2.11.5/src/**)",
       "Read(//c/Users/godpan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-2.11.5/src/webview/**)",
-      "Bash(echo \"tsc exit: $?\")"
+      "Bash(echo \"tsc exit: $?\")",
+      "Bash(python -X utf8 \"C:/Users/godpan/AppData/Local/Temp/claude/d--Projects-anime-hub/ec511762-e8a3-4e8f-8ee4-7787a1b0aa4b/scratchpad/verify_real.py\")",
+      "Bash(python -X utf8 \"C:/Users/godpan/AppData/Local/Temp/claude/d--Projects-anime-hub/ec511762-e8a3-4e8f-8ee4-7787a1b0aa4b/scratchpad/verify_filename.py\")",
+      "Bash(python -X utf8 -)",
+      "Bash(python -X utf8 \"C:/Users/godpan/AppData/Local/Temp/claude/d--Projects-anime-hub/ec511762-e8a3-4e8f-8ee4-7787a1b0aa4b/scratchpad/verify_eligible.py\")",
+      "Bash(python -X utf8 \"C:/Users/godpan/AppData/Local/Temp/claude/d--Projects-anime-hub/ec511762-e8a3-4e8f-8ee4-7787a1b0aa4b/scratchpad/verify_cache.py\")",
+      "Bash(python -m py_compile server/bangumi_client.py server/routers/search.py)"
     ],
     "additionalDirectories": [
       "d:\\Projects\\anime-hub\\.claude",

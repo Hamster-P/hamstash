@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 import config_store
 import rename_engine
 from database import SessionLocal
-from models import AnimeFolder, AppSetting, RenamedFile
+from models import AnimeFamilyCache, AnimeFolder, AppSetting, RenamedFile
 
 RSS_FOLDER = "anime-hub"  # 我们在qBittorrent的RSS订阅目录树里统一挂在这个文件夹下
 ORGANIZE_TAG = "hub-organized"  # 打上这个标签代表后台整理任务已经处理过这个种子
@@ -220,6 +220,58 @@ async def resolve_series_identity(bgm_id: int | None, fallback_title: str):
         main_id, folder_title = bgm_id, season_title
 
     return folder_title, main_id, season_title
+
+
+async def resolve_tv_season_ordinal_cached(
+    db: Session, season_bgm_id: int | None, main_bgm_id: int | None
+) -> str | None:
+    """
+    bangumi_client.resolve_family_season_map()的持久化缓存包装:按bgm_id查
+    AnimeFamilyCache表,命中直接返回season_ordinal,不发任何网络请求;没命中
+    (这个bgm_id从没被算过——可能是全新番,也可能是老系列新出的剧场版/新一季)
+    才触发一次完整的家族重新计算,并把整个家族的全部成员一次性写回缓存表
+    (不止写被问到的这一个,顺带把家族里其他成员的结果也刷新一遍,自然覆盖
+    "系列新增了一部作品"这种场景,不需要额外的过期/失效机制)。
+
+    缓存没有TTL——这类关联家族的变动率很低(一部番一年也就新增1~2个成员),
+    也没有证据表明Bangumi已收录条目的platform/集数/关联关系会事后变化,
+    命中缓存直接用是安全的;真遇到需要强制刷新的场景,手动删掉对应行即可。
+    """
+    if not season_bgm_id or not main_bgm_id:
+        return None
+
+    cached = db.query(AnimeFamilyCache).filter(AnimeFamilyCache.bgm_id == season_bgm_id).first()
+    if cached:
+        return cached.season_ordinal
+
+    import bangumi_client  # 延迟导入,避免跟bangumi_client反过来import本模块形成循环import
+
+    family_map = await bangumi_client.resolve_family_season_map(main_bgm_id)
+    for bid, info in family_map.items():
+        # folder_bucket只是给人查表用的展示字段,用跟preview_rename_file()同一个
+        # resolve_folder_bucket()算,保证不会出现"缓存表说进A桶、实际文件却进了B桶"的错位。
+        media_type = rename_engine.classify_media_type("", info.get("platform"))
+        folder_bucket = rename_engine.resolve_folder_bucket(
+            media_type, main_bgm_id, info.get("season_ordinal")
+        )
+
+        row = db.query(AnimeFamilyCache).filter(AnimeFamilyCache.bgm_id == bid).first()
+        if row is None:
+            row = AnimeFamilyCache(bgm_id=bid)
+            db.add(row)
+        row.source_bgm_id = main_bgm_id
+        row.name = info.get("name") or ""
+        row.date = info.get("date")
+        row.platform = info.get("platform")
+        row.eps = info.get("eps")
+        row.total_episodes = info.get("total_episodes")
+        row.season_ordinal = info.get("season_ordinal")
+        row.folder_bucket = folder_bucket
+    db.commit()
+
+    result = family_map.get(season_bgm_id)
+    return result["season_ordinal"] if result else None
+
 
 def sanitize_path_segment(text: str) -> str:
     """去掉qBittorrent RSS路径分隔符\\和/以及首尾空白,避免层级错乱。"""

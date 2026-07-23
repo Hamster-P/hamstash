@@ -125,4 +125,31 @@ class PlaybackRecord(Base):
     id = Column(Integer, primary_key=True, index=True)
     folder_name = Column(String, index=True)  # 动漫文件夹名
     filename = Column(String, index=True)     # 视频文件名，如 S04E01.mkv
-    watched_at = Column(DateTime, default=datetime.now)  # 观看时间   
+    watched_at = Column(DateTime, default=datetime.now)  # 观看时间
+
+
+class AnimeFamilyCache(Base):
+    """
+    bangumi_client.resolve_family_season_map()算出来的"某个Bangumi关联家族里,
+    每个成员该归到第几季/哪个顶层桶"结果的持久化缓存——这个计算要BFS遍历整个
+    关联图谱+批量查详情,柯南这种长篇实测60+个节点、十几秒,但家族结构变动率
+    很低(一部番一年也就新增1~2个成员),命中缓存直接读数据库,不用每次整理
+    都重新摸一遍Bangumi API。
+
+    按bgm_id(单个具体条目)查询,不是按source_bgm_id(家族根)查询——命中判断是
+    "这个具体条目有没有被算过",没算过(可能是全新番,也可能是老系列新出的
+    剧场版/新一季)才触发一次全量重算,重算时把整个家族一起写回,不是只写这一条。
+    """
+    __tablename__ = "anime_family_cache"
+
+    id = Column(Integer, primary_key=True, index=True)
+    source_bgm_id = Column(Integer, nullable=False, index=True)  # 家族根,即main_bgm_id
+    bgm_id = Column(Integer, unique=True, nullable=False, index=True)  # 家族里的具体某个条目
+    name = Column(String, nullable=False)
+    date = Column(String, nullable=True)  # 首播日期,Bangumi原始字符串,未定档的可能是空
+    platform = Column(String, nullable=True)
+    eps = Column(Integer, nullable=True)  # Bangumi原始eps字段,连载中的番这里通常是0
+    total_episodes = Column(Integer, nullable=True)  # 集数判断实际用这个(为0则退回eps)
+    season_ordinal = Column(String, nullable=True)  # "01"/"02"/...,None代表不是真季候选
+    folder_bucket = Column(String, nullable=True)  # 顶层桶,仅供人工查表时直接可读,不参与改名逻辑判断
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())

@@ -8,15 +8,55 @@ MOVIE_MARKERS = ["剧场版", "劇場版", "movie", "gekijouban"]
 OVA_MARKERS = ["ova", "oad", "特典", "特别篇", "番外篇", "sp", "总集篇", "回顾篇", ".5", "激活解说"]
 EXTRA_MARKERS = ["op", "ed", "ncop", "nced", "opening", "ending", "pv", "预告"]
 
-def classify_media_type(torrent_title: str) -> str:
+def classify_media_type(torrent_title: str, platform: str | None = None) -> str:
+    """
+    platform是Bangumi官方给这个条目标注的类型(TV/OVA/剧场版/WEB/其他),拿得到时
+    优先信它——种子标题里的关键词是字幕组自己写的,不一定靠谱(比如短篇正片
+    不会主动在标题里写"OVA"/"剧场版"这类词,靠关键词猜会漏判)。拿不到platform
+    (比如没匹配上bgm_id的老番剧)时,退回现在的关键词猜测兜底。
+    """
     lowered = torrent_title.lower()
     if any(marker in lowered for marker in EXTRA_MARKERS):
         return "extra"
-    if any(marker in lowered for marker in MOVIE_MARKERS):
+    if platform == "剧场版" or any(marker in lowered for marker in MOVIE_MARKERS):
         return "movie"
-    if any(marker in lowered for marker in OVA_MARKERS):
+    if platform == "OVA" or any(marker in lowered for marker in OVA_MARKERS):
         return "ova"
     return "tv"
+
+
+def resolve_folder_bucket(media_type: str, bgm_id: int | None, season_ordinal: str | None) -> str:
+    """
+    根据media_type(classify_media_type的结果)+season_ordinal+bgm_id,算出这一部
+    内容该落到哪个顶层桶:剧场版/OVA/Season 00/Season {ordinal}。preview_rename_file()
+    的改名路径、以及services/common.py家族缓存表写入时的"落地目录"展示字段,
+    都调用这一个函数,保证两处判断永远是同一套逻辑,不会出现"缓存表说进A桶、
+    实际文件却进了B桶"的错位。
+
+    不处理"extra"(OP/ED/PV这类)——那是种子内单个文件级别的判断,不是一个
+    Bangumi条目本身该归哪里的问题,调用方自己处理,不经过这个函数。
+
+    bgm_id为None(完全没匹配上Bangumi,没有任何结构信息)时的返回值只是个占位——
+    preview_rename_file在这种情况下会走独立的文本正则兜底路径,不使用这个返回值。
+    """
+    if media_type == "movie":
+        return "剧场版"
+    if media_type == "ova":
+        return "OVA"
+    if media_type == "tv" and bgm_id is not None and season_ordinal is None:
+        return "Season 00"
+    if season_ordinal is not None:
+        return f"Season {season_ordinal}"
+    return "Season 01"
+
+
+_ILLEGAL_FILENAME_CHARS = re.compile(r'[\\/:*?"<>|]+')
+
+
+def _sanitize_filename_segment(text: str) -> str:
+    """去掉Windows文件名非法字符。不能直接复用services/common.py的
+    sanitize_path_segment——那边反过来import了这个模块,会形成循环import。"""
+    return _ILLEGAL_FILENAME_CHARS.sub("_", text).strip() or "未命名"
 
 def build_anime_folder_name(anime_title: str, bgm_id: int | None) -> str:
     """
@@ -177,6 +217,7 @@ ENABLE_EPISODE_OFFSET = False
 def preview_rename_file(
     anime_title: str, file_name: str, torrent_title: str, library_root: str,
     bgm_id: int | None = None, season_hint: str | None = None, episode_offset: int = 0,
+    season_ordinal: str | None = None, platform: str | None = None,
 ):
     """
     按种子内部单个文件计算目标路径,是合集场景的核心入口。
@@ -184,6 +225,11 @@ def preview_rename_file(
                合集场景下这层信息比种子整体标题更可靠。
     torrent_title: 种子整体标题,用于兜底提供季度/字幕组/分辨率这类"整个种子共享"的信息
                    (很多合集内部文件名只是"01.mkv"这种,季度/字幕组信息只在种子标题里出现一次)。
+    season_ordinal: 调用方(organize.py)用bangumi_client.resolve_tv_season_ordinal()
+                   算出来的"这是系列里第几个真正的TV季"("01"/"02"/...),不看种子标题文本,
+                   只信Bangumi关联图谱本身——有值时直接采用,不再走下面的文本正则猜测。
+    platform: 这个bgm_id在Bangumi的官方类型(TV/OVA/剧场版/...),传给classify_media_type
+                   做权威分流,比种子标题关键词猜测可靠。
 
     返回值里的relative_path是"相对anime_root"的路径,配合qBittorrent的API约束:
     一个种子的setLocation只能设一个根位置,Season/Other子目录分类要靠renameFile的
@@ -192,7 +238,7 @@ def preview_rename_file(
     """
     parsed = anitopy.parse(file_name) or {}
     torrent_parsed = anitopy.parse(torrent_title) or {}
-    media_type = classify_media_type(f"{torrent_title} {file_name}")
+    media_type = classify_media_type(f"{torrent_title} {file_name}", platform)
     file_ext = file_name.rsplit(".", 1)[-1] if "." in file_name else "mkv"
 
     tv_root = library_root
@@ -224,20 +270,49 @@ def preview_rename_file(
 
     anime_root = f"{tv_root}\\{anime_folder_name}"
 
+    # OVA(Bangumi platform=="OVA"或标题关键词命中)单独进OVA文件夹,不跟Season 00
+    # 混在一起——这是用户看完柯南完整落地表格后提的组织偏好,柯南这类长篇一个家族
+    # 里往往同时有一堆正牌OVA(MAGIC FILE系列之类)和"够不上真季、又不是OVA"的短篇
+    # TV特典,分开放肉眼更好分辨。
+    #
+    # 走Season 00桶的情况:已知bgm_id(有Bangumi结构信息)但season_ordinal算不出来
+    # ——说明这一部不在"真季名单"里(比如集数很短的旁支正片、剧场版剪成TV重播的版本),
+    # 又不是OVA/剧场版,不能硬撞Season 01,也不该混进OVA文件夹。
+    folder_bucket = resolve_folder_bucket(media_type, bgm_id, season_ordinal)
+
     if media_type == "movie":
-        folder_path = f"{anime_root}\\剧场版"
-        filename = f"{anime_title}{meta_suffix}.{file_ext}"
+        folder_path = f"{anime_root}\\{folder_bucket}"
+        # 用"这一部作品自己的标题"而不是家族共用的anime_title——同一个系列可能
+        # 有好几部剧场版(比如青春猪头少年现实里有4部),全用anime_title拼文件名
+        # 会全部撞成同一个文件名,后落地的覆盖先落地的。
+        work_title = _sanitize_filename_segment(season_hint or anime_title)
+        filename = f"{work_title}{meta_suffix}.{file_ext}"
     elif media_type == "extra":
         folder_path = f"{anime_root}\\Other"
         clean_title = file_name.rsplit(".", 1)[0]
         filename = f"{clean_title}.{file_ext}"
     elif media_type == "ova":
-        folder_path = f"{anime_root}\\Season 00"
-        filename = f"{anime_title} - S00E{episode_str}{meta_suffix}.{file_ext}"
+        folder_path = f"{anime_root}\\{folder_bucket}"
+        # 同上:OVA文件夹也可能同时装着好几部互不相关的OVA,道理一样。文件名里
+        # 仍然保留S00E{集数}编号(不是发明新格式)——很多刮削器认这个编号识别特典内容,
+        # 哪怕文件夹已经不叫Season 00了,保留编号兼容性更好。
+        work_title = _sanitize_filename_segment(season_hint or anime_title)
+        filename = f"{work_title} - S00E{episode_str}{meta_suffix}.{file_ext}"
+    elif folder_bucket == "Season 00":
+        folder_path = f"{anime_root}\\{folder_bucket}"
+        # 同上:Season 00桶也可能同时装着好几部互不相关的短篇特典,道理一样。
+        work_title = _sanitize_filename_segment(season_hint or anime_title)
+        filename = f"{work_title} - S00E{episode_str}{meta_suffix}.{file_ext}"
     else:
-        season_search_text = f"{season_hint or anime_title} {torrent_title}"
-        season_str = _resolve_season_str(torrent_parsed.get("anime_season"), season_search_text)
-        folder_path = f"{anime_root}\\Season {season_str}"
+        if season_ordinal is not None:
+            season_str = season_ordinal
+            folder_path = f"{anime_root}\\{folder_bucket}"
+        else:
+            # 没有season_ordinal可用(bgm_id全程未知,没有任何Bangumi结构信息)——
+            # 完整保留原来的文本正则猜测,不引入新行为,也不经过resolve_folder_bucket。
+            season_search_text = f"{season_hint or anime_title} {torrent_title}"
+            season_str = _resolve_season_str(torrent_parsed.get("anime_season"), season_search_text)
+            folder_path = f"{anime_root}\\Season {season_str}"
         filename = f"{anime_title} - S{season_str}E{episode_str}{meta_suffix}.{file_ext}"
 
     folder_path = folder_path.replace("/", "\\")

@@ -17,6 +17,7 @@ interface SearchPageProps {
 }
 
 const API_BASE = "http://127.0.0.1:8080";
+const SEARCH_LIMIT = 100;
 
 const YEAR_OPTIONS = ["不限", ...Array.from({ length: 8 }, (_, i) => String(2026 - i))];
 const QUARTER_OPTIONS = [
@@ -33,6 +34,9 @@ export default function SearchPage({ onSelectAnime, manualMatchFolder }: SearchP
   const [selectedQuarter, setSelectedQuarter] = useState("");
   const [results, setResults] = useState<BangumiSubject[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [offset, setOffset] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
   // 是否已经执行过至少一次搜索,用来区分"还没搜索"和"搜索了但没结果"两种空状态
   const [hasSearched, setHasSearched] = useState(false);
 
@@ -56,27 +60,39 @@ export default function SearchPage({ onSelectAnime, manualMatchFolder }: SearchP
     }
   }, [selectedYear]);
 
-  // 3. 搜索函数
-  const handleSearch = async (currentKeyword: string = keyword) => {
-    setLoading(true);
-    setHasSearched(true);
+  // 3. 搜索函数;append=true 时是点击"加载更多",在当前 offset 之后追加结果
+  const handleSearch = async (currentKeyword: string = keyword, append: boolean = false) => {
+    const currentOffset = append ? offset : 0;
+    if (append) {
+      setLoadingMore(true);
+    } else {
+      setLoading(true);
+      setHasSearched(true);
+    }
     try {
       const params = new URLSearchParams();
       params.append("keyword", currentKeyword.trim());
-      
+
       if (selectedYear !== "不限") params.append("year", selectedYear);
       if (selectedQuarter) params.append("month", selectedQuarter);
+      params.append("offset", String(currentOffset));
 
       const res = await fetch(`${API_BASE}/bangumi/search?${params.toString()}`);
       const data = await res.json();
-      
+
       const newResults = data?.data ?? [];
-      setResults(newResults);
-      sessionStorage.setItem("last_search_results", JSON.stringify(newResults));
+      const rawCount = data?.raw_count ?? newResults.length;
+      const combined = append ? [...results, ...newResults] : newResults;
+
+      setResults(combined);
+      setOffset(currentOffset + rawCount);
+      setHasMore(rawCount >= SEARCH_LIMIT);
+      sessionStorage.setItem("last_search_results", JSON.stringify(combined));
     } catch (err) {
       console.error("搜索失败", err);
     } finally {
       setLoading(false);
+      setLoadingMore(false);
     }
   };
 
@@ -180,6 +196,17 @@ export default function SearchPage({ onSelectAnime, manualMatchFolder }: SearchP
             <div className="text-right font-mono text-xs text-muted w-24">{item.date || "—"}</div>
           </div>
         ))}
+        {hasMore && results.length > 0 && (
+          <div className="flex justify-center py-3">
+            <button
+              onClick={() => handleSearch(keyword, true)}
+              disabled={loadingMore}
+              className="rounded border border-border px-4 py-1.5 font-mono text-xs text-muted hover:border-vermillion hover:text-foreground disabled:opacity-50"
+            >
+              {loadingMore ? "加载中..." : "加载更多"}
+            </button>
+          </div>
+        )}
         {!loading && results.length === 0 && (
           <div className="text-center py-10 text-muted font-mono text-xs">
             {hasSearched ? "未找到结果" : "输入番剧名称,点击检索开始查找"}

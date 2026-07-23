@@ -17,7 +17,11 @@ import rename_engine
 from database import SessionLocal
 from models import AnimeFolder, RenamedFile
 from services.common import (
-    ORGANIZE_TAG, get_current_version_at_target, get_setting, upsert_renamed_file,
+    ORGANIZE_TAG,
+    get_current_version_at_target,
+    get_setting,
+    resolve_tv_season_ordinal_cached,
+    upsert_renamed_file,
 )
 
 
@@ -109,17 +113,34 @@ async def _organize_single_torrent(db: Session, torrent: dict) -> None:
     except Exception as e:
         print(f"[ORGANIZE] 搬家失败 hash={torrent_hash}: {e}")
         return
-    # 集数偏移量和季度提示文本,对这个种子内所有文件都一样,算一次复用即可,
+    # 集数偏移量、季度提示文本、季度序号,对这个种子内所有文件都一样,算一次复用即可,
     # 不用每个文件都重新查一遍Bangumi。
     episode_offset = 0
     season_hint = folder.anime_title
+    platform = None
     if folder.season_bgm_id:
         try:
             # 先注释 episode_offset = await bangumi_client.resolve_episode_offset(folder.season_bgm_id)
             season_detail = await bangumi_client.get_subject_detail(folder.season_bgm_id)
             season_hint = season_detail.get("name_cn") or season_detail.get("name") or folder.anime_title
+            platform = season_detail.get("platform")
         except Exception as e:
             print(f"[ORGANIZE] 计算集数偏移量/季度提示失败,按0偏移继续: {e}")
+
+    # 季度序号完全不看种子标题文本,只信Bangumi关联图谱本身(platform+集数+首播日期)——
+    # 详见bangumi_client.resolve_family_season_map的文档,修的是"旁支正片/剧场版TV重制版
+    # 撞车覆盖Season 01"的问题。查过一次的家族会缓存进AnimeFamilyCache表(见
+    # resolve_tv_season_ordinal_cached),同一个系列反复下载不用每次都重新爬关联图谱。
+    # 查询失败(网络问题/这一部本来就不在真季名单里)时返回None,rename_engine那边会
+    # 按platform分流到剧场版/Season 00,不会退回旧的文本猜测逻辑。
+    season_ordinal = None
+    if folder.season_bgm_id and folder.main_bgm_id:
+        try:
+            season_ordinal = await resolve_tv_season_ordinal_cached(
+                db, folder.season_bgm_id, folder.main_bgm_id
+            )
+        except Exception as e:
+            print(f"[ORGANIZE] 计算季度序号失败,按platform分流继续: {e}")
 
     for video_path in video_paths:
         existing = (
@@ -142,6 +163,8 @@ async def _organize_single_torrent(db: Session, torrent: dict) -> None:
             bgm_id=folder.main_bgm_id,
             season_hint=season_hint,
             episode_offset=episode_offset,
+            season_ordinal=season_ordinal,
+            platform=platform,
         )
 
         if not preview["relative_path"] or preview["parsed_episode"] == "??":
