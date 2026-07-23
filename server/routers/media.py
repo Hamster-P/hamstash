@@ -2,14 +2,22 @@
 走这个接口,而不是<img>直接连Bangumi图床——WebView的<img>请求是前端自己发的,
 不会经过后端,也就吃不到设置里配的网络代理(参考bangumi_client.py/resource_client.py
 接proxy_url的思路,这里是给"图片"这类前端直连资源补上同样的代理能力)。
+
+同时兼职做本地磁盘缓存:第一次拉到的封面字节落盘,之后同一张图直接读本地文件,
+不用再摸网络——离线时(比如断网/代理临时不通)已经看过的封面依然能显示,
+顺带让重复加载比每次都经代理转发快得多。Bangumi封面URL是内容寻址式的
+(路径里带哈希片段,同一个URL长期指向同一张图),所以缓存不设过期时间。
 """
 import asyncio
+import hashlib
+import secrets
 from urllib.parse import urlparse
 
 import httpx
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import RedirectResponse, Response
+from fastapi.responses import FileResponse, Response
 
+import paths
 from services.common import get_proxy_url
 
 router = APIRouter(tags=["图片代理"])
@@ -22,6 +30,52 @@ FORWARD_HEADERS = {
     "User-Agent": "hamstash/0.1 (personal project)",
     "Accept": "image/webp,image/apng,image/*,*/*;q=0.8",
 }
+
+_CACHE_DIR = paths.get_image_cache_dir()
+_EXT_BY_CONTENT_TYPE = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+}
+
+
+def _cache_path_for(url: str, content_type: str = "image/jpeg"):
+    """按URL算缓存文件路径。不知道content-type时(缓存命中阶段,还没请求过)
+    默认按.jpg找——绝大多数Bangumi封面就是jpg,找不到才需要真正发请求确认类型。
+    """
+    digest = hashlib.sha256(url.encode("utf-8")).hexdigest()
+    ext = _EXT_BY_CONTENT_TYPE.get(content_type, ".jpg")
+    return _CACHE_DIR / f"{digest}{ext}"
+
+
+def _find_cached_file(url: str):
+    """未知content-type时,把几种可能的扩展名都试一遍——
+    缓存写入时用的是拉取到的真实content-type,读取时不能假设固定是.jpg。
+    st_size > 0是防万一之前一次写入中途被打断留下的空文件,不当成有效缓存。
+    """
+    digest = hashlib.sha256(url.encode("utf-8")).hexdigest()
+    for ext in _EXT_BY_CONTENT_TYPE.values():
+        candidate = _CACHE_DIR / f"{digest}{ext}"
+        if candidate.exists() and candidate.stat().st_size > 0:
+            return candidate
+    return None
+
+
+def _write_cache(url: str, content_type: str, content: bytes) -> None:
+    """先写临时文件再os.replace成最终文件名,原子写入——避免进程中途被杀掉/
+    磁盘写满等情况留下一个半截的坏缓存文件,之后一直被_find_cached_file当成
+    "命中"提供残缺数据。写失败(比如磁盘满了)只打日志,不影响本次请求已经
+    成功拿到的图片正常返回给前端,缓存只是个加分项,不是关键路径。
+    """
+    target = _cache_path_for(url, content_type)
+    try:
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp_path = target.with_name(f"{target.name}.tmp{secrets.token_hex(4)}")
+        tmp_path.write_bytes(content)
+        tmp_path.replace(target)
+    except OSError as e:
+        print(f"[image_proxy] 写入图片缓存失败,不影响本次返回: {e}")
 
 # 追更/影视库这类页面一次性会同时请求几十张封面图,全部并发怼向本地代理容易
 # 让代理/对面CDN瞬时过载导致部分请求超时——限制一下同时在跑的图片请求数,
@@ -76,13 +130,18 @@ async def image_proxy(url: str = Query(...)):
     if parsed.scheme not in ("http", "https") or parsed.hostname not in ALLOWED_IMAGE_HOSTS:
         raise HTTPException(status_code=400, detail="不支持的图片来源")
 
-    proxy = get_proxy_url()
-    if not proxy:
-        # 没配代理时没必要把图片字节流绕后端转发一遍——直接302让浏览器自己去连
-        # 图床,走浏览器原生的并发连接池/HTTP缓存/CDN优化,跟改造前一样快;
-        # 只有配了代理才需要真的经过后端(带上代理)去拉取。
-        return RedirectResponse(url)
+    # 缓存命中:直接读本地文件,不摸网络——不管有没有配代理、网络通不通都能命中,
+    # 这是离线能力的关键,顺带比每次都经代理转发快得多。FileResponse不传
+    # media_type时会按文件名后缀自动猜,我们缓存文件名后缀就是真实content-type
+    # 映射来的,交给它自动识别即可。
+    cached = _find_cached_file(url)
+    if cached is not None:
+        return FileResponse(cached)
 
+    # 缓存未命中:不管有没有配代理都要真正经过后端拉一次字节(proxy为None时
+    # httpx.AsyncClient(proxy=None)就是直连),不然字节压根不经过我们的进程,
+    # 没机会写入缓存。
+    proxy = get_proxy_url()
     async with _CONCURRENCY_LIMIT:
         last_error: Exception | None = None
         for _ in range(_MAX_ATTEMPTS):
@@ -91,6 +150,7 @@ async def image_proxy(url: str = Query(...)):
                 resp = await client.get(url, headers=FORWARD_HEADERS)
                 resp.raise_for_status()
                 content_type = resp.headers.get("content-type", "image/jpeg")
+                _write_cache(url, content_type, resp.content)
                 return Response(content=resp.content, media_type=content_type)
             except (httpx.HTTPError, httpx.InvalidURL) as e:
                 # httpx.InvalidURL不是httpx.HTTPError的子类,单独列出来兜底——

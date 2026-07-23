@@ -10,7 +10,10 @@ $backendOutDir = Join-Path $clientDir "src-tauri\backend"
 Write-Host "== 1/3 Building backend (PyInstaller) ==" -ForegroundColor Cyan
 Push-Location $serverDir
 try {
-    & python -m pip show pyinstaller *> $null
+    # 用管道(| Out-Null)只吞stdout,不碰stderr——pip show在包不存在时会往stderr
+    # 写一行WARNING,重定向stderr(*>/2>&1)会被PowerShell 5.1包成NativeCommandError,
+    # 在$ErrorActionPreference="Stop"下直接把脚本整个终止掉,永远走不到下面的安装分支。
+    python -m pip show pyinstaller | Out-Null
     if ($LASTEXITCODE -ne 0) {
         python -m pip install pyinstaller
     }

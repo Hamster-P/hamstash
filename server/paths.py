@@ -23,6 +23,12 @@ def get_settings_ini_default() -> Path:
     return data_dir / "settings.ini" if IS_FROZEN else data_dir / "data" / "settings.ini"
 
 
+def get_image_cache_dir() -> Path:
+    """封面图片本地缓存目录,跟设置/数据库同一套"升级/卸载重装不丢数据"的规则。"""
+    data_dir = get_data_dir()
+    return data_dir / "image_cache" if IS_FROZEN else data_dir / "data" / "image_cache"
+
+
 def get_db_location_pointer_file() -> Path:
     """记录"数据库文件当前实际在哪"的一个极小指针文件,供database.py引导逻辑用。
     丢了也无所谓:引导逻辑会当作数据库还在老的默认位置,顶多重新走一遍搬运判断。
