@@ -313,12 +313,16 @@ export default function DownloadManagerPage() {
                         </button>
                       </div>
                     ) : (
-                      <button
-                        onClick={() => setPendingDeleteHash(task.hash)}
-                        className="font-mono text-[11px] text-muted transition-colors hover:text-vermillion"
-                      >
-                        删除
-                      </button>
+                      // 跟"删除+取消"两按钮状态占同样的最小宽度,点删除时这一列/整个表格
+                      // 不会跟着变宽、把左边内容一起挤动
+                      <div className="flex min-w-[88px] items-center font-mono text-[11px]">
+                        <button
+                          onClick={() => setPendingDeleteHash(task.hash)}
+                          className="text-muted transition-colors hover:text-vermillion"
+                        >
+                          删除
+                        </button>
+                      </div>
                     )}
                   </td>
                 </tr>
