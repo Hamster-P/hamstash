@@ -36,6 +36,11 @@ function AppContent() {
   );
   // 媒体库"手动指定动漫"流程当前正在绑定的文件夹名,非空时搜索页/详情页进入绑定模式
   const [manualMatchFolder, setManualMatchFolder] = useState<string | null>(null);
+  // 进详情页那一刻的view,详情页"返回"要回到这里——不能直接展示当前view,
+  // 因为详情页点"下载"会把view改成"download",如果从下载页再退回详情页、
+  // 又点了详情页自己的"返回",这时候view还停在"download",会显示成下载页而不是
+  // 一开始进详情页之前所在的那个tab(比如追更),导致详情页/下载页来回横跳出不去。
+  const [detailReturnView, setDetailReturnView] = useState<View | null>(null);
   // 首次引导:没配好qBittorrent连接之前,阻断整个应用只显示引导向导。
   const [qbitSetupCompleted, setQbitSetupCompleted] = useState<boolean | null>(null);
 
@@ -53,7 +58,24 @@ function AppContent() {
   const goToView = (v: View) => {
     setSelectedBgmId(null);
     setManualMatchFolder(null);
+    setDetailReturnView(null);
     setView(v);
+  };
+
+  // 从追更/搜索/影视库点进详情页:记住当时所在的tab,详情页"返回"要回到这里
+  const handleSelectAnime = (bgmId: number) => {
+    setDetailReturnView(view);
+    setSelectedBgmId(bgmId);
+  };
+
+  // 详情页自己的"返回"按钮:回到进详情页之前所在的tab,而不是当前view
+  // (当前view可能已经被"下载"按钮那趟跳转改成"download"了)
+  const handleBackFromDetail = () => {
+    setSelectedBgmId(null);
+    if (detailReturnView) {
+      setView(detailReturnView);
+      setDetailReturnView(null);
+    }
   };
 
   // 切换主导航时,顺手清空详情页状态,避免切到别的tab还停留在详情页;
@@ -95,6 +117,7 @@ function AppContent() {
   const handleManualMatch = (folderName: string) => {
     setManualMatchFolder(folderName);
     setSelectedBgmId(null);
+    setDetailReturnView(null);
     setView("search");
   };
 
@@ -108,6 +131,7 @@ function AppContent() {
     }).catch((err: any) => console.error("绑定动漫失败", err));
     setManualMatchFolder(null);
     setSelectedBgmId(null);
+    setDetailReturnView(null);
     setView("library");
   };
 
@@ -130,7 +154,7 @@ function AppContent() {
         {selectedBgmId !== null ? (
           <DetailPage
             bgmId={selectedBgmId}
-            onBack={() => setSelectedBgmId(null)}
+            onBack={handleBackFromDetail}
             onNavigateToDownload={handleNavigateToDownload}
             manualMatchFolder={manualMatchFolder}
             onConfirmMatch={handleConfirmMatch}
@@ -138,11 +162,11 @@ function AppContent() {
         ) : (
           <>
             {view === "tracking" && (
-              <TrackingPage onSelectAnime={setSelectedBgmId} />
+              <TrackingPage onSelectAnime={handleSelectAnime} />
             )}
             {view === "search" && (
               <SearchPage
-                onSelectAnime={setSelectedBgmId}
+                onSelectAnime={handleSelectAnime}
                 manualMatchFolder={manualMatchFolder}
               />
             )}
@@ -162,7 +186,7 @@ function AppContent() {
             {view === "downloadManager" && <DownloadManagerPage />}
             {view === "library" && (
               <LibraryPage
-                onSelectAnime={setSelectedBgmId}
+                onSelectAnime={handleSelectAnime}
                 onManualMatch={handleManualMatch}
               />
             )}
