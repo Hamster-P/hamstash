@@ -87,7 +87,9 @@
       "Bash(curl -s \"http://127.0.0.1:8081/bangumi/search?keyword=&year=2026&offset=20\" -o \"d:/Projects/anime-hub/server/_tmp8.json\")",
       "Bash(taskkill //F //T //PID 46124)",
       "Bash(taskkill //F //T //PID 9800)",
-      "Bash(python -X utf8 \"C:/Users/godpan/AppData/Local/Temp/claude/d--Projects-anime-hub/ec511762-e8a3-4e8f-8ee4-7787a1b0aa4b/scratchpad/verify_prefetch.py\")"
+      "Bash(python -X utf8 \"C:/Users/godpan/AppData/Local/Temp/claude/d--Projects-anime-hub/ec511762-e8a3-4e8f-8ee4-7787a1b0aa4b/scratchpad/verify_prefetch.py\")",
+      "Bash(python3 -)",
+      "Bash(powershell -Command \"\\(Get-Content QbittorrentSetupPage.tsx -Raw\\) -replace 'rounded border border-border bg-ink', 'rounded-md border border-border bg-ink' -replace 'rounded border border-border p-3 text-left', 'rounded-md border border-border p-3 text-left' -replace 'className=\\\\\"mt-4 rounded border border-vermillion', 'className=\\\\\"mt-4 rounded-md border border-vermillion' | Set-Content QbittorrentSetupPage.tsx -NoNewline\")"
     ],
     "additionalDirectories": [
       "d:\\Projects\\anime-hub\\.claude",

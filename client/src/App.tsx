@@ -211,19 +211,19 @@ function AppContent() {
             <div className="flex flex-col gap-2">
               <button
                 onClick={handleSaveAndLeaveSettings}
-                className="rounded border border-vermillion px-3 py-1.5 font-mono text-xs text-vermillion transition-colors hover:bg-vermillion hover:text-ink"
+                className="rounded-md border border-vermillion px-3 py-1.5 font-mono text-xs text-vermillion transition-colors hover:bg-vermillion hover:text-ink"
               >
                 保存并离开
               </button>
               <button
                 onClick={handleDiscardAndLeaveSettings}
-                className="rounded border border-border px-3 py-1.5 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion"
+                className="rounded-md border border-border px-3 py-1.5 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion"
               >
                 不保存,直接离开
               </button>
               <button
                 onClick={handleCancelLeaveSettings}
-                className="rounded px-3 py-1.5 font-mono text-xs text-muted transition-colors hover:text-paper"
+                className="rounded-md px-3 py-1.5 font-mono text-xs text-muted transition-colors hover:text-paper"
               >
                 取消
               </button>

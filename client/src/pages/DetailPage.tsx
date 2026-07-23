@@ -150,11 +150,19 @@ export default function DetailPage({
     <div className="flex h-full flex-col p-8">
       {/* 顶部操作区 */}
       <div className="mb-4 flex shrink-0 items-center gap-2 rounded-md border border-border bg-surface px-4 py-3">
+        <button
+          onClick={onBack}
+          className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion"
+        >
+          <ArrowLeft size={14} />
+          返回
+        </button>
+        <div className="mx-1 h-5 w-px shrink-0 bg-border" />
         {manualMatchFolder ? (
           <button
             onClick={() => onConfirmMatch?.(bgmId)}
             disabled={!detail}
-            className="flex items-center gap-1.5 rounded border border-vermillion px-3 py-1.5 font-mono text-xs text-vermillion transition-colors hover:bg-vermillion hover:text-ink disabled:opacity-40"
+            className="flex items-center gap-1.5 rounded-md border border-vermillion px-3 py-1.5 font-mono text-xs text-vermillion transition-colors hover:bg-vermillion hover:text-ink disabled:opacity-40"
           >
             <Check size={14} />
             确认匹配
@@ -164,7 +172,7 @@ export default function DetailPage({
             <button
               onClick={() => onNavigateToDownload(searchKeyword, bgmId, false)}
               disabled={!detail}
-              className="flex items-center gap-1.5 rounded border border-border px-3 py-1.5 font-mono text-xs text-paper transition-colors hover:border-vermillion hover:text-vermillion disabled:opacity-40"
+              className="flex items-center gap-1.5 rounded-md border border-vermillion px-3 py-1.5 font-mono text-xs text-vermillion transition-colors hover:bg-vermillion hover:text-ink disabled:opacity-40"
             >
               <Download size={14} />
               下载
@@ -172,7 +180,7 @@ export default function DetailPage({
             <button
               onClick={() => onNavigateToDownload(searchKeyword, bgmId, true)}
               disabled={!detail}
-              className="flex items-center gap-1.5 rounded border border-border px-3 py-1.5 font-mono text-xs text-paper transition-colors hover:border-vermillion hover:text-vermillion disabled:opacity-40"
+              className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion disabled:opacity-40"
             >
               <Rss size={14} />
               RSS订阅
@@ -181,17 +189,10 @@ export default function DetailPage({
         )}
         <button
           onClick={() => openUrl(bgmUrl)}
-          className="ml-auto flex items-center gap-1.5 rounded border border-border px-3 py-1.5 font-mono text-xs text-muted transition-colors hover:text-paper"
+          className="ml-auto flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion"
         >
           <ExternalLink size={14} />
           在浏览器打开
-        </button>
-        <button
-          onClick={onBack}
-          className="flex items-center gap-1.5 rounded border border-border px-3 py-1.5 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion"
-        >
-          <ArrowLeft size={14} />
-          返回
         </button>
       </div>
 
@@ -231,7 +232,7 @@ export default function DetailPage({
             <p className="font-mono text-xs text-vermillion">{embedError}</p>
             <button
               onClick={() => openUrl(bgmUrl)}
-              className="flex items-center gap-1.5 rounded border border-border px-3 py-1.5 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion"
+              className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion"
             >
               <ExternalLink size={14} />
               在浏览器打开

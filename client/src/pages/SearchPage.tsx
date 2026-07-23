@@ -50,6 +50,10 @@ function saveSearchSession(state: SearchSessionState) {
   }
 }
 
+// 统一的下拉/输入控件样式,跟下载页/下载管理页保持一致
+const controlClass =
+  "rounded border border-border bg-surface px-2 py-1.5 font-mono text-xs text-paper outline-none focus:border-vermillion focus:ring-1 focus:ring-vermillion";
+
 const YEAR_OPTIONS = ["不限", ...Array.from({ length: 8 }, (_, i) => String(2026 - i))];
 const QUARTER_OPTIONS = [
   { label: "不限", value: "" },
@@ -156,7 +160,7 @@ export default function SearchPage({ onSelectAnime, manualMatchFolder }: SearchP
       )}
 
       {/* 搜索控制栏 */}
-      <div className="grid grid-cols-[1fr_auto_auto_auto] items-center gap-4 bg-transparent p-3 rounded border border-border">
+      <div className="grid grid-cols-[1fr_auto_auto_auto] items-center gap-3 rounded-md border border-border p-3">
         <div className="relative w-full">
           <input
             type="text"
@@ -164,7 +168,7 @@ export default function SearchPage({ onSelectAnime, manualMatchFolder }: SearchP
             onChange={(e) => setKeyword(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && handleSearch()}
             placeholder="输入番剧名称（留空按推荐搜索）..."
-            className="w-full rounded border border-border bg-transparent py-1.5 pl-8 pr-3 font-mono text-sm outline-none focus:border-vermillion placeholder:text-muted"
+            className="w-full rounded border border-border bg-surface py-1.5 pl-8 pr-3 text-sm text-paper outline-none placeholder:text-muted/60 focus:border-vermillion focus:ring-1 focus:ring-vermillion"
           />
           <SearchIcon className="absolute left-2.5 top-2.5 h-4 w-4 text-muted" />
         </div>
@@ -172,10 +176,10 @@ export default function SearchPage({ onSelectAnime, manualMatchFolder }: SearchP
         <select
           value={selectedYear}
           onChange={(e) => setSelectedYear(e.target.value)}
-          className="rounded border border-border bg-ink px-2 py-1.5 font-mono text-sm h-[34px] cursor-pointer"
+          className={controlClass}
         >
           {YEAR_OPTIONS.map((y) => (
-            <option key={y} value={y} className="bg-ink">
+            <option key={y} value={y}>
               {y === "不限" ? "年份: 不限" : y}
             </option>
           ))}
@@ -185,10 +189,10 @@ export default function SearchPage({ onSelectAnime, manualMatchFolder }: SearchP
           value={selectedQuarter}
           onChange={(e) => setSelectedQuarter(e.target.value)}
           disabled={selectedYear === "不限"}
-          className="rounded border border-border bg-ink px-2 py-1.5 font-mono text-sm h-[34px] cursor-pointer disabled:opacity-40"
+          className={`${controlClass} disabled:opacity-40`}
         >
           {QUARTER_OPTIONS.map((q) => (
-            <option key={q.value} value={q.value} className="bg-ink">
+            <option key={q.value} value={q.value}>
               {selectedYear === "不限" && q.value !== ""
                 ? "需先选年份"
                 : q.value === ""
@@ -201,7 +205,7 @@ export default function SearchPage({ onSelectAnime, manualMatchFolder }: SearchP
         <button
           onClick={() => handleSearch()}
           disabled={loading}
-          className="rounded bg-vermillion px-5 h-[34px] font-mono text-sm text-white font-semibold hover:bg-opacity-90 disabled:opacity-50"
+          className="rounded-md border border-vermillion px-4 py-1.5 font-mono text-xs text-vermillion transition-colors hover:bg-vermillion hover:text-ink disabled:opacity-40"
         >
           {loading ? "检索中..." : "检索"}
         </button>
@@ -213,7 +217,7 @@ export default function SearchPage({ onSelectAnime, manualMatchFolder }: SearchP
           <div
             key={item.id}
             onClick={() => onSelectAnime(item.id)}
-            className="flex cursor-pointer items-center gap-4 rounded border border-border p-3 hover:border-vermillion transition-colors"
+            className="flex cursor-pointer items-center gap-4 rounded-md border border-border p-3 transition-colors hover:border-vermillion"
           >
             <div className="h-12 w-16 shrink-0 rounded bg-muted overflow-hidden">
               {item.images?.common && (
@@ -235,7 +239,7 @@ export default function SearchPage({ onSelectAnime, manualMatchFolder }: SearchP
             <button
               onClick={() => handleSearch(keyword, true)}
               disabled={loadingMore}
-              className="rounded border border-border px-4 py-1.5 font-mono text-xs text-muted hover:border-vermillion hover:text-foreground disabled:opacity-50"
+              className="rounded-md border border-border px-4 py-1.5 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion disabled:opacity-40"
             >
               {loadingMore ? "加载中..." : "加载更多"}
             </button>

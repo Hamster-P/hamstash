@@ -346,7 +346,7 @@ export default function DownloadPage({
       {initialBgmId !== null && onBack && (
         <button
           onClick={onBack}
-          className="mb-4 flex items-center gap-1.5 font-mono text-xs text-muted transition-colors hover:text-paper"
+          className="mb-4 flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion"
         >
           <ArrowLeft size={14} />
           返回详情

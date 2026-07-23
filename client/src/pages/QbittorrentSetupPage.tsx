@@ -110,7 +110,7 @@ export default function QbittorrentSetupPage({ onComplete }: QbittorrentSetupPag
       <button
         onClick={handleTest}
         disabled={testState === "testing"}
-        className="mt-1 flex items-center gap-2 self-start rounded border border-border px-4 py-2 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion disabled:opacity-40"
+        className="mt-1 flex items-center gap-2 self-start rounded-md border border-border px-4 py-2 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion disabled:opacity-40"
       >
         {testState === "testing" && <Loader2 size={14} className="animate-spin" />}
         {testState === "testing" ? "测试中..." : "测试连接"}
@@ -123,7 +123,7 @@ export default function QbittorrentSetupPage({ onComplete }: QbittorrentSetupPag
       )}
 
       {testState === "success" && (
-        <div className="rounded border border-border bg-ink p-3">
+        <div className="rounded-md border border-border bg-ink p-3">
           <div className="mb-2 flex items-center gap-2 font-mono text-xs text-gold">
             <CheckCircle2 size={14} /> 连接成功
           </div>
@@ -146,7 +146,7 @@ export default function QbittorrentSetupPage({ onComplete }: QbittorrentSetupPag
           <button
             onClick={handleSave}
             disabled={saving}
-            className="mt-3 rounded border border-vermillion px-4 py-2 font-mono text-xs text-vermillion transition-colors hover:bg-vermillion hover:text-ink disabled:opacity-40"
+            className="mt-3 rounded-md border border-vermillion px-4 py-2 font-mono text-xs text-vermillion transition-colors hover:bg-vermillion hover:text-ink disabled:opacity-40"
           >
             {saving ? "保存中..." : "保存并继续"}
           </button>
@@ -170,7 +170,7 @@ export default function QbittorrentSetupPage({ onComplete }: QbittorrentSetupPag
           <div className="flex flex-col gap-3">
             <button
               onClick={() => setBranch("has_webui")}
-              className="rounded border border-border p-3 text-left transition-colors hover:border-vermillion"
+              className="rounded-md border border-border p-3 text-left transition-colors hover:border-vermillion"
             >
               <div className="text-sm">WebUI已经开着了</div>
               <div className="mt-1 font-mono text-[11px] text-muted">
@@ -179,7 +179,7 @@ export default function QbittorrentSetupPage({ onComplete }: QbittorrentSetupPag
             </button>
             <button
               onClick={() => setBranch("installed_no_webui")}
-              className="rounded border border-border p-3 text-left transition-colors hover:border-vermillion"
+              className="rounded-md border border-border p-3 text-left transition-colors hover:border-vermillion"
             >
               <div className="text-sm">装了qBittorrent，但还没开WebUI</div>
               <div className="mt-1 font-mono text-[11px] text-muted">
@@ -188,7 +188,7 @@ export default function QbittorrentSetupPage({ onComplete }: QbittorrentSetupPag
             </button>
             <button
               onClick={() => setBranch("not_installed")}
-              className="rounded border border-border p-3 text-left transition-colors hover:border-vermillion"
+              className="rounded-md border border-border p-3 text-left transition-colors hover:border-vermillion"
             >
               <div className="text-sm">还没装qBittorrent</div>
               <div className="mt-1 font-mono text-[11px] text-muted">需要先下载安装</div>
@@ -198,7 +198,7 @@ export default function QbittorrentSetupPage({ onComplete }: QbittorrentSetupPag
 
         {branch === "not_installed" && (
           <div>
-            <div className="rounded border border-border bg-ink p-4">
+            <div className="rounded-md border border-border bg-ink p-4">
               <p className="mb-3 font-mono text-xs text-muted">
                 前往官网下载安装qBittorrent，安装完成后回到这里继续。
               </p>
@@ -213,7 +213,7 @@ export default function QbittorrentSetupPage({ onComplete }: QbittorrentSetupPag
             </div>
             <button
               onClick={() => setBranch("installed_no_webui")}
-              className="mt-4 rounded border border-vermillion px-4 py-2 font-mono text-xs text-vermillion transition-colors hover:bg-vermillion hover:text-ink"
+              className="mt-4 rounded-md border border-vermillion px-4 py-2 font-mono text-xs text-vermillion transition-colors hover:bg-vermillion hover:text-ink"
             >
               安装完成，继续
             </button>
@@ -222,7 +222,7 @@ export default function QbittorrentSetupPage({ onComplete }: QbittorrentSetupPag
 
         {branch === "installed_no_webui" && (
           <div>
-            <div className="rounded border border-border bg-ink p-4 font-mono text-xs text-muted leading-relaxed">
+            <div className="rounded-md border border-border bg-ink p-4 font-mono text-xs text-muted leading-relaxed">
               打开qBittorrent → 工具(Tools) → 选项(Options) → Web UI → 勾选"启用Web用户界面" →
               设置一个端口和账号密码 → 保存。然后把同样的信息填在下面：
             </div>

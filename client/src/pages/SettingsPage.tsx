@@ -211,7 +211,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
         <button
           onClick={handleSave}
           disabled={saving}
-          className="rounded border border-vermillion px-4 py-2 font-mono text-xs text-vermillion transition-colors hover:bg-vermillion hover:text-ink disabled:opacity-40"
+          className="rounded-md border border-vermillion px-4 py-2 font-mono text-xs text-vermillion transition-colors hover:bg-vermillion hover:text-ink disabled:opacity-40"
         >
           {saving ? "保存中..." : "应用"}
         </button>
@@ -243,7 +243,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
           <button
             type="button"
             onClick={() => handleBrowseDirectory(setDownloadRoot)}
-            className="shrink-0 rounded border border-border px-3 py-2 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion"
+            className="shrink-0 rounded-md border border-border px-3 py-2 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion"
           >
             浏览...
           </button>
@@ -266,7 +266,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
           <button
             type="button"
             onClick={() => handleBrowseDirectory(setLibraryRoot)}
-            className="shrink-0 rounded border border-border px-3 py-2 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion"
+            className="shrink-0 rounded-md border border-border px-3 py-2 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion"
           >
             浏览...
           </button>
@@ -318,7 +318,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
             <button
               type="button"
               onClick={handleBrowsePotplayer}
-              className="shrink-0 rounded border border-border px-3 py-2 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion"
+              className="shrink-0 rounded-md border border-border px-3 py-2 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion"
             >
               浏览...
             </button>
@@ -435,7 +435,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
         {onReconfigureQbittorrent && (
           <button
             onClick={onReconfigureQbittorrent}
-            className="mt-3 rounded border border-border px-3 py-1.5 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion"
+            className="mt-3 rounded-md border border-border px-3 py-1.5 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion"
           >
             重新配置qBittorrent连接
           </button>
@@ -533,9 +533,9 @@ function ProxyTestSection({ proxyUrl }: { proxyUrl: string }) {
           type="button"
           onClick={handleTest}
           disabled={testing}
-          className="flex items-center gap-1.5 rounded border border-border px-3 py-1.5 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion disabled:opacity-40"
+          className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion disabled:opacity-40"
         >
-          {testing && <Loader2 size={13} className="animate-spin" />}
+          {testing && <Loader2 size={14} className="animate-spin" />}
           {testing ? "测试中..." : "测试代理"}
         </button>
         <span className="font-mono text-[11px] text-muted">
@@ -612,7 +612,7 @@ function AppearanceSection() {
         <button
           type="button"
           onClick={() => setTheme("dark")}
-          className={`flex items-center gap-2 rounded border px-3 py-2 font-mono text-xs transition-colors ${
+          className={`flex items-center gap-2 rounded-md border px-3 py-2 font-mono text-xs transition-colors ${
             theme === "dark"
               ? "border-vermillion text-vermillion"
               : "border-border text-muted hover:border-vermillion hover:text-vermillion"
@@ -624,7 +624,7 @@ function AppearanceSection() {
         <button
           type="button"
           onClick={() => setTheme("light")}
-          className={`flex items-center gap-2 rounded border px-3 py-2 font-mono text-xs transition-colors ${
+          className={`flex items-center gap-2 rounded-md border px-3 py-2 font-mono text-xs transition-colors ${
             theme === "light"
               ? "border-vermillion text-vermillion"
               : "border-border text-muted hover:border-vermillion hover:text-vermillion"
@@ -717,11 +717,11 @@ function BackupSection() {
         <button
           onClick={handleExport}
           disabled={exporting}
-          className="rounded border border-border px-3 py-1.5 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion disabled:opacity-40"
+          className="rounded-md border border-border px-3 py-1.5 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion disabled:opacity-40"
         >
           {exporting ? "导出中..." : "导出备份"}
         </button>
-        <label className="cursor-pointer rounded border border-border px-3 py-1.5 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion">
+        <label className="cursor-pointer rounded-md border border-border px-3 py-1.5 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion">
           {importing ? "导入中..." : "导入备份"}
           <input
             type="file"

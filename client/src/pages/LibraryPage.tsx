@@ -314,9 +314,9 @@ export default function LibraryPage({ onManualMatch }: LibraryPageProps) {
           >
             <button
               onClick={handleBack}
-              className="mb-6 flex items-center gap-2 font-mono text-xs text-muted hover:text-vermillion transition-colors"
+              className="mb-6 flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion"
             >
-              <ArrowLeft size={16} /> 返回影视库
+              <ArrowLeft size={14} /> 返回影视库
             </button>
 
             <div className="flex flex-col md:flex-row gap-6">
@@ -348,7 +348,7 @@ export default function LibraryPage({ onManualMatch }: LibraryPageProps) {
                   <button
                     key={seasonName}
                     onClick={() => scrollToSeason(seasonName)}
-                    className="rounded border border-border bg-surface px-3 py-1.5 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion"
+                    className="rounded-md border border-border bg-surface px-3 py-1.5 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion"
                   >
                     {seasonName}
                   </button>
@@ -406,13 +406,13 @@ export default function LibraryPage({ onManualMatch }: LibraryPageProps) {
                           {/* 右侧：播放按钮,固定宽度,不随文件名长短被挤压/挤出屏幕 */}
                           <button
                             onClick={() => handlePlay(ep)}
-                            className={`flex w-28 shrink-0 items-center justify-center gap-1 text-xs px-3 py-1.5 rounded transition-colors ${
+                            className={`flex w-28 shrink-0 items-center justify-center gap-1.5 rounded-md border px-3 py-1.5 font-mono text-xs transition-colors ${
                               ep.is_watched
-                                ? "bg-surface border border-border text-muted hover:bg-paper/10 hover:text-paper"
-                                : "bg-vermillion text-white hover:bg-vermillion/90"
+                                ? "border-border bg-surface text-muted hover:border-vermillion hover:text-vermillion"
+                                : "border-vermillion bg-vermillion text-ink hover:bg-vermillion/90"
                             }`}
                           >
-                            <Play size={12} fill="currentColor" />
+                            <Play size={14} fill="currentColor" />
                             {ep.is_watched ? "再次播放" : "播放"}
                           </button>
                         </div>
@@ -439,7 +439,7 @@ export default function LibraryPage({ onManualMatch }: LibraryPageProps) {
               </p>
             </div>
             <div className="flex items-center gap-2">
-              <div className="flex rounded border border-border overflow-hidden font-mono text-xs">
+              <div className="flex overflow-hidden rounded-md border border-border font-mono text-xs">
                 {(
                   [
                     { value: "default", label: "默认" },
@@ -452,8 +452,8 @@ export default function LibraryPage({ onManualMatch }: LibraryPageProps) {
                     onClick={() => handleSortChange(opt.value)}
                     className={`px-3 py-1.5 transition-colors ${
                       sort === opt.value
-                        ? "bg-vermillion text-white"
-                        : "bg-surface hover:bg-paper/5"
+                        ? "bg-vermillion text-ink"
+                        : "bg-surface text-muted hover:bg-surface-hover hover:text-paper"
                     }`}
                   >
                     {opt.label}
@@ -462,16 +462,16 @@ export default function LibraryPage({ onManualMatch }: LibraryPageProps) {
               </div>
               <button
                 onClick={() => fetchAnimes()}
-                className="font-mono text-xs border border-border px-3 py-1.5 rounded bg-surface hover:bg-paper/5 transition-colors"
+                className="rounded-md border border-border px-3 py-1.5 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion"
               >
                 刷新 & 扫盘
               </button>
               <button
                 onClick={() => setMatchMode((v) => !v)}
-                className={`font-mono text-xs border px-3 py-1.5 rounded transition-colors ${
+                className={`rounded-md border px-3 py-1.5 font-mono text-xs transition-colors ${
                   matchMode
-                    ? "bg-vermillion text-white border-vermillion"
-                    : "border-border bg-surface hover:bg-paper/5"
+                    ? "border-vermillion bg-vermillion text-ink"
+                    : "border-border text-muted hover:border-vermillion hover:text-vermillion"
                 }`}
               >
                 {matchMode ? "结束匹配" : "重新匹配"}
@@ -509,7 +509,7 @@ export default function LibraryPage({ onManualMatch }: LibraryPageProps) {
                             e.stopPropagation();
                             onManualMatch?.(anime.folder_name);
                           }}
-                          className="rounded border border-vermillion bg-vermillion/80 px-2 py-1 text-[10px] font-mono text-white transition-colors hover:bg-vermillion"
+                          className="rounded border border-vermillion bg-vermillion/80 px-2 py-1 font-mono text-[10px] text-ink transition-colors hover:bg-vermillion"
                         >
                           {anime.bgm_id ? "重新匹配" : "指定动漫"}
                         </button>
