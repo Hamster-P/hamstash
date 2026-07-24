@@ -63,23 +63,241 @@ async def _organize_completed_torrents() -> None:
         db.close()
 
 
-async def _organize_single_torrent(db: Session, torrent: dict) -> None:
-    torrent_hash = torrent["hash"]
+async def _resolve_organize_context(db: Session, torrent: dict) -> dict | None:
+    """校验这个种子有没有对应的AnimeFolder记录、读库目录设置、拼出目标根路径——
+    "整理到底往哪放"的最基础信息,不管是否需要改名内部文件都要用到。
+    没有对应记录("未知暂存目录")时返回None,调用方负责打hub-unknown标签。
+    """
     staging_folder_path = torrent.get("save_path", "")
-
     folder = (
         db.query(AnimeFolder)
         .filter(AnimeFolder.staging_folder == staging_folder_path)
         .first()
     )
     if not folder:
-        print(f"[ORGANIZE] 未知暂存目录,跳过整理: {staging_folder_path}")
-        await qbittorrent_client.add_torrent_tags(torrent_hash, "hub-unknown")
-        return
+        return None
 
     library_root = get_setting(db, "library_root", config_store.DEFAULTS["library_root"])
     anime_folder_name = rename_engine.build_anime_folder_name(folder.anime_title, folder.main_bgm_id)
     target_root = f"{library_root.rstrip(chr(92)).rstrip('/')}\\{anime_folder_name}"
+
+    return {
+        "folder": folder,
+        "library_root": library_root,
+        "target_root": target_root,
+    }
+
+
+async def _resolve_season_context(db: Session, folder: AnimeFolder) -> dict:
+    """算这部番这一季的集数偏移量/季度文字提示/平台/季度序号,对种子内所有文件
+    都一样,只需算一次复用。特意不放进_resolve_organize_context里一起算——只有
+    确定要改名内部文件(auto_rename开着)时才用得到,"只搬家不改名"的种子
+    (BD原盘/合集光盘)在_organize_single_torrent里会提前return,不会走到这里,
+    省一轮不必要的Bangumi请求。
+    """
+    episode_offset = 0
+    season_hint = folder.anime_title
+    platform = None
+    if folder.season_bgm_id:
+        try:
+            # 先注释 episode_offset = await bangumi_client.resolve_episode_offset(folder.season_bgm_id)
+            season_detail = await bangumi_client.get_subject_detail(folder.season_bgm_id)
+            season_hint = season_detail.get("name_cn") or season_detail.get("name") or folder.anime_title
+            platform = season_detail.get("platform")
+        except Exception as e:
+            print(f"[ORGANIZE] 计算集数偏移量/季度提示失败,按0偏移继续: {e}")
+
+    # 季度序号完全不看种子标题文本,只信Bangumi关联图谱本身(platform+集数+首播日期)——
+    # 详见bangumi_family.resolve_family_season_map的文档,修的是"旁支正片/剧场版TV重制版
+    # 撞车覆盖Season 01"的问题。查过一次的家族会缓存进AnimeFamilyCache表(见
+    # resolve_tv_season_ordinal_cached),同一个系列反复下载不用每次都重新爬关联图谱。
+    # 查询失败(网络问题/这一部本来就不在真季名单里)时返回None,rename_engine那边会
+    # 按platform分流到剧场版/Season 00,不会退回旧的文本猜测逻辑。
+    season_ordinal = None
+    if folder.season_bgm_id and folder.main_bgm_id:
+        try:
+            season_ordinal = await resolve_tv_season_ordinal_cached(
+                db, folder.season_bgm_id, folder.main_bgm_id
+            )
+        except Exception as e:
+            print(f"[ORGANIZE] 计算季度序号失败,按platform分流继续: {e}")
+
+    return {
+        "episode_offset": episode_offset,
+        "season_hint": season_hint,
+        "platform": platform,
+        "season_ordinal": season_ordinal,
+    }
+
+
+def _preview_files_for_organize(
+    db: Session,
+    folder: AnimeFolder,
+    library_root: str,
+    season_context: dict,
+    torrent: dict,
+    video_paths: list[str],
+) -> list[dict]:
+    """逐个视频文件算改名预览(纯计算,不做任何网络/文件I/O),跳过数据库里已经
+    标记done的文件。返回[{"video_path", "preview"}, ...],交给
+    _apply_organize_plan实际执行改名。
+    """
+    torrent_hash = torrent["hash"]
+    plans = []
+    for video_path in video_paths:
+        existing = (
+            db.query(RenamedFile)
+            .filter(
+                RenamedFile.torrent_hash == torrent_hash,
+                RenamedFile.original_path == video_path,
+            )
+            .first()
+        )
+        if existing and existing.status == "done":
+            continue
+
+        file_name = video_path.rsplit("/", 1)[-1]
+        preview = rename_engine.preview_rename_file(
+            anime_title=folder.anime_title,
+            file_name=file_name,
+            torrent_title=torrent.get("name", ""),
+            library_root=library_root,
+            bgm_id=folder.main_bgm_id,
+            season_hint=season_context["season_hint"],
+            episode_offset=season_context["episode_offset"],
+            season_ordinal=season_context["season_ordinal"],
+            platform=season_context["platform"],
+        )
+        plans.append({"video_path": video_path, "preview": preview})
+    return plans
+
+
+def _resolve_version_conflict(
+    db: Session, torrent_hash: str, target_full_path: str, this_version: int
+) -> dict:
+    """查目标位置当前落地的是第几版、被哪个种子占着,判断这次改名该继续、跳过,
+    还是要先删掉被取代的旧种子——纯决策,不做实际删除/改名I/O,返回一个动作
+    描述给_apply_organize_plan执行:
+    - {"action": "proceed"}                              正常改名
+    - {"action": "skip", "error": ...}                    版本不比现有高
+    - {"action": "skip_collection", "error": ...}         旧种子是合集,需人工处理
+    - {"action": "delete_then_proceed", "old_hash": ...}  需先删掉被取代的单集旧种子
+    """
+    current_version, old_hash, old_torrent_file_count = get_current_version_at_target(
+        db, target_full_path
+    )
+
+    if this_version <= current_version:
+        return {
+            "action": "skip",
+            "error": f"目标位置已有v{current_version},当前文件是v{this_version},未替换",
+        }
+
+    if current_version > 0 and old_hash and old_hash != torrent_hash:
+        # 目标位置被另一个种子占着(典型场景:RSS前后两次下载,v1/v2是两个独立种子)。
+        # qBittorrent没有"只删一个文件、不影响所属种子"的API,只能整个删种子。
+        # 只有确认旧种子是"单集种子"(只有这一个文件标记done)才安全删除,
+        # 否则可能连累合集里其他还在用的集数,这种情况不自动处理,留给人工判断。
+        if old_torrent_file_count <= 1:
+            return {"action": "delete_then_proceed", "old_hash": old_hash}
+        return {
+            "action": "skip_collection",
+            "error": f"目标位置被合集种子({old_hash})占用,该种子还有其他集数在用,未自动删除,需人工处理",
+        }
+
+    return {"action": "proceed"}
+
+
+async def _apply_organize_plan(
+    db: Session, torrent_hash: str, all_paths: list[str], plans: list[dict]
+) -> None:
+    """执行_preview_files_for_organize算好的改名预览:逐个处理版本冲突判定、
+    实际调用qBittorrent renameFile/deleteTorrent、字幕跟随改名,并把每个文件的
+    结果写回RenamedFile表。"""
+    for item in plans:
+        video_path = item["video_path"]
+        preview = item["preview"]
+
+        if not preview["relative_path"] or preview["parsed_episode"] == "??":
+            upsert_renamed_file(
+                db, torrent_hash, video_path, status="failed",
+                error="无法解析集数,或属于不共享媒体库根目录的媒体类型(如剧场版),已跳过、原样保留",
+            )
+            print(f"[ORGANIZE] 解析失败,跳过: hash={torrent_hash} file={video_path}")
+            continue
+
+        # 每次移动前,先查一下这个目标位置当前落地的是第几版——
+        # 不管v1/v2是同一个种子里出现,还是分两次RSS下载分别抓到,
+        # 都用同一套判断:版本不比现有的高,就跳过,不覆盖已经更好的版本。
+        this_version = preview["release_version"]
+        decision = _resolve_version_conflict(db, torrent_hash, preview["target_full_path"], this_version)
+
+        if decision["action"] == "skip":
+            upsert_renamed_file(
+                db, torrent_hash, video_path, status="skipped",
+                error=decision["error"], release_version=this_version,
+            )
+            print(
+                f"[ORGANIZE] 版本不比现有高,跳过: hash={torrent_hash} "
+                f"file={video_path} ({decision['error']})"
+            )
+            continue
+
+        if decision["action"] == "skip_collection":
+            upsert_renamed_file(
+                db, torrent_hash, video_path, status="skipped",
+                error=decision["error"], release_version=this_version,
+            )
+            print(f"[ORGANIZE] 旧种子是合集,不自动删除,需人工处理: {decision['old_hash']}")
+            continue
+
+        if decision["action"] == "delete_then_proceed":
+            old_hash = decision["old_hash"]
+            try:
+                await qbittorrent_client.delete_torrent(old_hash, delete_files=True)
+                print(f"[ORGANIZE] 已删除被更高版本取代的旧种子: {old_hash}")
+            except Exception as e:
+                upsert_renamed_file(
+                    db, torrent_hash, video_path, status="failed",
+                    error=f"删除旧版本种子失败,未替换: {e}", release_version=this_version,
+                )
+                print(f"[ORGANIZE] 删除旧种子失败,跳过替换: hash={old_hash} error={e}")
+                continue
+
+        try:
+            await qbittorrent_client.rename_torrent_file(
+                torrent_hash, video_path, preview["relative_path"]
+            )
+            for sub_path in rename_engine.find_sibling_subtitles(video_path, all_paths):
+                sub_ext = sub_path.rsplit(".", 1)[-1]
+                sub_relative = preview["relative_path"].rsplit(".", 1)[0] + f".{sub_ext}"
+                try:
+                    await qbittorrent_client.rename_torrent_file(torrent_hash, sub_path, sub_relative)
+                except Exception as e:
+                    print(f"[ORGANIZE] 字幕改名失败 {sub_path}: {e}")
+            upsert_renamed_file(
+                db, torrent_hash, video_path, status="done",
+                target=preview["target_full_path"], release_version=this_version,
+            )
+        except Exception as e:
+            upsert_renamed_file(
+                db, torrent_hash, video_path, status="failed",
+                error=str(e), release_version=this_version,
+            )
+            print(f"[ORGANIZE] 改名失败: hash={torrent_hash} file={video_path} error={e}")
+
+
+async def _organize_single_torrent(db: Session, torrent: dict) -> None:
+    torrent_hash = torrent["hash"]
+
+    context = await _resolve_organize_context(db, torrent)
+    if context is None:
+        print(f"[ORGANIZE] 未知暂存目录,跳过整理: {torrent.get('save_path', '')}")
+        await qbittorrent_client.add_torrent_tags(torrent_hash, "hub-unknown")
+        return
+
+    folder = context["folder"]
+    target_root = context["target_root"]
 
     # 用户关闭了自动改名(比如BD原盘/合集光盘):只搬家,不碰内部文件结构
     if not folder.auto_rename:
@@ -109,136 +327,15 @@ async def _organize_single_torrent(db: Session, torrent: dict) -> None:
     except Exception as e:
         print(f"[ORGANIZE] 搬家失败 hash={torrent_hash}: {e}")
         return
+
     # 集数偏移量、季度提示文本、季度序号,对这个种子内所有文件都一样,算一次复用即可,
     # 不用每个文件都重新查一遍Bangumi。
-    episode_offset = 0
-    season_hint = folder.anime_title
-    platform = None
-    if folder.season_bgm_id:
-        try:
-            # 先注释 episode_offset = await bangumi_client.resolve_episode_offset(folder.season_bgm_id)
-            season_detail = await bangumi_client.get_subject_detail(folder.season_bgm_id)
-            season_hint = season_detail.get("name_cn") or season_detail.get("name") or folder.anime_title
-            platform = season_detail.get("platform")
-        except Exception as e:
-            print(f"[ORGANIZE] 计算集数偏移量/季度提示失败,按0偏移继续: {e}")
+    season_context = await _resolve_season_context(db, folder)
 
-    # 季度序号完全不看种子标题文本,只信Bangumi关联图谱本身(platform+集数+首播日期)——
-    # 详见bangumi_family.resolve_family_season_map的文档,修的是"旁支正片/剧场版TV重制版
-    # 撞车覆盖Season 01"的问题。查过一次的家族会缓存进AnimeFamilyCache表(见
-    # resolve_tv_season_ordinal_cached),同一个系列反复下载不用每次都重新爬关联图谱。
-    # 查询失败(网络问题/这一部本来就不在真季名单里)时返回None,rename_engine那边会
-    # 按platform分流到剧场版/Season 00,不会退回旧的文本猜测逻辑。
-    season_ordinal = None
-    if folder.season_bgm_id and folder.main_bgm_id:
-        try:
-            season_ordinal = await resolve_tv_season_ordinal_cached(
-                db, folder.season_bgm_id, folder.main_bgm_id
-            )
-        except Exception as e:
-            print(f"[ORGANIZE] 计算季度序号失败,按platform分流继续: {e}")
-
-    for video_path in video_paths:
-        existing = (
-            db.query(RenamedFile)
-            .filter(
-                RenamedFile.torrent_hash == torrent_hash,
-                RenamedFile.original_path == video_path,
-            )
-            .first()
-        )
-        if existing and existing.status == "done":
-            continue
-
-        file_name = video_path.rsplit("/", 1)[-1]
-        preview = rename_engine.preview_rename_file(
-            anime_title=folder.anime_title,
-            file_name=file_name,
-            torrent_title=torrent.get("name", ""),
-            library_root=library_root,
-            bgm_id=folder.main_bgm_id,
-            season_hint=season_hint,
-            episode_offset=episode_offset,
-            season_ordinal=season_ordinal,
-            platform=platform,
-        )
-
-        if not preview["relative_path"] or preview["parsed_episode"] == "??":
-            upsert_renamed_file(
-                db,
-                torrent_hash,
-                video_path,
-                status="failed",
-                error="无法解析集数,或属于不共享媒体库根目录的媒体类型(如剧场版),已跳过、原样保留",
-            )
-            print(f"[ORGANIZE] 解析失败,跳过: hash={torrent_hash} file={video_path}")
-            continue
-        # 每次移动前,先查一下这个目标位置当前落地的是第几版——
-        # 不管v1/v2是同一个种子里出现,还是分两次RSS下载分别抓到,
-        # 都用同一套判断:版本不比现有的高,就跳过,不覆盖已经更好的版本。
-        current_version, old_hash, old_torrent_file_count = get_current_version_at_target(
-            db, preview["target_full_path"]
-        )
-        this_version = preview["release_version"]
-        if this_version <= current_version:
-            upsert_renamed_file(
-                db, torrent_hash, video_path, status="skipped",
-                error=f"目标位置已有v{current_version},当前文件是v{this_version},未替换",
-                release_version=this_version,
-            )
-            print(
-                f"[ORGANIZE] 版本不比现有高,跳过: hash={torrent_hash} "
-                f"file={video_path} (v{this_version} <= v{current_version})"
-            )
-            continue
-
-        if current_version > 0 and old_hash and old_hash != torrent_hash:
-            # 目标位置被另一个种子占着(典型场景:RSS前后两次下载,v1/v2是两个独立种子)。
-            # qBittorrent没有"只删一个文件、不影响所属种子"的API,只能整个删种子。
-            # 只有确认旧种子是"单集种子"(只有这一个文件标记done)才安全删除,
-            # 否则可能连累合集里其他还在用的集数,这种情况不自动处理,留给人工判断。
-            if old_torrent_file_count <= 1:
-                try:
-                    await qbittorrent_client.delete_torrent(old_hash, delete_files=True)
-                    print(f"[ORGANIZE] 已删除被更高版本取代的旧种子: {old_hash}")
-                except Exception as e:
-                    upsert_renamed_file(
-                        db, torrent_hash, video_path, status="failed",
-                        error=f"删除旧版本种子失败,未替换: {e}", release_version=this_version,
-                    )
-                    print(f"[ORGANIZE] 删除旧种子失败,跳过替换: hash={old_hash} error={e}")
-                    continue
-            else:
-                upsert_renamed_file(
-                    db, torrent_hash, video_path, status="skipped",
-                    error=f"目标位置被合集种子({old_hash})占用,该种子还有其他集数在用,未自动删除,需人工处理",
-                    release_version=this_version,
-                )
-                print(f"[ORGANIZE] 旧种子是合集,不自动删除,需人工处理: {old_hash}")
-                continue
-    
-        try:
-            await qbittorrent_client.rename_torrent_file(
-                torrent_hash, video_path, preview["relative_path"]
-            )
-            for sub_path in rename_engine.find_sibling_subtitles(video_path, all_paths):
-                sub_ext = sub_path.rsplit(".", 1)[-1]
-                sub_relative = preview["relative_path"].rsplit(".", 1)[0] + f".{sub_ext}"
-                try:
-                    await qbittorrent_client.rename_torrent_file(torrent_hash, sub_path, sub_relative)
-                except Exception as e:
-                    print(f"[ORGANIZE] 字幕改名失败 {sub_path}: {e}")
-            upsert_renamed_file(
-                db, torrent_hash, video_path, status="done",
-                target=preview["target_full_path"], release_version=this_version,
-             
-            )
-        except Exception as e:
-            upsert_renamed_file(
-                db, torrent_hash, video_path, status="failed",
-                error=str(e), release_version=this_version,
-            )
-            print(f"[ORGANIZE] 改名失败: hash={torrent_hash} file={video_path} error={e}")
+    plans = _preview_files_for_organize(
+        db, folder, context["library_root"], season_context, torrent, video_paths
+    )
+    await _apply_organize_plan(db, torrent_hash, all_paths, plans)
 
     # 不管有没有文件失败,都打标签结束这一轮——失败文件的状态已经记进RenamedFile表,
     # 不会无限重试刷日志;后续要重跑,可以手动清掉这个标签(或者以后加个"重试"按钮)。
