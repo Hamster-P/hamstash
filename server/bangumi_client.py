@@ -147,6 +147,78 @@ async def get_subject_relations(bgm_id: int) -> list[dict]:
         return response.json()
 
 
+# 只走"同一部作品的延续/不同呈现形式"这几种关系,不跟"衍生/联动/角色出演/
+# 不同世界观"——后者会连到完全不相关的作品上(柯南实测会连到鲁邦三世/光之美少女)。
+# resolve_root_subject_id的兜底家族扫描和resolve_family_season_map的家族枚举
+# 共用同一份白名单,避免两处定义漂移。
+_SAME_CONTINUITY_RELATIONS = {
+    "前传", "续集", "主线故事", "不同演绎", "总集篇", "全集", "番外篇",
+}
+
+# 根节点兜底扫描用的集数门槛:跟resolve_family_season_map里"季度候选"用的
+# eps_threshold(=6)是两个独立常量,语义不同(一个是"够格当整个家族的锚点",
+# 一个是"够格当季度候选"),不合并复用。
+_ROOT_CANDIDATE_EPS_THRESHOLD = 10
+
+
+async def _scan_family_tv_root_candidates(start_bgm_id: int) -> list[int]:
+    """
+    从start_bgm_id出发,顺着_SAME_CONTINUITY_RELATIONS白名单做一次前向BFS,
+    枚举整个关联家族,返回其中platform=="TV"且集数(total_episodes优先)超过
+    _ROOT_CANDIDATE_EPS_THRESHOLD的bgm_id列表——只用来给resolve_root_subject_id
+    的兜底逻辑挑候选根节点,不做season_eligible/不同演绎排除这些季度分配相关的
+    追踪,比resolve_family_season_map内部那个BFS更轻量。
+
+    只有resolve_root_subject_id的链式回溯本身失败时才会调用这个函数(见其文档),
+    正常单一延续的系列不会触发,不会给这些系列增加额外网络开销。
+    """
+    max_family_nodes = 300
+    semaphore = asyncio.Semaphore(8)
+
+    async def _fetch_relations(bgm_id: int) -> tuple[int, list[dict]]:
+        async with semaphore:
+            try:
+                return bgm_id, await get_subject_relations(bgm_id)
+            except Exception:
+                return bgm_id, []
+
+    visited: set[int] = set()
+    current_layer = {start_bgm_id}
+    while current_layer and len(visited) < max_family_nodes:
+        visited |= current_layer
+        results = await asyncio.gather(*(_fetch_relations(bid) for bid in current_layer))
+        next_layer: set[int] = set()
+        for _current, relations in results:
+            for r in relations:
+                if r.get("type") != 2:
+                    continue
+                if r.get("relation") not in _SAME_CONTINUITY_RELATIONS:
+                    continue
+                rid = r.get("id")
+                if rid and rid not in visited:
+                    next_layer.add(rid)
+        current_layer = next_layer
+
+    details = await get_subject_details_batch(list(visited))
+
+    candidates: list[int] = []
+    for bid in visited:
+        detail = details.get(bid)
+        if not detail:
+            continue
+        # 详情接口跟随了重定向(条目被Bangumi合并进了另一个canonical id,
+        # 跟resolve_family_season_map里处理的126199->18692是同一类问题),
+        # 按canonical id算,不把alias自己当独立候选。
+        canonical_id = detail.get("id") or bid
+        if detail.get("platform") != "TV":
+            continue
+        eps = detail.get("total_episodes") or detail.get("eps") or 0
+        if eps > _ROOT_CANDIDATE_EPS_THRESHOLD:
+            candidates.append(canonical_id)
+
+    return candidates
+
+
 async def resolve_root_subject_id(bgm_id: int, max_depth: int = 20) -> int:
     """
     从系列里任意一部(某一季/某一部剧场版)出发,顺着Bangumi的关联关系,
@@ -159,7 +231,17 @@ async def resolve_root_subject_id(bgm_id: int, max_depth: int = 20) -> int:
        才能开始可靠地继续向前追溯。
     2. 没有"主线故事",但有"前传" -> 跳到前传,回到步骤1继续判断
        (递归/循环地一直往前找)。
-    3. 既没有"主线故事"也没有"前传" -> 这就是系列里最早的条目,停止。
+    3. 都没有,但有"全集" -> 跳到"全集"指向的条目。这是给总集篇/剪辑版这类
+       条目用的:实测航海王的"东海篇~路飞与四名伙伴的大冒险~"(2017年播出的
+       总集篇特别版,bgm_id=217886)跟正片之间只有"全集"关系,没有"前传"/
+       "主线故事",不加这一步会把217886自己误判成根节点,真正的正片(bgm_id=975,
+       1999年开播)反而被排除在外。注意"全集"和"总集篇"是同一对关系的两个方向、
+       不能都跳:总集篇条目指向正片时用"全集"("我是XX的全集"),正片指向自己
+       衍生出的总集篇时用"总集篇"("XX是我的总集篇")——用鬼灭之刃/航海王两个
+       系列的真实数据交叉验证过这个方向规律。只跳"全集"能正确从总集篇走回正片,
+       如果反过来也跳"总集篇",会从正片(比如975自己有9条"总集篇"关联)反向
+       走进它自己的衍生总集篇里,方向整个走反。
+    4. 都没有(或者都已经走过了) -> 这就是系列最早的条目,停止。
 
     用visited集合记录走过的所有id,一旦下一跳的目标已经走过,
     视为检测到环,立即停止在当前节点,不再继续跳,避免死循环挂死。
@@ -191,9 +273,46 @@ async def resolve_root_subject_id(bgm_id: int, max_depth: int = 20) -> int:
             current = prequel["id"]
             continue
 
-        break  # 两者都没有(或者都已经走过了),此即系列最早的条目
+        compiled_from = next(
+            (r for r in relations if r.get("relation") == "全集"), None
+        )
+        if compiled_from and compiled_from.get("id") not in visited:
+            current = compiled_from["id"]
+            continue
 
-    return current
+        break  # 都没有(或者都已经走过了),此即系列最早的条目
+
+    # 兜底:链式回溯落脚点(current)本身应该是一部"看起来像正片"的TV条目——
+    # 如果不是(比如落在了一部电影上),说明这个入口自己缺少指回正片的关联声明
+    # (真实案例:哆啦A梦的"2112年哆啦A梦的诞生"电影bgm_id=121745,自己完全没有
+    # "主线故事"关联,只有别的条目单方面声明它是自己的衍生,链式回溯从121745出发
+    # 无路可退,会把121745自己错当成整个家族的根节点)。这种情况下,在入口所在的
+    # 整个关联家族里重新找一个更合理的锚点:所有platform=="TV"且集数够多的候选里,
+    # 取bgm_id数值最小的那个——bgm_id是Bangumi条目入库时分配的自增编号,取最小值
+    # 能保证这个选择长期稳定,不会因为家族以后又收录新成员而漂移。
+    #
+    # 只有链式回溯本身"跑偏"了才会走到这里,正常单一延续的系列(根节点本来就是
+    # 够格的TV正片)在下面这个detail查询就会直接命中返回,不会触发更贵的家族扫描。
+    try:
+        current_detail = await get_subject_detail(current)
+    except Exception:
+        return current
+
+    current_eps = current_detail.get("total_episodes") or current_detail.get("eps") or 0
+    if current_detail.get("platform") == "TV" and current_eps > _ROOT_CANDIDATE_EPS_THRESHOLD:
+        return current
+
+    try:
+        candidates = await _scan_family_tv_root_candidates(bgm_id)
+    except Exception:
+        return current
+
+    if not candidates:
+        # 整个家族里都没有够格的TV正片(比如纯剧场版系列),没有更好的选择,
+        # 保底沿用链式回溯的原始落脚点,不引入新的假设。
+        return current
+
+    return min(candidates)
 
 async def resolve_family_season_map(main_bgm_id: int | None) -> dict[int, dict]:
     """
@@ -251,9 +370,8 @@ async def resolve_family_season_map(main_bgm_id: int | None) -> dict[int, dict]:
 
     # 只走"同一部作品的延续/不同呈现形式"这几种关系,不跟"衍生/联动/角色出演/
     # 不同世界观"——后者会连到完全不相关的作品上(柯南实测会连到鲁邦三世/光之美少女)。
-    _SAME_CONTINUITY_RELATIONS = {
-        "前传", "续集", "主线故事", "不同演绎", "总集篇", "全集", "番外篇",
-    }
+    # 用的是模块级的_SAME_CONTINUITY_RELATIONS(resolve_root_subject_id的兜底
+    # 家族扫描也用同一份,避免两处定义漂移)。
     # 这几种关系才有资格竞选季度序号——"总集篇/全集/不同演绎/番外篇"连出去的节点
     # 依然留在同一个家族/文件夹里,但不参与编号,始终落进Season 00。
     # "番外篇"字面意思就是"不算在主线编号里",不能当真季候选:柯南实测过"名侦探柯南：
@@ -307,6 +425,34 @@ async def resolve_family_season_map(main_bgm_id: int | None) -> dict[int, dict]:
 
     details = await get_subject_details_batch(list(visited))
 
+    # Bangumi条目合并去重:某个bgm_id的详情接口被服务端重定向到另一个canonical id时
+    # (旧条目被官方合并进新条目,比如哆啦A梦121739的"主线故事"目标126199实际上是
+    # 18692的旧ID,GET /v0/subjects/126199会302到18692),get_subject_detail因为
+    # follow_redirects=True会静默拿回canonical id的数据,但返回字典仍以调用方传入的
+    # 旧id为key——不去重的话BFS会把同一部作品的镜像id当成两个独立家族成员,携带完全
+    # 相同的数据,其中一个还可能意外抢到季度候选资格(镜像id是通过"主线故事"这类关系
+    # 发现的,而canonical id本尊却是通过"不同演绎"这类不参与候选的关系发现的,真实
+    # 案例见plans里哆啦A梦这一段记录)。
+    alias_to_canonical: dict[int, int] = {}
+    for bid in list(visited):
+        detail = details.get(bid)
+        canonical_id = detail.get("id") if detail else None
+        if canonical_id and canonical_id != bid:
+            alias_to_canonical[bid] = canonical_id
+
+    for alias_id, canonical_id in alias_to_canonical.items():
+        visited.discard(alias_id)
+        alias_detail = details.pop(alias_id, None)
+        if canonical_id not in visited:
+            # canonical本身不在这次遍历到的家族里(理论上少见),把这个alias的
+            # 详情按canonical id收编,当成一个新成员看待。
+            visited.add(canonical_id)
+            if alias_detail is not None:
+                details[canonical_id] = alias_detail
+        if alias_id in season_eligible:
+            season_eligible.discard(alias_id)
+            season_eligible.add(canonical_id)
+
     # main_bgm_id自己的详情都没查到,说明网络压根不通(BFS第一层的关联请求同样会
     # 静默失败,visited这时通常也就只有main_bgm_id自己)——整个当作失败处理,返回空
     # 字典而不是"一个空壳成员"的家族。调用方(resolve_tv_season_ordinal_cached)
@@ -326,9 +472,16 @@ async def resolve_family_season_map(main_bgm_id: int | None) -> dict[int, dict]:
         eps = detail.get("total_episodes") or detail.get("eps") or 0
         if eps < eps_threshold:
             continue
-        rendition_targets = different_rendition.get(bid, set())
-        if any((details.get(t) or {}).get("platform") == "剧场版" for t in rendition_targets):
-            continue
+        # "不同演绎"排除规则不适用于家族根节点自己:这条规则的本意是排除"剧场版
+        # 剪成TV重播的短小重制版"(鬼灭之刃的例子,那个TV版只有7集),但根节点往往是
+        # 连载多年的正片本身,它跟自己衍生出的某一部剧场版之间完全可能也被Bangumi
+        # 标了"不同演绎"关系(实测航海王:975正片<->2000号剧场版《乔巴身世之谜》
+        # 就是这种情况)——这时候不该反过来把正片自己排除掉,该被排除的是真正
+        # "内容对应、体量相近"的重制版,不是主线正片。
+        if bid != main_bgm_id:
+            rendition_targets = different_rendition.get(bid, set())
+            if any((details.get(t) or {}).get("platform") == "剧场版" for t in rendition_targets):
+                continue
         candidates.append((bid, detail.get("date") or ""))
 
     candidates.sort(key=lambda item: item[1])

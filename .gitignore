@@ -7,3 +7,4 @@ server/data/
 server/build/
 server/*.spec
 cookies.txt
+test

@@ -7,6 +7,13 @@ VIDEO_EXTS = {"mkv", "mp4", "ts", "avi", "flv", "mov", "wmv", "m2ts"}
 MOVIE_MARKERS = ["剧场版", "劇場版", "movie", "gekijouban"]
 OVA_MARKERS = ["ova", "oad", "特典", "特别篇", "番外篇", "sp", "总集篇", "回顾篇", ".5", "激活解说"]
 EXTRA_MARKERS = ["op", "ed", "ncop", "nced", "opening", "ending", "pv", "预告"]
+# EXTRA_MARKERS里的短标记(op/ed/pv)朴素子串匹配容易误伤普通单词内部的字母组合
+# (比如"Poppin'Dream"含有"op"),改用单词边界的正则;数字后缀0~2位是为了兼容
+# "OP1"/"ED2"这类多首插曲编号的字幕组命名习惯。
+_EXTRA_PATTERN = re.compile(
+    r"(?<![a-z0-9])(op|ed|ncop|nced|opening|ending|pv)\d{0,2}(?![a-z0-9])|预告",
+    re.IGNORECASE,
+)
 
 def classify_media_type(torrent_title: str, platform: str | None = None) -> str:
     """
@@ -14,13 +21,21 @@ def classify_media_type(torrent_title: str, platform: str | None = None) -> str:
     优先信它——种子标题里的关键词是字幕组自己写的,不一定靠谱(比如短篇正片
     不会主动在标题里写"OVA"/"剧场版"这类词,靠关键词猜会漏判)。拿不到platform
     (比如没匹配上bgm_id的老番剧)时,退回现在的关键词猜测兜底。
+
+    platform明确是剧场版/OVA时直接权威判定、排在EXTRA_MARKERS关键词猜测之前——
+    一个Bangumi官方标注的独立剧场版/OVA条目不可能同时是随季打包的OP/ED花絮文件,
+    两者互斥,不需要再靠关键词去猜。
     """
-    lowered = torrent_title.lower()
-    if any(marker in lowered for marker in EXTRA_MARKERS):
-        return "extra"
-    if platform == "剧场版" or any(marker in lowered for marker in MOVIE_MARKERS):
+    if platform == "剧场版":
         return "movie"
-    if platform == "OVA" or any(marker in lowered for marker in OVA_MARKERS):
+    if platform == "OVA":
+        return "ova"
+    lowered = torrent_title.lower()
+    if _EXTRA_PATTERN.search(lowered):
+        return "extra"
+    if any(marker in lowered for marker in MOVIE_MARKERS):
+        return "movie"
+    if any(marker in lowered for marker in OVA_MARKERS):
         return "ova"
     return "tv"
 
@@ -293,16 +308,20 @@ def preview_rename_file(
         filename = f"{clean_title}.{file_ext}"
     elif media_type == "ova":
         folder_path = f"{anime_root}\\{folder_bucket}"
-        # 同上:OVA文件夹也可能同时装着好几部互不相关的OVA,道理一样。文件名里
-        # 仍然保留S00E{集数}编号(不是发明新格式)——很多刮削器认这个编号识别特典内容,
-        # 哪怕文件夹已经不叫Season 00了,保留编号兼容性更好。
+        # 只有真正的TV正片季才有"第几季第几集"这个概念——OVA跟剧场版一样,
+        # 是独立的一部作品,不套SxxExx编号,直接用作品自己的标题+字幕组/分辨率,
+        # 更贴合Jellyfin/Plex这类刮削器对"独立特典/OVA条目"的识别方式(标准做法是
+        # 按作品名单独归类,不是塞进某一季的集数序列里)。多集OVA(同一个Bangumi
+        # 条目内部有好几集)如果同字幕组/分辨率发布,文件名会重复——这是用户
+        # 权衡过、明确接受的取舍,不在这条命名规则里额外处理。
         work_title = _sanitize_filename_segment(season_hint or anime_title)
-        filename = f"{work_title} - S00E{episode_str}{meta_suffix}.{file_ext}"
+        filename = f"{work_title}{meta_suffix}.{file_ext}"
     elif folder_bucket == "Season 00":
         folder_path = f"{anime_root}\\{folder_bucket}"
-        # 同上:Season 00桶也可能同时装着好几部互不相关的短篇特典,道理一样。
+        # 同上:Season 00桶装的是"够不上真季"的旁支正片/短篇特典,不是TV正片的
+        # 某一季,同样不套SxxExx编号。
         work_title = _sanitize_filename_segment(season_hint or anime_title)
-        filename = f"{work_title} - S00E{episode_str}{meta_suffix}.{file_ext}"
+        filename = f"{work_title}{meta_suffix}.{file_ext}"
     else:
         if season_ordinal is not None:
             season_str = season_ordinal
