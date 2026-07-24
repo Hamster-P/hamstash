@@ -18,9 +18,7 @@ async def get_bangumi_schedule():
         weekday_idx = day["weekday"]["id"] - 1
 
         for item in day.get("items", []):
-            cover_url = None
-            if item.get("images"):
-                cover_url = item["images"].get("large")
+            info = bangumi_client.normalize_bgm_subject(item)
 
             score = None
             if item.get("rating"):
@@ -28,11 +26,11 @@ async def get_bangumi_schedule():
 
             enriched.append(
                 {
-                    "bgm_id": item["id"],
-                    "title": item.get("name_cn") or item.get("name"),
+                    "bgm_id": info["bgm_id"],
+                    "title": info["title"],
                     "weekday": weekday_idx,
-                    "cover_url": cover_url,
-                    "total_eps": item.get("eps"),
+                    "cover_url": info["cover_url"] or None,
+                    "total_eps": info["total_eps"],
                     "score": score,
                 }
             )

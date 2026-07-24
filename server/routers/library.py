@@ -13,7 +13,7 @@ from pydantic import BaseModel
 import models
 from database import get_db
 from services.common import get_setting
-from bangumi_client import get_subject_detail  
+from bangumi_client import get_subject_detail, normalize_bgm_subject
 from datetime import datetime
 
 router = APIRouter(tags=["影视库"])
@@ -141,34 +141,28 @@ async def update_anime_details_from_bgm(db: Session, bgm_id: int):
         if not bgm_data:
             return
 
-        # 获取相关字段
-        title = bgm_data.get("name_cn") or bgm_data.get("name") or "未知动漫"
-        title_original = bgm_data.get("name") or ""
-        summary = bgm_data.get("summary") or "暂无简介"
-        
-        # 提取总集数：优先使用 total_episodes 字段，其次用 eps 字段，都没有则为 0
-        total_episodes = bgm_data.get("total_episodes") or bgm_data.get("eps") or 0
-
-        # 获取封面图：优先大图，其次中等，都没有则使用默认图
-        images = bgm_data.get("images") or {}
-        cover_url = images.get("large") or images.get("common") or ""
+        info = normalize_bgm_subject(bgm_data)
 
         # 查询数据库本地是否已有该条目的缓存信息
         catalog = db.query(models.AnimeCatalog).filter(models.AnimeCatalog.bgm_id == bgm_id).first()
         if catalog:
-            catalog.title = title
-            catalog.title_original = title_original
-            catalog.summary = summary
-            catalog.cover_url = cover_url
-            catalog.total_episodes = total_episodes  # 保存总集数到本地表
+            catalog.title = info["title"]
+            catalog.title_original = info["title_original"]
+            catalog.summary = info["summary"]
+            catalog.cover_url = info["cover_url"]
+            catalog.air_date = info["air_date"]
+            catalog.total_episodes = info["total_eps"]  # 保存总集数到本地表
+            catalog.total_eps = info["total_eps"]
         else:
             new_catalog = models.AnimeCatalog(
                 bgm_id=bgm_id,
-                title=title,
-                title_original=title_original,
-                summary=summary,
-                cover_url=cover_url,
-                total_episodes=total_episodes
+                title=info["title"],
+                title_original=info["title_original"],
+                summary=info["summary"],
+                cover_url=info["cover_url"],
+                air_date=info["air_date"],
+                total_episodes=info["total_eps"],
+                total_eps=info["total_eps"],
             )
             db.add(new_catalog)
         db.commit()

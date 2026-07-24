@@ -103,6 +103,26 @@ async def search_anime(keyword: str, limit: int = 100, year: int | None = None, 
         # -------------------------------------------------------------------------
         return raw_data
     
+def normalize_bgm_subject(payload: dict) -> dict:
+    """把Bangumi条目详情/搜索结果的原始payload，归一化成本项目统一使用的展示字段。
+    标题/简介/封面/集数各自的fallback链，以前在库匹配同步、搜索导入、详情页只读、
+    追更时刻表四个入口各写了一份，细节还互相不一致（比如总集数一处只写total_eps、
+    一处只写total_episodes），这里统一成一份，四个调用方都改成调这个。
+    """
+    if not payload:
+        return {}
+    images = payload.get("images") or {}
+    return {
+        "bgm_id": payload.get("id"),
+        "title": payload.get("name_cn") or payload.get("name") or "未知动漫",
+        "title_original": payload.get("name") or "",
+        "summary": payload.get("summary") or "暂无简介",
+        "cover_url": images.get("large") or images.get("common") or "",
+        "air_date": payload.get("date"),
+        "total_eps": payload.get("total_episodes") or payload.get("eps") or 0,
+    }
+
+
 async def get_subject_detail(bgm_id: int):
     url = f"{BASE_URL}/v0/subjects/{bgm_id}"
 

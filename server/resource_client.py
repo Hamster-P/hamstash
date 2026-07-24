@@ -15,19 +15,20 @@ NYAA_NAMESPACES = {"nyaa": "https://nyaa.si/xmlns/nyaa"}
 
 HEADERS = {"User-Agent": "hamstash/0.1 (personal project)"}
 
+# dmhy/nyaa标题开头的[字幕组名]/【字幕组名】,两个源都靠标题粗略提取,提法完全一致。
+_FANSUB_NAME_RE = re.compile(r"^[\[【]([^\]】]+)[\]】]")
 
-async def _search_animegarden(keyword: str, page_size: int = 50):
-    """主力源:AnimeGarden,用search参数做服务端关键词过滤,数据结构好
-    (自带字幕组名和Bangumi编号)。"""
-    async with httpx.AsyncClient(headers=HEADERS, timeout=15.0, proxy=get_proxy_url(), follow_redirects=True) as client:
-        resp = await client.get(
-            ANIMEGARDEN_URL,
-            params={"page": 1, "pageSize": page_size, "search": keyword},
-        )
-        resp.raise_for_status()
-        data = resp.json()
 
-    resources = data.get("resources", [])
+def _extract_fansub_name(title: str) -> str:
+    match = _FANSUB_NAME_RE.match(title)
+    return match.group(1) if match else "未知字幕组"
+
+
+def _shape_animegarden_items(resources: list[dict]) -> list[dict]:
+    """把AnimeGarden /resources接口返回的原始条目列表，归一化成本项目统一的资源字段。
+    关键词搜索(_search_animegarden)和按bgm_id搜索(_search_animegarden_by_subject)
+    拿到的resources结构完全一样，只是查询参数不同，这份组装逻辑两边共用。
+    """
     results = []
     for item in resources:
         fansub = item.get("fansub") or {}
@@ -49,6 +50,20 @@ async def _search_animegarden(keyword: str, page_size: int = 50):
     return results
 
 
+async def _search_animegarden(keyword: str, page_size: int = 50):
+    """主力源:AnimeGarden,用search参数做服务端关键词过滤,数据结构好
+    (自带字幕组名和Bangumi编号)。"""
+    async with httpx.AsyncClient(headers=HEADERS, timeout=15.0, proxy=get_proxy_url(), follow_redirects=True) as client:
+        resp = await client.get(
+            ANIMEGARDEN_URL,
+            params={"page": 1, "pageSize": page_size, "search": keyword},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+    return _shape_animegarden_items(data.get("resources", []))
+
+
 async def _search_dmhy_fallback(keyword: str):
     """备用源:AnimeGarden连不上时才用dmhy直连,字幕组名靠标题粗略提取,
     准确度不如AnimeGarden,也没有Bangumi编号。"""
@@ -66,8 +81,7 @@ async def _search_dmhy_fallback(keyword: str):
         magnet_or_torrent = enclosure.get("url") if enclosure is not None else link
         pub_date = item.findtext("pubDate")
 
-        match = re.match(r"^[\[【]([^\]】]+)[\]】]", title)
-        fansub_name = match.group(1) if match else "未知字幕组"
+        fansub_name = _extract_fansub_name(title)
 
         results.append(
             {
@@ -144,8 +158,7 @@ async def _search_nyaa(keyword: str):
         pub_date = item.findtext("pubDate")
         size_text = item.findtext("nyaa:size", namespaces=NYAA_NAMESPACES)
 
-        match = re.match(r"^[\[【]([^\]】]+)[\]】]", title)
-        fansub_name = match.group(1) if match else "未知字幕组"
+        fansub_name = _extract_fansub_name(title)
 
         magnet = (
             f"magnet:?xt=urn:btih:{info_hash}&dn={quote(title)}" if info_hash else link
@@ -181,24 +194,7 @@ async def _search_animegarden_by_subject(bgm_id: int, page_size: int = 50):
         resp.raise_for_status()
         data = resp.json()
 
-    resources = data.get("resources", [])
-    results = []
-    for item in resources:
-        fansub = item.get("fansub") or {}
-        results.append(
-            {
-                "source": "animegarden",
-                "provider": item.get("provider"),
-                "title": item.get("title", ""),
-                "fansub_name": fansub.get("name", "未知字幕组"),
-                "magnet": item.get("magnet"),
-                "size": _animegarden_size_to_bytes(item.get("size")),
-                "created_at": item.get("createdAt"),
-                "bgm_id": item.get("subjectId"),
-                "detail_url": None,  # 同上,AnimeGarden没有自己的规范详情页
-            }
-        )
-    return results
+    return _shape_animegarden_items(data.get("resources", []))
 
 async def search_by_source(keyword: str, source: str, bgm_id: int | None = None):
     """

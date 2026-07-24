@@ -36,18 +36,17 @@ async def import_anime_from_bangumi(bgm_id: int, db: Session = Depends(get_db)):
         return existing
 
     detail = await bangumi_client.get_subject_detail(bgm_id)
-
-    cover_url = detail.get("images", {}).get("large", "")
-    total_eps = detail.get("total_episodes") or detail.get("eps")
+    info = bangumi_client.normalize_bgm_subject(detail)
 
     db_anime = models.AnimeCatalog(
-        bgm_id=detail.get("id"),
-        title=detail.get("name_cn") or detail.get("name"),
-        title_original=detail.get("name"),
-        summary=detail.get("summary"),
-        cover_url=cover_url,
-        air_date=detail.get("date"),
-        total_eps=total_eps,
+        bgm_id=info["bgm_id"],
+        title=info["title"],
+        title_original=info["title_original"],
+        summary=info["summary"],
+        cover_url=info["cover_url"],
+        air_date=info["air_date"],
+        total_eps=info["total_eps"],
+        total_episodes=info["total_eps"],
     )
     db.add(db_anime)
     db.commit()
