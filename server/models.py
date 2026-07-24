@@ -130,7 +130,7 @@ class PlaybackRecord(Base):
 
 class AnimeFamilyCache(Base):
     """
-    bangumi_client.resolve_family_season_map()算出来的"某个Bangumi关联家族里,
+    bangumi_family.resolve_family_season_map()算出来的"某个Bangumi关联家族里,
     每个成员该归到第几季/哪个顶层桶"结果的持久化缓存——这个计算要BFS遍历整个
     关联图谱+批量查详情,柯南这种长篇实测60+个节点、十几秒,但家族结构变动率
     很低(一部番一年也就新增1~2个成员),命中缓存直接读数据库,不用每次整理

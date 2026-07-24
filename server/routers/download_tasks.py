@@ -5,7 +5,7 @@ from fastapi import APIRouter
 
 import qbittorrent_client
 from schemas import BatchDeleteTasksRequest
-from services.common import ORGANIZE_TAG
+from services.staging import ORGANIZE_TAG
 
 router = APIRouter(prefix="/downloads", tags=["下载详情"])
 

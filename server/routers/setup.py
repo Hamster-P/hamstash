@@ -4,8 +4,8 @@ from sqlalchemy.orm import Session
 
 import qbittorrent_client
 from database import get_db
-from models import AppSetting
 from schemas import QbitApplyRequest, QbitTestRequest
+from services.common import upsert_setting
 
 router = APIRouter(prefix="/setup", tags=["首次引导"])
 
@@ -19,14 +19,6 @@ RECOMMENDED_PREFS = {
     "web_ui_host_header_validation_enabled": False,
     "web_ui_max_auth_fail_count": 50,
 }
-
-
-def _set_setting(db: Session, key: str, value: str) -> None:
-    row = db.query(AppSetting).filter(AppSetting.key == key).first()
-    if row:
-        row.value = value
-    else:
-        db.add(AppSetting(key=key, value=value))
 
 
 @router.post("/qbittorrent/test")
@@ -70,12 +62,11 @@ async def apply_qbittorrent_setup(payload: QbitApplyRequest, db: Session = Depen
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"连接成功,但应用推荐设置失败: {e}")
 
-    _set_setting(db, "qbit_host", payload.host)
-    _set_setting(db, "qbit_port", str(payload.port))
-    _set_setting(db, "qbit_username", payload.username)
-    _set_setting(db, "qbit_password", payload.password)
-    _set_setting(db, "qbit_setup_completed", "true")
-    db.commit()
+    upsert_setting(db, "qbit_host", payload.host)
+    upsert_setting(db, "qbit_port", str(payload.port))
+    upsert_setting(db, "qbit_username", payload.username)
+    upsert_setting(db, "qbit_password", payload.password)
+    upsert_setting(db, "qbit_setup_completed", "true")
 
     # 保存的是新凭据,强制丢弃旧缓存,下次调用重新登录用新配置。
     qbittorrent_client.invalidate_session()

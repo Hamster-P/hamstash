@@ -9,13 +9,9 @@ import qbittorrent_client
 from database import get_db
 from models import AnimeFamilyCache, DownloadTask, SubscriptionRule
 from schemas import DownloadRequest, PrefetchRenameCacheRequest, RenamePreviewRequest
-from services.common import (
-    get_setting,
-    prefetch_rename_cache_task,
-    resolve_series_identity,
-    staging_folder,
-    upsert_anime_folder,
-)
+from services.bgm_series_cache import prefetch_rename_cache_task, resolve_series_identity
+from services.common import get_setting
+from services.staging import staging_folder, upsert_anime_folder
 from services.subscription import activate_subscription_task
 
 router = APIRouter(tags=["下载"])

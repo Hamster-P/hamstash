@@ -11,13 +11,9 @@ import qbittorrent_client
 import resource_client
 from database import SessionLocal
 from models import SubscriptionRule
-from services.common import (
-    RSS_FOLDER,
-    resolve_series_identity,
-    sanitize_path_segment,
-    staging_folder,
-    upsert_anime_folder,
-)
+from services.bgm_series_cache import resolve_series_identity
+from services.common import sanitize_path_segment
+from services.staging import RSS_FOLDER, staging_folder, upsert_anime_folder
 
 async def activate_subscription(db: Session, rule: SubscriptionRule, download_root: str) -> None:
     """

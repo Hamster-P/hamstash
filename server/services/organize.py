@@ -16,13 +16,9 @@ import qbittorrent_client
 import rename_engine
 from database import SessionLocal
 from models import AnimeFolder, RenamedFile
-from services.common import (
-    ORGANIZE_TAG,
-    get_current_version_at_target,
-    get_setting,
-    resolve_tv_season_ordinal_cached,
-    upsert_renamed_file,
-)
+from services.bgm_series_cache import resolve_tv_season_ordinal_cached
+from services.common import get_setting
+from services.staging import ORGANIZE_TAG, get_current_version_at_target, upsert_renamed_file
 
 
 async def organize_loop() -> None:
@@ -128,7 +124,7 @@ async def _organize_single_torrent(db: Session, torrent: dict) -> None:
             print(f"[ORGANIZE] 计算集数偏移量/季度提示失败,按0偏移继续: {e}")
 
     # 季度序号完全不看种子标题文本,只信Bangumi关联图谱本身(platform+集数+首播日期)——
-    # 详见bangumi_client.resolve_family_season_map的文档,修的是"旁支正片/剧场版TV重制版
+    # 详见bangumi_family.resolve_family_season_map的文档,修的是"旁支正片/剧场版TV重制版
     # 撞车覆盖Season 01"的问题。查过一次的家族会缓存进AnimeFamilyCache表(见
     # resolve_tv_season_ordinal_cached),同一个系列反复下载不用每次都重新爬关联图谱。
     # 查询失败(网络问题/这一部本来就不在真季名单里)时返回None,rename_engine那边会

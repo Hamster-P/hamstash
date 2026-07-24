@@ -18,7 +18,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse, Response
 
 import paths
-from services.common import get_proxy_url
+from services.proxy import get_proxy_url
 
 router = APIRouter(tags=["图片代理"])
 

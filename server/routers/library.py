@@ -1,4 +1,4 @@
-# routers/library.py
+"""对应前端 LibraryPage(影视库):本地媒体库扫描、番剧匹配、播放记录、播放。"""
 import os
 import re
 import platform

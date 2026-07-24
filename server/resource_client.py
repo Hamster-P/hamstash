@@ -4,7 +4,7 @@ from urllib.parse import urlencode, quote
 
 import httpx
 
-from services.common import get_proxy_url
+from services.proxy import get_proxy_url
 
 ANIMEGARDEN_URL = "https://api.animes.garden/resources"
 ANIMEGARDEN_FEED_URL = "https://api.animes.garden/feed.xml"

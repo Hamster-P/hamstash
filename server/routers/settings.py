@@ -9,9 +9,9 @@ from sqlalchemy.orm import Session
 import config_store
 import qbittorrent_client
 from database import get_db
-from models import AppSetting
 from schemas import ProxyTestRequest, SettingsUpdate
-from services.common import get_proxy_url, get_setting, get_system_proxy, set_proxy_url_cache
+from services.common import get_setting, upsert_setting
+from services.proxy import get_proxy_url, get_system_proxy, set_proxy_url_cache
 
 router = APIRouter(tags=["设置"])
 
@@ -72,13 +72,7 @@ def update_settings(payload: SettingsUpdate, db: Session = Depends(get_db)):
         "proxy_url": payload.proxy_url,
     }
     for key, value in values.items():
-        row = db.query(AppSetting).filter(AppSetting.key == key).first()
-        if row:
-            row.value = value
-        else:
-            row = AppSetting(key=key, value=value)
-            db.add(row)
-    db.commit()
+        upsert_setting(db, key, value)
     config_store.write_ini(values)  # 双写本地INI,避免数据库丢失/迁移时设定跟着丢
     set_proxy_url_cache(payload.proxy_url)  # 同步内存缓存,不重启也能立刻用上新代理设置
 
