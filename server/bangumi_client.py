@@ -97,6 +97,14 @@ async def search_anime(keyword: str, limit: int = 100, year: int | None = None, 
             else:
                 filtered_list = raw_list
 
+            # 默认只保留Bangumi官方meta_tags标了"日本"产地的条目,过滤掉国漫/
+            # 其他产地番剧——这个字段搜索接口本身就带,不需要额外请求。放在关键词
+            # 过滤(含空匹配兜底)之后,保证不管有没有走兜底逻辑,最终结果都只剩日漫。
+            filtered_list = [
+                item for item in filtered_list
+                if "日本" in (item.get("meta_tags") or [])
+            ]
+
             raw_data["data"] = filtered_list
             raw_data["total"] = len(filtered_list)
             raw_data["raw_count"] = len(raw_list)  # 这一页Bangumi实际返回的原始条数

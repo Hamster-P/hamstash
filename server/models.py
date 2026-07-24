@@ -153,3 +153,20 @@ class AnimeFamilyCache(Base):
     season_ordinal = Column(String, nullable=True)  # "01"/"02"/...,None代表不是真季候选
     folder_bucket = Column(String, nullable=True)  # 顶层桶,仅供人工查表时直接可读,不参与改名逻辑判断
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())
+
+
+class AnimeOriginCache(Base):
+    """
+    bgm_id -> 是否日本产地的持久化缓存,产地数据来自Bangumi条目的meta_tags字段
+    (里面会标"日本"/"中国"/"韩国"/"美国"这类产地标签)。追更页的日历接口本身不带
+    meta_tags,只能对每个条目额外查一次详情才能拿到,但产地信息基本终身不变
+    (不会出现"这部番今天是日本产、明天变成别的产地"的情况),所以查过一次的
+    bgm_id直接读这张表就行,不用每次都重新请求——跟AnimeFamilyCache是同一种
+    "低变动率数据没必要重复查"的设计。
+    """
+    __tablename__ = "anime_origin_cache"
+
+    bgm_id = Column(Integer, primary_key=True)
+    is_japanese = Column(Boolean, nullable=False)
+    meta_tags = Column(String, nullable=True)  # 逗号分隔的原始tags,留着排查/以后可能要用其他产地判断
+    cached_at = Column(DateTime(timezone=True), server_default=func.now())

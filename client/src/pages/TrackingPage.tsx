@@ -17,8 +17,14 @@ interface TrackingPageProps {
 const API_BASE = "http://127.0.0.1:8080";
 const days = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
 
-const SCHEDULE_CACHE_KEY = "tracking_schedule_cache_v1";
-const SCHEDULE_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6小时,过期后重新用API取数更新
+// v3:过滤国漫的判断依据从name/name_cn启发式换成Bangumi官方meta_tags产地标签,
+// 筛出来的番剧集合跟v2不完全一样,升级key让所有客户端上v2版本的旧缓存自动失效。
+const SCHEDULE_CACHE_KEY = "tracking_schedule_cache_v3";
+// 后端现在有AnimeOriginCache持久化缓存兜底,同一批bgm_id只有第一次会触发慢查询
+// (~15秒/100+部番),后续都是数据库直接命中、接近瞬间返回,不需要再靠拉长TTL
+// 来避免慢请求——1小时能让新定档/临时补漏的番剧更快反映到界面,同时避免用户
+// 每次切换页面都触发一次网络请求。
+const SCHEDULE_CACHE_TTL_MS = 60 * 60 * 1000;
 
 function loadCachedSchedule(): ScheduleItem[] | null {
   try {
