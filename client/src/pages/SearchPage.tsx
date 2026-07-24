@@ -9,6 +9,7 @@ interface BangumiSubject {
   date?: string;
   eps?: number;
   images?: { large?: string; common?: string };
+  rating?: { score?: number };
 }
 
 interface SearchPageProps {
@@ -28,6 +29,7 @@ interface SearchSessionState {
   results: BangumiSubject[];
   offset: number;
   hasMore: boolean;
+  hideGuochan: boolean;
 }
 
 const SEARCH_SESSION_KEY = "search_session_state_v1";
@@ -75,6 +77,9 @@ export default function SearchPage({ onSelectAnime, manualMatchFolder }: SearchP
   const [loadingMore, setLoadingMore] = useState(false);
   const [offset, setOffset] = useState(initialSession?.offset ?? 0);
   const [hasMore, setHasMore] = useState(initialSession?.hasMore ?? false);
+  // 隐藏国漫:默认开启,判断依据跟追更页一致——name_cn留空或者跟name完全一样,
+  // 说明Bangumi没有另外记录一个不同的译名,基本就是国产动画本身就是中文标题。
+  const [hideGuochan, setHideGuochan] = useState(initialSession?.hideGuochan ?? true);
   // 是否已经执行过至少一次搜索,用来区分"还没搜索"和"搜索了但没结果"两种空状态
   const [hasSearched, setHasSearched] = useState(initialSession !== null);
 
@@ -125,6 +130,7 @@ export default function SearchPage({ onSelectAnime, manualMatchFolder }: SearchP
         results: combined,
         offset: nextOffset,
         hasMore: stillHasMore,
+        hideGuochan,
       });
     } catch (err) {
       console.error("搜索失败", err);
@@ -143,6 +149,27 @@ export default function SearchPage({ onSelectAnime, manualMatchFolder }: SearchP
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [manualMatchFolder]);
 
+  // 隐藏国漫开关本身不需要重新请求接口,现有results里直接筛,但要顺手更新一下
+  // 会话缓存,不然从详情页返回后开关状态又会跳回默认值。
+  const handleToggleHideGuochan = (checked: boolean) => {
+    setHideGuochan(checked);
+    saveSearchSession({
+      keyword,
+      selectedYear,
+      selectedQuarter,
+      results,
+      offset,
+      hasMore,
+      hideGuochan: checked,
+    });
+  };
+
+  // name_cn留空,或者跟name完全一样,基本就是国产动画本身就是中文标题——
+  // 跟追更页(routers/tracking.py)用的是同一套判断口径。
+  const visibleResults = hideGuochan
+    ? results.filter((item) => item.name_cn && item.name_cn !== item.name)
+    : results;
+
   return (
     <div className="flex flex-col h-full space-y-4 p-4">
       {/* 顶部标题 + 说明,跟追更/下载页保持一致 */}
@@ -160,7 +187,7 @@ export default function SearchPage({ onSelectAnime, manualMatchFolder }: SearchP
       )}
 
       {/* 搜索控制栏 */}
-      <div className="grid grid-cols-[1fr_auto_auto_auto] items-center gap-3 rounded-md border border-border p-3">
+      <div className="grid grid-cols-[1fr_auto_auto_auto_auto] items-center gap-3 rounded-md border border-border p-3">
         <div className="relative w-full">
           <input
             type="text"
@@ -202,10 +229,20 @@ export default function SearchPage({ onSelectAnime, manualMatchFolder }: SearchP
           ))}
         </select>
 
+        <label className="flex cursor-pointer items-center gap-1.5 font-mono text-xs text-muted select-none">
+          <input
+            type="checkbox"
+            checked={hideGuochan}
+            onChange={(e) => handleToggleHideGuochan(e.target.checked)}
+            className="h-3.5 w-3.5 cursor-pointer accent-vermillion"
+          />
+          隐藏国漫
+        </label>
+
         <button
           onClick={() => handleSearch()}
           disabled={loading}
-          className="rounded-md border border-vermillion px-4 py-1.5 font-mono text-xs text-vermillion transition-colors hover:bg-vermillion hover:text-ink disabled:opacity-40"
+          className="min-w-[84px] rounded-md border border-vermillion px-4 py-1.5 text-center font-mono text-xs text-vermillion transition-colors hover:bg-vermillion hover:text-ink disabled:opacity-40"
         >
           {loading ? "检索中..." : "检索"}
         </button>
@@ -213,7 +250,7 @@ export default function SearchPage({ onSelectAnime, manualMatchFolder }: SearchP
 
       {/* 列表渲染 */}
       <div className="flex-1 overflow-y-auto space-y-2">
-        {results.map((item) => (
+        {visibleResults.map((item) => (
           <div
             key={item.id}
             onClick={() => onSelectAnime(item.id)}
@@ -231,7 +268,14 @@ export default function SearchPage({ onSelectAnime, manualMatchFolder }: SearchP
               <div className="truncate text-sm">{item.name_cn || item.name}</div>
               <div className="truncate font-mono text-[11px] text-muted">{item.name}</div>
             </div>
-            <div className="text-right font-mono text-xs text-muted w-24">{item.date || "—"}</div>
+            <div className="flex shrink-0 items-center gap-3 text-right">
+              {item.rating?.score !== undefined && item.rating.score !== null && (
+                <div className="font-mono text-xs font-bold text-amber-500">
+                  ⭐ {item.rating.score.toFixed(1)}
+                </div>
+              )}
+              <div className="font-mono text-xs text-muted w-24">{item.date || "—"}</div>
+            </div>
           </div>
         ))}
         {hasMore && results.length > 0 && (
@@ -245,9 +289,13 @@ export default function SearchPage({ onSelectAnime, manualMatchFolder }: SearchP
             </button>
           </div>
         )}
-        {!loading && results.length === 0 && (
+        {!loading && visibleResults.length === 0 && (
           <div className="text-center py-10 text-muted font-mono text-xs">
-            {hasSearched ? "未找到结果" : "输入番剧名称,点击检索开始查找"}
+            {!hasSearched
+              ? "输入番剧名称,点击检索开始查找"
+              : results.length > 0
+                ? "结果都是国漫,已被隐藏(可取消勾选查看)"
+                : "未找到结果"}
           </div>
         )}
       </div>

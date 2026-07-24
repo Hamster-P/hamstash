@@ -58,6 +58,7 @@ async def search_anime(keyword: str, limit: int = 100, year: int | None = None, 
 
     payload = {
             "keyword": keyword,
+            "sort": "rank",  # 默认按Bangumi排名排序展示,而不是它自带的相关度排序
             "filter": filter_options
         }
 

@@ -18,6 +18,14 @@ async def get_bangumi_schedule():
         weekday_idx = day["weekday"]["id"] - 1
 
         for item in day.get("items", []):
+            # name是Bangumi条目的原语言标题,name_cn是社区翻译的中文名。
+            # 国产动画本身就是中文,要么name_cn留空、要么跟name重复——
+            # 这两种情况都要过滤掉,只保留"确实有一个不同的中文译名"的日番/其他外语番。
+            name = item.get("name") or ""
+            name_cn = item.get("name_cn") or ""
+            if not name_cn or name_cn == name:
+                continue
+
             info = bangumi_client.normalize_bgm_subject(item)
 
             score = None
@@ -30,7 +38,7 @@ async def get_bangumi_schedule():
                     "title": info["title"],
                     "weekday": weekday_idx,
                     "cover_url": info["cover_url"] or None,
-                    "total_eps": info["total_eps"],
+                    "total_eps": info["total_eps"] or None,
                     "score": score,
                 }
             )
