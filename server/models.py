@@ -100,7 +100,11 @@ class RenamedFile(Base):
     original_path = Column(String, nullable=False)
     status = Column(String, default="pending")  # pending/done/failed
     release_version = Column(Integer, default=1)
-    target_full_path = Column(String, nullable=True)
+    target_full_path = Column(String, nullable=True)  # 已弃用,历史遗留列,新代码不再写入/读取(见target_relative_path)
+    target_relative_path = Column(String, nullable=True)  # 相对于library_root的路径,不含盘符前缀——
+    # library_root搬到别的盘/目录时(迁移场景database.py::_resolve_db_path会自动把DB文件也搬过去)
+    # 现读现拼library_root+这个字段就能拿到当前有效的绝对路径,不会像target_full_path那样
+    # 因为焊死了旧盘符导致版本冲突判断(get_current_version_at_target)对不上历史记录。
     error = Column(String, nullable=True)
     processed_at = Column(DateTime(timezone=True), server_default=func.now())
 

@@ -169,11 +169,30 @@ def _preview_files_for_organize(
             platform=season_context["platform"],
         )
         plans.append({"video_path": video_path, "preview": preview})
-    return plans
+    return _guard_target_path_collisions(plans)
+
+
+def _guard_target_path_collisions(plans: list[dict]) -> list[dict]:
+    """同一个种子内如果有两个文件算出了相同的target_full_path(改名规则没考虑到的
+    冷门场景),原样改名会导致后处理的文件把先处理的物理覆盖掉、静默丢数据。
+    这里做最后一道安全网:按video_path排序保证结果确定性,撞车时只放行第一个,
+    其余的直接标记failed、留在原地不动,不参与实际改名——不是修复根因,是防止
+    "根因还没覆盖到的场景"再次造成不可逆的文件丢失。
+    """
+    seen: dict[str, str] = {}
+    result = []
+    for item in sorted(plans, key=lambda p: p["video_path"]):
+        target = item["preview"]["target_full_path"]
+        if target in seen:
+            item["collision_with"] = seen[target]
+        else:
+            seen[target] = item["video_path"]
+        result.append(item)
+    return result
 
 
 def _resolve_version_conflict(
-    db: Session, torrent_hash: str, target_full_path: str, this_version: int
+    db: Session, torrent_hash: str, target_relative_path: str, this_version: int
 ) -> dict:
     """查目标位置当前落地的是第几版、被哪个种子占着,判断这次改名该继续、跳过,
     还是要先删掉被取代的旧种子——纯决策,不做实际删除/改名I/O,返回一个动作
@@ -184,7 +203,7 @@ def _resolve_version_conflict(
     - {"action": "delete_then_proceed", "old_hash": ...}  需先删掉被取代的单集旧种子
     """
     current_version, old_hash, old_torrent_file_count = get_current_version_at_target(
-        db, target_full_path
+        db, target_relative_path
     )
 
     if this_version <= current_version:
@@ -226,11 +245,19 @@ async def _apply_organize_plan(
             print(f"[ORGANIZE] 解析失败,跳过: hash={torrent_hash} file={video_path}")
             continue
 
+        if item.get("collision_with"):
+            upsert_renamed_file(
+                db, torrent_hash, video_path, status="failed",
+                error=f"目标路径与同种子内另一个文件({item['collision_with']})冲突,需人工核查改名规则,已跳过、原样保留",
+            )
+            print(f"[ORGANIZE] 目标路径撞车,跳过: hash={torrent_hash} file={video_path}")
+            continue
+
         # 每次移动前,先查一下这个目标位置当前落地的是第几版——
         # 不管v1/v2是同一个种子里出现,还是分两次RSS下载分别抓到,
         # 都用同一套判断:版本不比现有的高,就跳过,不覆盖已经更好的版本。
         this_version = preview["release_version"]
-        decision = _resolve_version_conflict(db, torrent_hash, preview["target_full_path"], this_version)
+        decision = _resolve_version_conflict(db, torrent_hash, preview["target_relative_path"], this_version)
 
         if decision["action"] == "skip":
             upsert_renamed_file(
@@ -277,7 +304,7 @@ async def _apply_organize_plan(
                     print(f"[ORGANIZE] 字幕改名失败 {sub_path}: {e}")
             upsert_renamed_file(
                 db, torrent_hash, video_path, status="done",
-                target=preview["target_full_path"], release_version=this_version,
+                target=preview["target_relative_path"], release_version=this_version,
             )
         except Exception as e:
             upsert_renamed_file(

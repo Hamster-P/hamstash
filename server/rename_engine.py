@@ -6,12 +6,15 @@ SUBTITLE_EXTS = {"ass", "srt", "ssa", "vtt", "sup"}
 VIDEO_EXTS = {"mkv", "mp4", "ts", "avi", "flv", "mov", "wmv", "m2ts"}
 MOVIE_MARKERS = ["剧场版", "劇場版", "movie", "gekijouban"]
 OVA_MARKERS = ["ova", "oad", "特典", "特别篇", "番外篇", "sp", "总集篇", "回顾篇", ".5", "激活解说"]
-EXTRA_MARKERS = ["op", "ed", "ncop", "nced", "opening", "ending", "pv", "预告"]
-# EXTRA_MARKERS里的短标记(op/ed/pv)朴素子串匹配容易误伤普通单词内部的字母组合
+EXTRA_MARKERS = ["op", "ed", "ncop", "nced", "opening", "ending", "pv", "预告",
+                  "menu", "cm", "sample", "logo", "credit", "trailer", "teaser",
+                  "interview", "spot", "bonus"]
+# EXTRA_MARKERS里的短标记(op/ed/pv/cm等)朴素子串匹配容易误伤普通单词内部的字母组合
 # (比如"Poppin'Dream"含有"op"),改用单词边界的正则;数字后缀0~2位是为了兼容
 # "OP1"/"ED2"这类多首插曲编号的字幕组命名习惯。
 _EXTRA_PATTERN = re.compile(
-    r"(?<![a-z0-9])(op|ed|ncop|nced|opening|ending|pv)\d{0,2}(?![a-z0-9])|预告",
+    r"(?<![a-z0-9])(op|ed|ncop|nced|opening|ending|pv|menu|cm|sample|logo|credit|"
+    r"trailer|teaser|interview|spot|bonus)\d{0,2}(?![a-z0-9])|预告",
     re.IGNORECASE,
 )
 
@@ -116,7 +119,9 @@ def _episode_fallback_str(search_text: str, generic_fallback: bool = False) -> s
     """
     ep_match = re.search(r'(?:第|E|\[)(\d+\.5)(?:话|集|\])?', search_text, re.IGNORECASE)
     if not ep_match and generic_fallback:
-        ep_match = re.search(r'(?<!\d)(\d{1,3})(?!\d)', search_text)
+        # 两侧都不能贴着字母,否则"10bit"/"1080p"这类分辨率/编码后缀里的数字
+        # 会被误当成集数抓取(比如没有真实集数的OVA/PV文件会被错误猜出集数)。
+        ep_match = re.search(r'(?<![a-zA-Z\d])(\d{1,3})(?![a-zA-Z\d])', search_text)
     return ep_match.group(1) if ep_match else "??"
 
 
@@ -253,7 +258,12 @@ def preview_rename_file(
     """
     parsed = anitopy.parse(file_name) or {}
     torrent_parsed = anitopy.parse(torrent_title) or {}
-    media_type = classify_media_type(f"{torrent_title} {file_name}", platform)
+    # 只按这个文件自己的文件名判类型,不掺种子整体标题——合集种子的标题经常会写
+    # "01-11TV全集+OVA"这类描述"整个种子包含哪些内容"的话,如果拿去跟每个文件名
+    # 拼在一起判断,会把标题里提到的"OVA"关键词误传染给种子里所有的TV正片文件,
+    # 导致正片也被错误分类进OVA分支(这正是多集OVA+正传混合种子整理错乱的根因)。
+    # platform(Bangumi官方类型)不受这个影响,已经在classify_media_type内部优先判断。
+    media_type = classify_media_type(file_name, platform)
     file_ext = file_name.rsplit(".", 1)[-1] if "." in file_name else "mkv"
 
     tv_root = library_root
@@ -312,16 +322,23 @@ def preview_rename_file(
         # 是独立的一部作品,不套SxxExx编号,直接用作品自己的标题+字幕组/分辨率,
         # 更贴合Jellyfin/Plex这类刮削器对"独立特典/OVA条目"的识别方式(标准做法是
         # 按作品名单独归类,不是塞进某一季的集数序列里)。多集OVA(同一个Bangumi
-        # 条目内部有好几集)如果同字幕组/分辨率发布,文件名会重复——这是用户
-        # 权衡过、明确接受的取舍,不在这条命名规则里额外处理。
+        # 条目内部有好几集)如果同字幕组/分辨率发布,只用work_title拼文件名会
+        # 全部撞成同一个文件名,后落地的覆盖先落地的——有解析出真实集数时补一个
+        # "- Exx"消歧;真的只有一集、解析不出集数时保持原样干净命名,不硬拼"E??"。
         work_title = _sanitize_filename_segment(season_hint or anime_title)
-        filename = f"{work_title}{meta_suffix}.{file_ext}"
+        if episode_str != "??":
+            filename = f"{work_title} - E{episode_str}{meta_suffix}.{file_ext}"
+        else:
+            filename = f"{work_title}{meta_suffix}.{file_ext}"
     elif folder_bucket == "Season 00":
         folder_path = f"{anime_root}\\{folder_bucket}"
         # 同上:Season 00桶装的是"够不上真季"的旁支正片/短篇特典,不是TV正片的
-        # 某一季,同样不套SxxExx编号。
+        # 某一季,同样不套SxxExx编号,但同样存在多集撞名覆盖的风险,处理方式跟OVA一致。
         work_title = _sanitize_filename_segment(season_hint or anime_title)
-        filename = f"{work_title}{meta_suffix}.{file_ext}"
+        if episode_str != "??":
+            filename = f"{work_title} - E{episode_str}{meta_suffix}.{file_ext}"
+        else:
+            filename = f"{work_title}{meta_suffix}.{file_ext}"
     else:
         if season_ordinal is not None:
             season_str = season_ordinal
@@ -339,6 +356,9 @@ def preview_rename_file(
 
     # relative_path是相对anime_root的部分,用于renameFile的newPath参数
     relative_path = full_path[len(anime_root):].lstrip("\\") if full_path.startswith(anime_root) else None
+    # target_relative_path是相对library_root(tv_root)的部分,跟relative_path语义不同——
+    # 这个是给RenamedFile持久化用的,不受library_root搬到别的盘/目录影响(见models.py说明)。
+    target_relative_path = full_path[len(tv_root):].lstrip("\\") if full_path.startswith(tv_root) else None
 
     return {
         "original_file_name": file_name,
@@ -350,6 +370,7 @@ def preview_rename_file(
         "target_folder": folder_path,
         "target_filename": filename,
         "target_full_path": full_path,
+        "target_relative_path": target_relative_path,
     }
 
 def _extract_release_version(parsed: dict, file_name: str) -> int:

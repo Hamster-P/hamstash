@@ -65,6 +65,10 @@ def upsert_renamed_file(
     error: str | None = None,
     release_version: int = 1,
 ) -> None:
+    """target是相对library_root的相对路径(不含盘符前缀),不是绝对路径——
+    这样library_root搬到别的盘/目录时,历史记录不会因为焊死了旧盘符而失效
+    (见models.py::RenamedFile.target_relative_path的说明)。
+    """
     row = (
         db.query(RenamedFile)
         .filter(
@@ -75,7 +79,7 @@ def upsert_renamed_file(
     )
     if row:
         row.status = status
-        row.target_full_path = target
+        row.target_relative_path = target
         row.error = error
         row.release_version = release_version
     else:
@@ -83,7 +87,7 @@ def upsert_renamed_file(
             torrent_hash=torrent_hash,
             original_path=original_path,
             status=status,
-            target_full_path=target,
+            target_relative_path=target,
             error=error,
             release_version=release_version,
         )
@@ -91,16 +95,20 @@ def upsert_renamed_file(
     db.commit()
 
 
-def get_current_version_at_target(db: Session, target_full_path: str):
+def get_current_version_at_target(db: Session, target_relative_path: str):
     """
-    查某个媒体库目标路径,当前已经落地的是第几版、以及是哪个种子占着这个位置。
+    查某个媒体库目标路径(相对library_root的相对路径),当前已经落地的是第几版、
+    以及是哪个种子占着这个位置。
     返回 (version, occupying_torrent_hash, occupying_torrent_file_count):
     occupying_torrent_file_count是"占着这个位置的种子,总共有多少个文件已经标记done"——
     等于1才说明它是单集种子,可以安全整体删除;大于1说明是合集,不能整体删除。
     """
     row = (
         db.query(RenamedFile)
-        .filter(RenamedFile.target_full_path == target_full_path, RenamedFile.status == "done")
+        .filter(
+            RenamedFile.target_relative_path == target_relative_path,
+            RenamedFile.status == "done",
+        )
         .order_by(RenamedFile.release_version.desc())
         .first()
     )
