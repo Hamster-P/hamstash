@@ -18,9 +18,20 @@ router = APIRouter(tags=["下载"])
 
 
 @router.get("/resources/search")
-async def search_resources(keyword: str, source: str = "dmhy", bgm_id: int | None = None):
-    results = await resource_client.search_by_source(keyword, source, bgm_id)
-    return results
+async def search_resources(
+    keyword: str,
+    source: str = "dmhy",
+    bgm_id: int | None = None,
+    page: int = 1,
+    fansub_name: str | None = None,
+    quality: str | None = None,
+    subtitle: str | None = None,
+    format: str | None = None,
+):
+    return await resource_client.search_by_source(
+        keyword, source, bgm_id, page,
+        fansub_name=fansub_name, quality=quality, subtitle=subtitle, format=format,
+    )
 
 
 @router.post("/resources/prefetch-rename-cache")

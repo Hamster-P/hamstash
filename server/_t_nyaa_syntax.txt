@@ -1,0 +1,21 @@
+'Grand Blue Season 3 AT-X' -> total 4 season2_leak 1
+    [shincaps] Grand Blue Season 3 - 03 (AT-X 1440x1080 MPEG2 AA
+    [shincaps] Grand Blue Season 3 - 02 (AT-X 1440x1080 MPEG2 AA
+    [shincaps] Grand Blue Season 3 - 01 (AT-X 1440x1080 MPEG2 AA
+    [shincaps] Grand Blue Season 2 - 03 (AT-X 1440x1080 MPEG2 AA
+
+'Grand Blue "Season 3" AT-X' -> total 3 season2_leak 0
+    [shincaps] Grand Blue Season 3 - 03 (AT-X 1440x1080 MPEG2 AA
+    [shincaps] Grand Blue Season 3 - 02 (AT-X 1440x1080 MPEG2 AA
+    [shincaps] Grand Blue Season 3 - 01 (AT-X 1440x1080 MPEG2 AA
+
+'Grand Blue Season 3 AT-X -Season 2' -> total 0 season2_leak 0
+
+'shincaps Grand Blue Season 3' -> total 7 season2_leak 1
+    [shincaps] Grand Blue Season 3 - 03 (AT-X 1440x1080 MPEG2 AA
+    [shincaps] Grand Blue Season 3 - 03 (BS11 1920x1080 MPEG2 AA
+    [shincaps] Grand Blue Season 3 - 02 (AT-X 1440x1080 MPEG2 AA
+    [shincaps] Grand Blue Season 3 - 02 (BS11 1920x1080 MPEG2 AA
+    [shincaps] Grand Blue Season 3 - 01 (AT-X 1440x1080 MPEG2 AA
+    [shincaps] Grand Blue Season 3 - 01 (BS11 1920x1080 MPEG2 AA
+

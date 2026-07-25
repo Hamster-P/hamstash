@@ -3,7 +3,23 @@
 翻译成一条qBittorrent"自动下载规则"能识别的正则表达式,
 让RSS命中的范围尽量贴近用户在搜索页设置的筛选结果。
 """
+import shlex
+
 from models import SubscriptionRule
+
+
+def _split_keyword(keyword: str) -> list[str]:
+    """按空格切词,但支持双引号包起来的短语当一个词(引号本身去掉)——
+    比如nyaa/dmhy搜索页教用户用 "Season 3" 这种带引号的精确短语去避开"3"这种
+    单个数字误伤"第X集"里的阿拉伯数字,这里如果只是朴素split(),引号会被当成
+    普通字符切进词里,变成要求标题里必须原样出现带引号的字符串,永远匹配不到,
+    等于把这条订阅规则废掉。用shlex.split()识别引号语法,跟搜索页的用法保持一致。
+    """
+    try:
+        return shlex.split(keyword)
+    except ValueError:
+        # 引号没配对之类的解析不了,原样按空格切,不因为这个直接崩溃
+        return keyword.split()
 
 
 def _alt_group(terms: list[tuple[str, bool]], ignorecase: bool = True) -> str:
@@ -116,18 +132,21 @@ def build_must_contain(rule: SubscriptionRule) -> str:
     让RSS命中的范围尽量贴近用户在搜索页设置的筛选结果。
     """
     pattern = ""
-    # 只有"AnimeGarden来源 + 有bgm_id"这种情况,feed才是严格按subject锁定的单一番剧,
-    # 这时不同字幕组的命名变体天然不是问题,不需要再用原始关键词硬卡一遍。
-    # 如果是AnimeGarden但没有bgm_id(比如直接在下载页打字搜索,没经过详情页解析),
-    # 走的是"search=关键词"模糊全文检索,不保证只锁定一个番,这种情况仍需要关键词兜底,
-    # 否则可能把关键词沾边、但其实不相关的其他番剧也一起自动下载了。
-    # dmhy完全没有bgm_id这层归一化,永远需要关键词强匹配兜底。
-    is_subject_scoped = rule.source == "animegarden" and rule.bgm_id
-    if not is_subject_scoped:
-        keywords = rule.keyword.split()
-        for kw in keywords:
-            if kw.strip():
-                pattern += _require_any([(kw.strip(), False)], ignorecase=False)
+    # 关键词过滤始终生效,不管是不是"AnimeGarden来源+有bgm_id"这种按subject锁定
+    # 单一番剧的场景——subject锁定确实不需要靠关键词去区分"这是不是这部番",
+    # 但同一个bgm_id下不同发布批次/字幕组的标题写法可能有实质差异(比如同一部番
+    # 第三季,一批标题写"第三季"、另一批写数字"3"),用户在搜索框多打的字
+    # (比如"第三季")就是想把这类差异也筛掉,不是单纯的"确认番剧对不对"。
+    # 关键词为空(比如没打字,只是从详情页带bgm_id跳过来)时,下面的循环天然不加
+    # 任何条件,不影响"按ID全量匹配"这个默认行为。
+    # 大小写不敏感——同一部番不同批次/字幕组的标题大小写写法可能不一致(实测
+    # 踩到过:同一部番有的集数标题是"Grand Blue",有的集数标题只有全大写的
+    # "GRAND BLUE",没有大小写混合写法),按原样大小写敏感匹配会把这些集数
+    # 漏掉,导致明明该下载的新种子因为差这一个大小写永远匹配不上。
+    keywords = _split_keyword(rule.keyword)
+    for kw in keywords:
+        if kw.strip():
+            pattern += _require_any([(kw.strip(), False)])
 
     # AnimeGarden建feed时,fansub参数已经在服务器端做过筛选了(跟关键词/subject同理),
     # 不需要也不应该再拿这个规范化的字幕组名字去跟原始标题文本做二次匹配——

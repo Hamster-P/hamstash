@@ -8,3 +8,4 @@ server/build/
 server/*.spec
 cookies.txt
 test
+scripts/*.local.ps1
