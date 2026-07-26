@@ -3,7 +3,7 @@ import anitopy
 
 # 关键词定义
 SUBTITLE_EXTS = {"ass", "srt", "ssa", "vtt", "sup"}
-VIDEO_EXTS = {"mkv", "mp4", "ts", "avi", "flv", "mov", "wmv", "m2ts"}
+VIDEO_EXTS = {"mkv", "mp4", "ts", "avi", "flv", "mov", "wmv", "m2ts", "m2t", "webm", "rmvb", "m4v"}
 MOVIE_MARKERS = ["剧场版", "劇場版", "movie", "gekijouban"]
 OVA_MARKERS = ["ova", "oad", "特典", "特别篇", "番外篇", "sp", "总集篇", "回顾篇", ".5", "激活解说"]
 EXTRA_MARKERS = ["op", "ed", "ncop", "nced", "opening", "ending", "pv", "预告",

@@ -21,7 +21,10 @@ from datetime import datetime
 
 router = APIRouter(tags=["影视库"])
 
-VIDEO_EXTENSIONS = {".mp4", ".mkv", ".avi", ".mov", ".flv"}
+# 跟rename_engine.VIDEO_EXTS共用同一份后缀清单(只是这边要带"."前缀跟Path.suffix比较),
+# 不再各自维护一份、之后加格式两处都要改——之前这里漏了m2t等格式,导致AT-X台标注的
+# .m2t录播文件在影视库详情页里"未找到符合格式的视频文件"。
+VIDEO_EXTENSIONS = {f".{ext}" for ext in rename_engine.VIDEO_EXTS}
 # ----------------- 数据模型定义 -----------------
 class WatchedRequest(BaseModel):
     folder_name: str
@@ -121,17 +124,20 @@ def scan_local_folder_structure(anime_path: Path, library_root: Path):
 
 def get_latest_activity(anime_path: Path) -> datetime | None:
     """
-    用番剧根目录自身 + 各Season子目录自身的mtime取最大值,
-    近似代表这部番"最近一次有新内容落地"的时间——不逐个视频文件stat,
-    换取几百部番一次扫描也能保持轻量。
+    只读番剧根目录自身的mtime(一次stat),不再额外iterdir()+逐个Season子目录
+    stat——新集入库固定走services/organize.py::_organize_single_torrent,不管
+    是否开自动改名,第一步永远是qbittorrent_client.set_torrent_location把这个
+    种子的文件整体落到番剧根目录下,然后才由renameFile相对路径调用挪进具体的
+    Season子文件夹;即使目标Season文件夹早就存在,"整体落到根目录"这一步依然
+    会先触碰一次根目录自身的mtime。所以根目录自己的mtime就足够反映"这部番最近
+    是不是有新内容落地",不需要再挨个看每个Season子文件夹。
+    (已知局限:如果绕开程序手动把文件直接拖进某个Season子文件夹,不会触发这里
+    的mtime变化,"最新更新"排序感知不到——这是"新集入库固定走organize.py"这个
+    前提下可以接受的取舍。)
     """
     if not anime_path.exists():
         return None
-    mtimes = [anime_path.stat().st_mtime]
-    for item in anime_path.iterdir():
-        if item.is_dir():
-            mtimes.append(item.stat().st_mtime)
-    return datetime.fromtimestamp(max(mtimes))
+    return datetime.fromtimestamp(anime_path.stat().st_mtime)
 
 
 async def update_anime_details_from_bgm(db: Session, bgm_id: int):
