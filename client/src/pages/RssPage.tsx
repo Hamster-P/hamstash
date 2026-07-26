@@ -10,8 +10,17 @@ interface RssSubscription {
   auto_rename: boolean;
   enabled: boolean;
   rss_url: string | null;
-  last_error: string | null;
   created_at: string;
+}
+
+interface RssMatchedItem {
+  id: number;
+  guid: string;
+  title: string;
+  magnet: string | null;
+  download_status: string;
+  error: string | null;
+  matched_at: string;
 }
 
 const API_BASE = "http://127.0.0.1:8080";
@@ -24,19 +33,30 @@ function formatDate(iso: string) {
   }
 }
 
+const STATUS_LABEL: Record<string, string> = {
+  added: "已下载",
+  failed: "失败",
+  skipped: "已跳过",
+};
+
 export default function RssPage() {
   const [subs, setSubs] = useState<RssSubscription[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [pendingDeleteId, setPendingDeleteId] = useState<number | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
+
+  const [matchedItems, setMatchedItems] = useState<RssMatchedItem[]>([]);
+  const [matchedLoading, setMatchedLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   const loadSubs = async () => {
     setLoading(true);
     setLoadError(null);
     try {
-      const res = await fetch(`${API_BASE}/rss/subscriptions`);
+      const res = await fetch(`${API_BASE}/rss-engine/subscriptions`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setSubs(data);
@@ -52,11 +72,32 @@ export default function RssPage() {
     loadSubs();
   }, []);
 
+  // 选中某条订阅时加载它的命中记录——每次切换选中项都重新拉一次最新列表。
+  const loadMatchedItems = async (id: number) => {
+    setMatchedLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/rss-engine/subscriptions/${id}/matched-items`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setMatchedItems(await res.json());
+    } catch (err) {
+      console.error("加载命中记录失败", err);
+      setMatchedItems([]);
+    } finally {
+      setMatchedLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (selectedId !== null) loadMatchedItems(selectedId);
+    else setMatchedItems([]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId]);
+
   const handleToggle = async (sub: RssSubscription) => {
     setBusyId(sub.id);
     try {
       const res = await fetch(
-        `${API_BASE}/rss/subscriptions/${sub.id}/toggle`,
+        `${API_BASE}/rss-engine/subscriptions/${sub.id}/toggle`,
         {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
@@ -75,18 +116,40 @@ export default function RssPage() {
 
   const handleDelete = async (id: number) => {
     setBusyId(id);
+    setDeleteError(null);
     try {
-      const res = await fetch(`${API_BASE}/rss/subscriptions/${id}`, {
+      const res = await fetch(`${API_BASE}/rss-engine/subscriptions/${id}`, {
         method: "DELETE",
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.detail ?? `HTTP ${res.status}`);
+      }
       setSubs((prev) => prev.filter((s) => s.id !== id));
       if (selectedId === id) setSelectedId(null);
     } catch (err) {
       console.error("删除RSS订阅失败", err);
+      setDeleteError(err instanceof Error ? err.message : "删除失败");
     } finally {
       setBusyId(null);
       setPendingDeleteId(null);
+    }
+  };
+
+  // "立即更新":不等自动轮询周期,马上对这条订阅跑一轮抓取+匹配+下载,
+  // 跑完之后顺手把命中记录列表刷新一遍,能立刻看到新结果。
+  const handleRefreshNow = async (id: number) => {
+    setRefreshing(true);
+    try {
+      const res = await fetch(`${API_BASE}/rss-engine/subscriptions/${id}/refresh-now`, {
+        method: "POST",
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await loadMatchedItems(id);
+    } catch (err) {
+      console.error("立即更新失败", err);
+    } finally {
+      setRefreshing(false);
     }
   };
 
@@ -98,7 +161,7 @@ export default function RssPage() {
         <div>
           <h1 className="font-display text-2xl tracking-tight">RSS订阅一览</h1>
           <p className="mt-1 font-mono text-[11px] text-muted">
-            点开开关会把这条规则实时同步给qBittorrent;删除前会先要求二次确认
+            后台每隔一段时间自动轮询抓取匹配的新种子;开关只控制是否参与轮询,删除前会先要求二次确认
           </p>
         </div>
         <button
@@ -113,6 +176,12 @@ export default function RssPage() {
       {loadError && (
         <div className="mb-4 rounded-md border border-vermillion/40 bg-surface p-3 font-mono text-xs text-vermillion">
           {loadError}
+        </div>
+      )}
+
+      {deleteError && (
+        <div className="mb-4 rounded-md border border-vermillion/40 bg-surface p-3 font-mono text-xs text-vermillion">
+          删除失败: {deleteError}
         </div>
       )}
 
@@ -160,9 +229,7 @@ export default function RssPage() {
                     {sub.quality ?? "不限"}
                   </td>
                   <td className="px-3 py-2 font-mono text-[11px]">
-                    {sub.last_error ? (
-                      <span className="text-vermillion">同步出错</span>
-                    ) : sub.enabled ? (
+                    {sub.enabled ? (
                       <span className="text-gold">运行中</span>
                     ) : (
                       <span className="text-muted">已暂停</span>
@@ -197,7 +264,6 @@ export default function RssPage() {
                   >
                     {pendingDeleteId === sub.id ? (
                       <div className="flex items-center gap-2 font-mono text-[11px]">
-                        {/* 1. 这里删除了 "确认删除?" 的 span */}
                         <button
                           disabled={busyId === sub.id}
                           onClick={() => handleDelete(sub.id)}
@@ -213,7 +279,6 @@ export default function RssPage() {
                         </button>
                       </div>
                     ) : (
-                      // 2. 这里加了一个 min-w-[88px] 的外框，提前占好两个按钮 + gap 的空间
                       <div className="flex items-center min-w-[88px] font-mono text-[11px]">
                         <button
                           onClick={() => setPendingDeleteId(sub.id)}
@@ -234,21 +299,60 @@ export default function RssPage() {
 
       {selected && (
         <div className="mt-6 rounded-md border border-border bg-surface p-4">
-          <div className="mb-2 font-mono text-[11px] uppercase tracking-wide text-muted">
-            订阅详情 · #{selected.id}
+          <div className="mb-2 flex items-center justify-between">
+            <div className="font-mono text-[11px] uppercase tracking-wide text-muted">
+              订阅详情 · #{selected.id}
+            </div>
+            <button
+              onClick={() => handleRefreshNow(selected.id)}
+              disabled={refreshing}
+              className="rounded border border-vermillion px-2 py-1 font-mono text-[11px] text-vermillion transition-colors hover:bg-vermillion hover:text-ink disabled:opacity-40"
+            >
+              {refreshing ? "更新中..." : "立即更新"}
+            </button>
           </div>
           <div className="flex flex-col gap-1.5 font-mono text-[11px] text-muted">
-            <div>
-              RSS地址:{" "}
-              <span className="break-all text-paper">
-                {selected.rss_url ?? "尚未生成(第一次打开开关时才会创建)"}
-              </span>
-            </div>
             <div>自动改名: {selected.auto_rename ? "开启" : "关闭"}</div>
             <div>创建时间: {formatDate(selected.created_at)}</div>
-            {selected.last_error && (
-              <div className="text-vermillion">
-                最近一次同步错误: {selected.last_error}
+          </div>
+
+          <div className="mt-4 border-t border-border pt-3">
+            <div className="mb-2 font-mono text-[11px] uppercase tracking-wide text-muted">
+              命中记录
+            </div>
+            {matchedLoading && (
+              <div className="font-mono text-[11px] text-muted">加载中...</div>
+            )}
+            {!matchedLoading && matchedItems.length === 0 && (
+              <div className="font-mono text-[11px] text-muted">
+                还没有命中过任何文章,等下一轮自动轮询,或点击"立即更新"。
+              </div>
+            )}
+            {!matchedLoading && matchedItems.length > 0 && (
+              <div className="flex flex-col gap-2">
+                {matchedItems.map((item) => (
+                  <div
+                    key={item.id}
+                    className="flex flex-col gap-0.5 rounded border border-border px-3 py-2 font-mono text-[11px]"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="truncate text-paper">{item.title}</span>
+                      <span
+                        className={
+                          item.download_status === "added"
+                            ? "shrink-0 text-gold"
+                            : item.download_status === "failed"
+                              ? "shrink-0 text-vermillion"
+                              : "shrink-0 text-muted"
+                        }
+                      >
+                        {STATUS_LABEL[item.download_status] ?? item.download_status}
+                      </span>
+                    </div>
+                    <div className="text-muted">{formatDate(item.matched_at)}</div>
+                    {item.error && <div className="text-vermillion">{item.error}</div>}
+                  </div>
+                ))}
               </div>
             )}
           </div>

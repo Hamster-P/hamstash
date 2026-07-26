@@ -143,15 +143,60 @@ async def add_torrent(magnet: str, save_path: str | None = None, category: str =
     resp.raise_for_status()
     return resp.text
 
+async def find_rss_item_path_by_url(url: str) -> str | None:
+    """
+    在qBittorrent当前的RSS订阅目录树里,按url反查它现在实际挂在哪条路径下。
+    addFeed对已经注册过的url一律返回409(不管这次传的path是什么,也不会告诉你
+    它现在实际在哪),不能假设"409=已经在我们期望的路径"——如果这个url曾经因为
+    时序问题/手动操作被加到了别的位置(比如根目录),后续每次同步都会重复撞上
+    这个409,永远发现不了、纠正不了错位,详见add_rss_feed里的说明。
+    """
+    resp = await _request("get", "/api/v2/rss/items", params={"withData": "false"})
+    resp.raise_for_status()
+    tree = resp.json()
+
+    def walk(node: dict, prefix: str) -> str | None:
+        for name, value in node.items():
+            if not isinstance(value, dict):
+                continue
+            current_path = f"{prefix}\\{name}" if prefix else name
+            if "url" in value:
+                if value["url"] == url:
+                    return current_path
+            else:
+                found = walk(value, current_path)
+                if found:
+                    return found
+        return None
+
+    return walk(tree, "")
+
+
+async def move_rss_item(item_path: str, dest_path: str) -> None:
+    """把一个RSS订阅源/文件夹从item_path挪到dest_path(qBittorrent的重命名也是走这个接口)。"""
+    resp = await _request(
+        "post", "/api/v2/rss/moveItem", data={"itemPath": item_path, "destPath": dest_path}
+    )
+    resp.raise_for_status()
+
+
 async def add_rss_feed(url: str, path: str) -> None:
     """
     向qBittorrent注册一个RSS订阅源。
     path是这个订阅在qBittorrent"RSS订阅"目录树里的路径(用\分隔层级),
     我们用它来后续做删除定位,同时也当作展示用的别名。
-    如果该url已经订阅过,qBittorrent会返回409,这里直接忽略当作成功。
+    如果该url已经订阅过,qBittorrent会返回409——但这只代表"这个url已经存在于
+    某个位置",不代表它已经在我们这次要求的path下。实测踩到过:某次同步时序
+    问题导致一个feed第一次被加到了根目录,之后每次重新走订阅流程算出的url不变,
+    addFeed永远409、永远被当成"已经处理好"直接放过,这个feed就再也进不了
+    anime-hub文件夹,delete时按期望path去删也找不到真身,变成删不掉的孤儿。
+    这里遇到409就反查它实际在哪,跟期望path不一致就挪过去。
     """
     resp = await _request("post", "/api/v2/rss/addFeed", data={"url": url, "path": path})
     if resp.status_code == 409:
+        actual_path = await find_rss_item_path_by_url(url)
+        if actual_path and actual_path != path:
+            await move_rss_item(actual_path, path)
         return
     resp.raise_for_status()
 

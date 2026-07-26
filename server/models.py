@@ -159,6 +159,25 @@ class AnimeFamilyCache(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())
 
 
+class RssMatchedItem(Base):
+    """
+    RSS 引擎(services/rss_poller.py)每一轮轮询处理过的文章记录。
+    双重作用:1) 去重——同一篇文章(按guid)不会被重复判断/重复下载;
+    2) 给订阅一览页的"命中记录"展示提供数据源。
+    """
+    __tablename__ = "rss_matched_item"
+
+    id = Column(Integer, primary_key=True, index=True)
+    subscription_id = Column(Integer, ForeignKey("subscription_rule.id"), nullable=False, index=True)
+    guid = Column(String, nullable=False, index=True)  # RSS文章的guid/详情页链接,同一订阅内天然唯一
+    info_hash = Column(String, nullable=True)  # 种子info hash,nyaa需要靠这个自己拼磁力链接
+    title = Column(String, nullable=False)
+    magnet = Column(String, nullable=True)
+    download_status = Column(String, nullable=False)  # added / failed / skipped
+    error = Column(String, nullable=True)
+    matched_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class AnimeOriginCache(Base):
     """
     bgm_id -> 是否日本产地的持久化缓存,产地数据来自Bangumi条目的meta_tags字段

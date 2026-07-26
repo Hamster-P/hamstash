@@ -15,6 +15,9 @@ DEFAULTS = {
     "download_root": r"D:\AnimeDownloads",
     "library_root": r"D:\AnimeLibrary",
     "rename_poll_interval_seconds": "300",
+    # RSS引擎(services/rss_poller.py)自动轮询间隔,默认30分钟——跟qBittorrent自带
+    # RSS刷新的默认节奏保持一致,同时也是对dmhy之前被限流历史的保守考量。
+    "rss_poll_interval_seconds": "1800",
     "potplayer_path": r"C:\Program Files\DAUM\PotPlayer\PotPlayerMini64.exe",
     "player_mode": "external",  # external=用户指定的PotPlayer等外置播放器 / builtin=内置mpv
     "default_source": "dmhy",  # 下载页默认选中的数据源: dmhy / animegarden / nyaa

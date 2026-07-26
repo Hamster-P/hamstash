@@ -48,6 +48,13 @@ def get_settings(db: Session = Depends(get_db)):
                 config_store.DEFAULTS["rename_poll_interval_seconds"],
             )
         ),
+        "rss_poll_interval_seconds": int(
+            get_setting(
+                db,
+                "rss_poll_interval_seconds",
+                config_store.DEFAULTS["rss_poll_interval_seconds"],
+            )
+        ),
         "qbit_host": get_setting(db, "qbit_host", config_store.DEFAULTS["qbit_host"]),
         "qbit_port": int(get_setting(db, "qbit_port", config_store.DEFAULTS["qbit_port"])),
         "qbit_username": get_setting(db, "qbit_username", config_store.DEFAULTS["qbit_username"]),
@@ -68,6 +75,7 @@ def update_settings(payload: SettingsUpdate, db: Session = Depends(get_db)):
         "potplayer_path": payload.potplayer_path,
         "player_mode": payload.player_mode,
         "rename_poll_interval_seconds": str(payload.rename_poll_interval_seconds),
+        "rss_poll_interval_seconds": str(payload.rss_poll_interval_seconds),
         "default_source": payload.default_source,
         "proxy_url": payload.proxy_url,
     }

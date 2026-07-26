@@ -1,5 +1,5 @@
 """对应前端 DownloadPage(下载):种子检索、改名预览、提交下载/建立RSS订阅。"""
-from fastapi import APIRouter, BackgroundTasks, Depends
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 import config_store
@@ -12,7 +12,7 @@ from schemas import DownloadRequest, PrefetchRenameCacheRequest, RenamePreviewRe
 from services.bgm_series_cache import prefetch_rename_cache_task, resolve_series_identity
 from services.common import get_setting
 from services.staging import staging_folder, upsert_anime_folder
-from services.subscription import activate_subscription_task
+from services.rss_poller import poll_subscription_task
 
 router = APIRouter(tags=["下载"])
 
@@ -132,19 +132,42 @@ async def execute_download(
 
     if payload.subscribe:
         download_root = get_setting(db, "download_root", config_store.DEFAULTS["download_root"])
-        existing = (
-            db.query(SubscriptionRule)
-            .filter(SubscriptionRule.keyword == payload.keyword)
-            .first()
-        )
+        # 一部番(有bgm_id时按bgm_id,没有就退回按keyword)同时只允许一条生效中的订阅——
+        # 不管换源还是换字幕组,都不能让两条订阅同时对着同一部番各自往qBittorrent
+        # 推送独立的RSS/自动下载规则,那样命中范围重叠会导致同一集被多次抓取,
+        # 而且各自的rss_path/rule_name本来就没有关联,没法互相感知对方的存在。
+        if payload.bgm_id:
+            existing = (
+                db.query(SubscriptionRule)
+                .filter(SubscriptionRule.bgm_id == payload.bgm_id)
+                .first()
+            )
+        else:
+            existing = (
+                db.query(SubscriptionRule)
+                .filter(SubscriptionRule.keyword == payload.keyword)
+                .first()
+            )
         if existing:
-            existing.fansub_name = payload.fansub_name
-            existing.bgm_id = payload.bgm_id  # 继续存"这次提交的季度专属ID",给RSS的subject=过滤用,不是根ID
-            existing.source = payload.source
-            existing.quality = payload.quality
-            existing.subtitle = payload.subtitle
-            existing.format = payload.format
-            existing.release_type = payload.release_type
+            same_config = (
+                existing.source == payload.source
+                and existing.fansub_name == payload.fansub_name
+                and existing.quality == payload.quality
+                and existing.subtitle == payload.subtitle
+                and existing.format == payload.format
+                and existing.release_type == payload.release_type
+            )
+            if not same_config:
+                # 内容不一致代表用户想换源/换字幕组/换筛选条件——不做静默覆盖
+                # (会顶掉旧订阅的自动下载规则却没有任何确认,也会在切换的过渡期
+                # 造成新旧两条规则同时命中、重复下载),要求用户先手动删除旧订阅。
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"这部番已存在一条生效中的订阅(来源: {existing.source}, "
+                        f"字幕组: {existing.fansub_name or '不限'}),如需更换请先在RSS订阅一览页删除旧订阅"
+                    ),
+                )
             existing.auto_rename = payload.auto_rename
             existing.enabled = True
             db.commit()
@@ -167,11 +190,11 @@ async def execute_download(
             db.commit()
             db.refresh(rule)
 
-        # 打开RSS开关那一刻,就把这条规则丢进后台去推送给qBittorrent(注册RSS源+自动下载规则),
-        # 不阻塞这次HTTP响应——之前"画面显示提交失败,但qBittorrent里其实已经建好"的现象,
-        # 大概率就是这几次对qBittorrent的网络请求耗时较长导致前端fetch先中断了。
+        # 打开RSS开关那一刻,后台立即跑一轮抓取+匹配+下载,不等下一个自动轮询周期
+        # (见services/rss_poller.py),不阻塞这次HTTP响应。新架构下这里不再需要
+        # 往qBittorrent注册任何RSS订阅/规则,后续的新种子由rss_poll_loop自动轮询。
         subscription_id = rule.id
-        background_tasks.add_task(activate_subscription_task, rule.id, download_root)
+        background_tasks.add_task(poll_subscription_task, rule.id, download_root)
 
     created_tasks = []
     if not rss_managed:

@@ -73,6 +73,7 @@ class SettingsUpdate(BaseModel):
     library_root: str
     potplayer_path: str
     rename_poll_interval_seconds: int = 300
+    rss_poll_interval_seconds: int = 1800  # RSS引擎自动轮询间隔,默认30分钟
     player_mode: str = "external"  # external / builtin
     default_source: str = "dmhy"  # 下载页默认选中的数据源: dmhy / animegarden / nyaa
     proxy_url: str = ""  # 访问外部动漫资源站时用的代理地址,留空=直连
@@ -119,6 +120,21 @@ class RssSubscriptionResponse(BaseModel):
 
 class RssToggleRequest(BaseModel):
     enabled: bool
+
+
+class RssMatchedItemResponse(BaseModel):
+    """订阅一览页"命中记录"列表的单条记录。"""
+
+    id: int
+    guid: str
+    title: str
+    magnet: Optional[str] = None
+    download_status: str
+    error: Optional[str] = None
+    matched_at: datetime
+
+    class Config:
+        from_attributes = True
 
 
 class BatchDeleteTasksRequest(BaseModel):

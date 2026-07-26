@@ -1,4 +1,6 @@
+import asyncio
 import re
+import shlex
 from datetime import datetime, timezone
 from urllib.parse import urlencode
 
@@ -67,12 +69,43 @@ def _extra_query_terms(quality: str | None, subtitle: str | None, format_: str |
     return terms
 
 
+def _split_keyword(keyword: str) -> list[str]:
+    """按空格切词,但双引号包起来的短语当一个词(引号本身去掉)——跟前端
+    DownloadPage.tsx::splitKeywordTokens、services/rss_poller.py::matches_rule
+    是同一个语义,给"本地精确短语匹配"用。这里是唯一权威实现,前端/
+    rss_poller.py都从这里(或对应各自语言的等价实现)复用同一套约定;
+    旧的services/rss_rules.py里还有一份独立副本,那是保留不动的旧代码,
+    不在这次统一范围内。
+    """
+    try:
+        return shlex.split(keyword)
+    except ValueError:
+        return keyword.split()
+
+
+def _strip_query_quotes(keyword: str) -> str:
+    """去掉用户为"本地精确短语匹配"特意加的引号语法,只用在构造发给站点搜索/RSS
+    接口的查询字符串这一步——nyaa的搜索引擎会把字面引号字符当成必须原样出现在
+    标题里的内容去匹配,永远查不到东西(实测确认:带引号返回空结果,不带引号
+    正常返回);dmhy/AnimeGarden的搜索能兼容/忽略引号字符,两种写法结果一致
+    (同样实测确认过),所以这里不用按source分别判断要不要处理,统一清洗更简单、
+    也不会影响dmhy/AnimeGarden的行为。
+
+    本地精确短语匹配(前端filteredResults、rss_poller.py::matches_rule)继续用
+    用户原始输入(带引号)做判断,不受这里影响——服务端查询变宽泛只是为了"至少
+    能捞到东西",精确度交给本地过滤兜底,这个分工思路不变。
+    """
+    if not keyword:
+        return keyword
+    return " ".join(_split_keyword(keyword))
+
+
 def _build_effective_keyword(keyword: str, extra_terms: list[str], fansub_name: str | None = None) -> str:
     """把用户输入的关键词、字幕组名(dmhy/nyaa没有结构化的字幕组参数,只能拼进
     关键词里)、画质/字幕语言/格式这几个附加词,拼成最终发给站点搜索接口的
     关键词字符串,统一在这里加引号保护(带空格的词各自加引号,不是拼完整体加)。
     """
-    parts = [keyword] if keyword else []
+    parts = [_strip_query_quotes(keyword)] if keyword else []
     if fansub_name:
         parts.append(_quote_term(fansub_name))
     parts.extend(_quote_term(t) for t in extra_terms)
@@ -337,14 +370,35 @@ async def search_by_source(
         # subject(bgm_id)和search可以同时传(实测过,两者会一起生效做AND过滤),
         # 画质/字幕语言/格式没有独立参数,还是只能拼进search里。
         effective_keyword = _build_effective_keyword(keyword, extra_terms)
-        extra_params: dict = {"subject": bgm_id} if bgm_id else {}
+        subject_params: dict = {"subject": bgm_id} if bgm_id else {}
         if effective_keyword:
-            extra_params["search"] = effective_keyword
+            subject_params["search"] = effective_keyword
         if fansub_name:
-            extra_params["fansub"] = fansub_name
-        resources, complete = await _fetch_animegarden_page(extra_params, page)
-        results = _shape_animegarden_items(resources)
-        has_more = not complete
+            subject_params["fansub"] = fansub_name
+
+        if bgm_id:
+            # AnimeGarden并不是所有资源都回填了subjectId(实测过某些代理商/正版
+            # 引进的批次完全没有subjectId字段),只按subject查会静默漏掉这些——
+            # 这里额外并发一次不带subject的纯文本查询兜底,两边结果按magnet去重
+            # 合并,subject查到的排在前面(更精确,优先展示)。
+            text_params: dict = {}
+            if effective_keyword:
+                text_params["search"] = effective_keyword
+            if fansub_name:
+                text_params["fansub"] = fansub_name
+            (subject_resources, subject_complete), (text_resources, text_complete) = await asyncio.gather(
+                _fetch_animegarden_page(subject_params, page),
+                _fetch_animegarden_page(text_params, page),
+            )
+            subject_items = _shape_animegarden_items(subject_resources)
+            text_items = _shape_animegarden_items(text_resources)
+            seen_magnets = {item["magnet"] for item in subject_items}
+            results = subject_items + [item for item in text_items if item["magnet"] not in seen_magnets]
+            has_more = (not subject_complete) or (not text_complete)
+        else:
+            resources, complete = await _fetch_animegarden_page(subject_params, page)
+            results = _shape_animegarden_items(resources)
+            has_more = not complete
     elif source == "dmhy":
         # dmhy的team_id参数虽然存在,但目前只解析出字幕组的展示名、没存数字ID
         # (标题几乎都以"[字幕组名]"开头),字幕组过滤和画质/格式/字幕语言一样
@@ -372,7 +426,7 @@ def build_dmhy_rss_url(keyword: str) -> str:
     dmhy的RSS本身支持keyword查询参数做服务端过滤,所以这里直接拼URL即可,
     不需要额外的搜索逻辑。
     """
-    query = urlencode({"keyword": keyword})
+    query = urlencode({"keyword": _strip_query_quotes(keyword)})
     return f"{DMHY_RSS_URL}?{query}"
 
 def build_animegarden_rss_url_by_subject(bgm_id: int, fansub_name: str | None = None) -> str:
@@ -404,7 +458,7 @@ def build_animegarden_rss_url(keyword: str, fansub_name: str | None = None) -> s
     参数名沿用/resources JSON接口的约定(search/fansub),
     /feed.xml理论上是同一套过滤参数,只是输出格式是RSS而不是JSON。
     """
-    params = {"search": keyword}
+    params = {"search": _strip_query_quotes(keyword)}
     if fansub_name:
         params["fansub"] = fansub_name
     query = urlencode(params)
@@ -412,6 +466,9 @@ def build_animegarden_rss_url(keyword: str, fansub_name: str | None = None) -> s
 
 
 def build_nyaa_rss_url(keyword: str) -> str:
-    """构建nyaa.si按关键词过滤、限定Anime大类的RSS订阅地址,交给qBittorrent长期订阅用。"""
-    query = urlencode({"page": "rss", "c": NYAA_ANIME_CATEGORY, "f": 0, "q": keyword})
+    """构建nyaa.si按关键词过滤、限定Anime大类的RSS订阅地址,交给qBittorrent长期订阅用。
+    keyword必须先去掉引号短语语法(见_strip_query_quotes)——nyaa的搜索把字面引号字符
+    当成必须原样出现在标题里的内容去匹配,带引号的查询会返回空结果(实测确认过)。
+    """
+    query = urlencode({"page": "rss", "c": NYAA_ANIME_CATEGORY, "f": 0, "q": _strip_query_quotes(keyword)})
     return f"{NYAA_URL}/?{query}"

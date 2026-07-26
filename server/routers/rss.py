@@ -47,7 +47,13 @@ async def toggle_rss_subscription(
 
 @router.delete("/subscriptions/{sub_id}")
 async def delete_rss_subscription(sub_id: int, db: Session = Depends(get_db)):
-    """手动删除一条RSS订阅:从qBittorrent里撤下自动下载规则+RSS源,再删掉数据库记录。"""
+    """
+    手动删除一条RSS订阅:从qBittorrent里撤下自动下载规则+RSS源,再删掉数据库记录。
+    qBittorrent那两步任一步失败(比如连不上)都不删数据库记录——静默吞掉异常然后
+    照删不误,会把DB记录删没了但qBittorrent里的feed/规则原样留着,变成永远
+    没有任何线索能找回、清理的孤儿。宁可让这条订阅留在列表里、用户重试,
+    也不留下这种删不掉的残留状态。
+    """
     rule = db.query(SubscriptionRule).filter(SubscriptionRule.id == sub_id).first()
     if not rule:
         raise HTTPException(status_code=404, detail="订阅不存在")
@@ -55,13 +61,13 @@ async def delete_rss_subscription(sub_id: int, db: Session = Depends(get_db)):
     if rule.rule_name:
         try:
             await qbittorrent_client.remove_rss_auto_download_rule(rule.rule_name)
-        except Exception:
-            pass  # 删除是终态操作,qBittorrent那边清不掉也不应该阻止本地记录删除
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"删除自动下载规则失败: {e}")
     if rule.rss_path:
         try:
             await qbittorrent_client.remove_rss_item(rule.rss_path)
-        except Exception:
-            pass
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"删除RSS订阅源失败: {e}")
 
     db.delete(rule)
     db.commit()

@@ -55,6 +55,7 @@ interface SavedSnapshot {
   potplayerPath: string;
   playerMode: "builtin" | "external";
   pollMinutes: number;
+  rssPollMinutes: number;
   defaultSource: "dmhy" | "animegarden" | "nyaa";
   proxyUrl: string;
 }
@@ -71,6 +72,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
   const [defaultSource, setDefaultSource] = useState<"dmhy" | "animegarden" | "nyaa">("dmhy");
   const [proxyUrl, setProxyUrl] = useState("");
   const [pollMinutes, setPollMinutes] = useState(5);
+  const [rssPollMinutes, setRssPollMinutes] = useState(30);
   const [saving, setSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [potplayerPathError, setPotplayerPathError] = useState<string | null>(null);
@@ -94,6 +96,9 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
           pollMinutes: clampPollMinutes(
             Math.round((data.rename_poll_interval_seconds ?? 300) / 60),
           ),
+          rssPollMinutes: clampPollMinutes(
+            Math.round((data.rss_poll_interval_seconds ?? 1800) / 60),
+          ),
           defaultSource: (["dmhy", "animegarden", "nyaa"] as const).includes(
             data.default_source,
           )
@@ -106,6 +111,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
         setPotplayerPath(next.potplayerPath);
         setPlayerMode(next.playerMode);
         setPollMinutes(next.pollMinutes);
+        setRssPollMinutes(next.rssPollMinutes);
         setDefaultSource(next.defaultSource);
         setProxyUrl(next.proxyUrl);
         setSavedSnapshot(next);
@@ -122,6 +128,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
       potplayerPath !== savedSnapshot.potplayerPath ||
       playerMode !== savedSnapshot.playerMode ||
       pollMinutes !== savedSnapshot.pollMinutes ||
+      rssPollMinutes !== savedSnapshot.rssPollMinutes ||
       defaultSource !== savedSnapshot.defaultSource ||
       proxyUrl !== savedSnapshot.proxyUrl);
 
@@ -167,6 +174,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
           potplayer_path: potplayerPath, // 新增：提交给后端的播放器路径
           player_mode: playerMode,
           rename_poll_interval_seconds: clampPollMinutes(pollMinutes) * 60,
+          rss_poll_interval_seconds: clampPollMinutes(rssPollMinutes) * 60,
           default_source: defaultSource,
           proxy_url: proxyUrl.trim(),
         }),
@@ -187,6 +195,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
         potplayerPath,
         playerMode,
         pollMinutes,
+        rssPollMinutes,
         defaultSource,
         proxyUrl: proxyUrl.trim(),
       });
@@ -392,6 +401,36 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
                 return;
               }
               setPollMinutes(clampPollMinutes(parseInt(digitsOnly, 10)));
+            }}
+            className="w-24 rounded border border-border bg-ink px-3 py-2 text-sm text-paper outline-none focus:border-vermillion focus:ring-1 focus:ring-vermillion"
+          />
+          <span className="font-mono text-xs text-muted">分钟</span>
+        </div>
+      </div>
+
+      <div className="mb-6 rounded-md border border-border bg-surface p-4">
+        <div className="mb-1 text-sm">RSS订阅轮询间隔</div>
+        <p className="mb-3 font-mono text-[11px] text-muted">
+          后台每隔这么久检查一次RSS订阅有没有匹配的新种子并自动下载(1~{POLL_MINUTES_MAX}分钟)
+        </p>
+        <div className="flex items-center gap-2">
+          <input
+            type="number"
+            inputMode="numeric"
+            min={POLL_MINUTES_MIN}
+            max={POLL_MINUTES_MAX}
+            step={1}
+            value={rssPollMinutes}
+            onKeyDown={(e) => {
+              if (["e", "E", "+", "-", "."].includes(e.key)) e.preventDefault();
+            }}
+            onChange={(e) => {
+              const digitsOnly = e.target.value.replace(/[^0-9]/g, "");
+              if (digitsOnly === "") {
+                setRssPollMinutes(POLL_MINUTES_MIN);
+                return;
+              }
+              setRssPollMinutes(clampPollMinutes(parseInt(digitsOnly, 10)));
             }}
             className="w-24 rounded border border-border bg-ink px-3 py-2 text-sm text-paper outline-none focus:border-vermillion focus:ring-1 focus:ring-vermillion"
           />

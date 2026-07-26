@@ -183,7 +183,15 @@ export default function DownloadPage({
       const res = await fetch(`${API_BASE}/resources/search?${params.toString()}`);
       const data = await res.json();
       const newResults: ResourceItem[] = data.results ?? [];
-      setResults((prev) => (append ? [...prev, ...newResults] : newResults));
+      setResults((prev) => {
+        if (!append) return newResults;
+        // AnimeGarden源在bgm_id存在时,服务端会把"按subject查"和"按文本查"两路结果
+        // union合并(见resource_client.py::search_by_source),两路各自独立翻页、
+        // 页码不同步,同一个磁力链接可能在不同的"加载更多"批次里各出现一次——
+        // 单次请求内的去重覆盖不到跨页的情况,这里按magnet过滤掉已经在列表里的条目。
+        const seenMagnets = new Set(prev.map((item) => item.magnet));
+        return [...prev, ...newResults.filter((item) => !seenMagnets.has(item.magnet))];
+      });
       setPage(currentPage);
       setHasMore(Boolean(data.has_more));
       setRssWindowCap(data.rss_window_cap ?? null);
@@ -433,11 +441,18 @@ export default function DownloadPage({
         }),
       });
       const data = await res.json();
+      if (!res.ok) {
+        // 后端按bgm_id/keyword检测到这部番已有一条生效中的订阅时返回409,
+        // detail里带着具体的来源/字幕组文案——原样展示,不要走下面的通用报错。
+        setResultMessage(data.detail ?? `提交失败(HTTP ${res.status})`);
+        return;
+      }
       setResultMessage(
         data.rss_managed
           ? "已建立RSS订阅规则,qBittorrent会自动抓取并下载匹配的种子"
           : `已提交 ${data.tasks.length} 个下载任务`,
-      );setSelected(new Set());
+      );
+      setSelected(new Set());
     } catch (err) {
       setResultMessage("提交失败,请检查后端和qBittorrent连接");
       console.error(err);
