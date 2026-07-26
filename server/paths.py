@@ -35,3 +35,27 @@ def get_db_location_pointer_file() -> Path:
     """
     data_dir = get_data_dir()
     return data_dir / "db_location.txt" if IS_FROZEN else data_dir / "data" / "db_location.txt"
+
+
+def get_install_dir() -> Path:
+    """软件安装根目录,给下载暂存/媒体库根目录的默认值当锚点用。
+
+    打包运行时(PyInstaller frozen)exe的实际布局是
+    `$INSTDIR\\backend\\hamstash-server\\hamstash-server.exe`(见
+    client/src-tauri/windows/hooks.nsh 里NSSM注册服务时用的路径),
+    往上三层就是NSIS安装时用户选的$INSTDIR。源码/开发环境下没有安装目录这个概念,
+    退回到本仓库根目录(server目录的上一级)。
+    """
+    if IS_FROZEN:
+        return Path(sys.executable).resolve().parent.parent.parent
+    return Path(__file__).resolve().parent.parent
+
+
+def get_default_download_root() -> Path:
+    """下载暂存目录默认值:安装目录下的 AnimeDownloads 文件夹。"""
+    return get_install_dir() / "AnimeDownloads"
+
+
+def get_default_library_root() -> Path:
+    """媒体库根目录默认值:安装目录下的 animelibrary 文件夹。"""
+    return get_install_dir() / "animelibrary"

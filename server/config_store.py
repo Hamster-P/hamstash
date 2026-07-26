@@ -5,15 +5,18 @@
 import configparser
 import os
 
-from paths import get_settings_ini_default
+from paths import get_default_download_root, get_default_library_root, get_settings_ini_default
 
 # 开发环境下放在源码目录的data/子目录;PyInstaller冻结成exe(Windows服务部署)时
 # 自动指向%ProgramData%\hamstash\settings.ini,详见paths.py。
 # Docker部署可以继续用SETTINGS_INI_PATH=/app/data/settings.ini这类容器内路径覆盖。
 INI_PATH = os.getenv("SETTINGS_INI_PATH", str(get_settings_ini_default()))
 DEFAULTS = {
-    "download_root": r"D:\AnimeDownloads",
-    "library_root": r"D:\AnimeLibrary",
+    # 默认落在软件安装目录下(见paths.py::get_install_dir),而不是写死的盘符路径——
+    # 装在哪个盘就默认用哪个盘,同时安装脚本(hooks.nsh)会在安装时预先建好这两个
+    # 文件夹,首次启动不用用户自己手动建目录。
+    "download_root": str(get_default_download_root()),
+    "library_root": str(get_default_library_root()),
     "rename_poll_interval_seconds": "300",
     # RSS引擎(services/rss_poller.py)自动轮询间隔,默认30分钟——跟qBittorrent自带
     # RSS刷新的默认节奏保持一致,同时也是对dmhy之前被限流历史的保守考量。

@@ -1,6 +1,7 @@
+import os
 import re
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 from typing import Optional
 from datetime import datetime
 
@@ -82,6 +83,19 @@ class SettingsUpdate(BaseModel):
     @classmethod
     def validate_proxy_url(cls, value: str) -> str:
         return validate_proxy_url_value(value)
+
+    @model_validator(mode="after")
+    def validate_roots_distinct(self):
+        """下载暂存目录和媒体库根目录不能是同一个文件夹——整理任务会把下载暂存
+        目录当作"待搬运的临时区"扫描处理,两者重合会把媒体库里已经归档好的文件
+        当成新下载的东西重新扫描/移动,数据直接错乱。用normcase+normpath归一化
+        再比较,不然"D:/Anime"和"d:/anime/"这种大小写/末尾斜杠差异会被误判成不同。
+        """
+        left = os.path.normcase(os.path.normpath(self.download_root))
+        right = os.path.normcase(os.path.normpath(self.library_root))
+        if left == right:
+            raise ValueError("下载暂存目录和媒体库根目录不能设置成同一个文件夹")
+        return self
 
 
 class ProxyTestRequest(BaseModel):

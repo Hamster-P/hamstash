@@ -10,6 +10,13 @@
 !macroend
 
 !macro NSIS_HOOK_POSTINSTALL
+  ; 下载暂存目录/媒体库根目录的默认值(server/config_store.py::DEFAULTS,通过
+  ; paths.py::get_install_dir()算出来,固定就是这里的$INSTDIR)——提前建好,
+  ; 首次启动不用用户自己手动建目录。CreateDirectory对已存在的目录是幂等的,
+  ; 重装/升级场景不会报错。
+  CreateDirectory "$INSTDIR\AnimeDownloads"
+  CreateDirectory "$INSTDIR\animelibrary"
+
   ; 幂等处理:先尝试停掉/删掉同名旧服务(如果存在,比如重装/升级场景),
   ; 找不到服务时这两条会报错但不影响后面继续执行,不用特地判断。
   ExecWait '"$INSTDIR\backend\nssm.exe" stop HamStashServer'

@@ -27,6 +27,13 @@ function looksLikePotPlayerExe(fullPath: string): boolean {
   return /potplayer/i.test(basename) && /\.exe$/i.test(basename);
 }
 
+// 归一化路径用于比较(大小写不敏感、去掉结尾的斜杠),跟后端schemas.py::
+// SettingsUpdate.validate_roots_distinct用同一套判断标准,保证前端拦截的范围
+// 跟后端实际会拒绝的范围一致。
+function normalizePath(path: string): string {
+  return path.trim().toLowerCase().replace(/[\\/]+$/, "");
+}
+
 // 从FastAPI的错误响应里提取人话版错误信息(比如proxy_url格式校验失败时),
 // 不然只会显示"保存失败,请检查后端连接"这种文不对题的提示,看不出是哪项设置填错了。
 function extractValidationMessage(body: unknown): string | null {
@@ -76,6 +83,10 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
   const [saving, setSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [potplayerPathError, setPotplayerPathError] = useState<string | null>(null);
+  // 下载暂存目录/媒体库根目录选成同一个文件夹时的报错——跟后端schemas.py::
+  // SettingsUpdate.validate_roots_distinct是同一条业务规则的前端拦截,选中的
+  // 那一刻就拒绝、不写入state,不用等点"应用"才发现。
+  const [dirConflictError, setDirConflictError] = useState<string | null>(null);
   // 上一次成功加载/保存时的快照,跟当前表单值比对得出是否有未保存的修改
   const [savedSnapshot, setSavedSnapshot] = useState<SavedSnapshot | null>(null);
 
@@ -140,10 +151,19 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
       .catch(() => setQbStatus("failed"));
   };
 
-  const handleBrowseDirectory = async (setter: (path: string) => void) => {
+  const handleBrowseDirectory = async (which: "download" | "library") => {
     if (!(await isTauri())) return;
     const dir = await open({ directory: true });
-    if (typeof dir === "string") setter(dir);
+    if (typeof dir !== "string") return;
+    const other = which === "download" ? libraryRoot : downloadRoot;
+    if (other && normalizePath(dir) === normalizePath(other)) {
+      // 报错 + 退回原样:不写入state,选中的这次操作直接作废,原来的值保持不变。
+      setDirConflictError("下载暂存目录和媒体库根目录不能设置成同一个文件夹,请重新选择");
+      return;
+    }
+    setDirConflictError(null);
+    if (which === "download") setDownloadRoot(dir);
+    else setLibraryRoot(dir);
   };
 
   const handleBrowsePotplayer = async () => {
@@ -162,6 +182,21 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
   };
 
   const handleSave = async () => {
+    // 正常情况下handleBrowseDirectory已经在选中的那一刻拦掉了冲突,这里是兜底
+    // (比如设置刚加载进来时数据本身就相同这种极端情况)——报错并把两个目录都
+    // 退回上一次保存成功的值,不把冲突状态留在表单里。
+    if (
+      downloadRoot &&
+      libraryRoot &&
+      normalizePath(downloadRoot) === normalizePath(libraryRoot)
+    ) {
+      setDirConflictError("下载暂存目录和媒体库根目录不能设置成同一个文件夹,请重新选择");
+      if (savedSnapshot) {
+        setDownloadRoot(savedSnapshot.downloadRoot);
+        setLibraryRoot(savedSnapshot.libraryRoot);
+      }
+      return;
+    }
     setSaving(true);
     setSaveMessage(null);
     try {
@@ -251,7 +286,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
           />
           <button
             type="button"
-            onClick={() => handleBrowseDirectory(setDownloadRoot)}
+            onClick={() => handleBrowseDirectory("download")}
             className="shrink-0 rounded-md border border-border px-3 py-2 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion"
           >
             浏览...
@@ -274,12 +309,15 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
           />
           <button
             type="button"
-            onClick={() => handleBrowseDirectory(setLibraryRoot)}
+            onClick={() => handleBrowseDirectory("library")}
             className="shrink-0 rounded-md border border-border px-3 py-2 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion"
           >
             浏览...
           </button>
         </div>
+        {dirConflictError && (
+          <p className="mt-2 font-mono text-[11px] text-vermillion">{dirConflictError}</p>
+        )}
       </div>
 
       {/* 新增：播放方式选择 */}
