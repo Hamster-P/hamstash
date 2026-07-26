@@ -1,6 +1,7 @@
 import asyncio
 import httpx
 import json
+import os
 
 import config_store
 from database import SessionLocal
@@ -177,6 +178,24 @@ async def get_completed_torrents(category: str, exclude_tag: str) -> list[dict]:
 async def get_category_torrents(category: str) -> list[dict]:
     """列出某分类下的全部种子(不筛选完成状态),用于下载详情页展示。"""
     return await _fetch_torrents_info({"category": category})
+
+
+async def get_torrents_by_save_path(save_path: str, category: str = "anime-hub") -> list[dict]:
+    """列出当前save_path等于指定路径的全部种子(不筛选完成状态)。
+
+    暂存目录是按(下载暂存根,番名,bgm_id)算出来的共享路径,同一部番的多个种子
+    (还在下载中的、RSS陆续投递进来的)可能同时占着同一个save_path——services/
+    organize.py清理空暂存目录前,要靠这个函数确认"是不是真的一个种子都不剩了",
+    不能只看已经处理完这一个种子的状态。用normcase+normpath归一化路径再比较,
+    跟schemas.py::SettingsUpdate.validate_roots_distinct是同一套比较标准
+    (大小写/末尾斜杠不敏感)。
+    """
+    torrents = await _fetch_torrents_info({"category": category})
+    target = os.path.normcase(os.path.normpath(save_path))
+    return [
+        t for t in torrents
+        if os.path.normcase(os.path.normpath(t.get("save_path") or "")) == target
+    ]
 
 
 async def get_torrents_by_hashes(hashes: list[str]) -> list[dict]:

@@ -7,6 +7,8 @@
 所以单独放在services里,而不是挂在某个routers文件下。
 """
 import asyncio
+import os
+
 import bangumi_client
 
 from sqlalchemy.orm import Session
@@ -314,8 +316,37 @@ async def _apply_organize_plan(
             print(f"[ORGANIZE] 改名失败: hash={torrent_hash} file={video_path} error={e}")
 
 
+async def _maybe_cleanup_staging_folder(staging_folder_path: str) -> None:
+    """这个种子搬完之后,顺手检查一下暂存目录是不是已经没有任何种子还占着了。
+
+    暂存目录是按(下载暂存根,番名,bgm_id)算出来的共享路径(见services/staging.py::
+    staging_folder)——不管是单次下载还是RSS轮询,同一部番的所有种子都用这同一个
+    save_path,同一部番可能还有别的种子在这个目录里没搬完(还在下载中的、RSS
+    后续陆续投递进来的),不能这个种子一搬完就直接删。必须先确认qBittorrent里
+    这个save_path下已经一个种子都不剩(不限完成状态——还在下载中的也算数),
+    并且物理目录本身也确实是空的,两者都满足才删;用rmdir而不是rmtree,
+    一旦判断有误(目录其实非空)就让它报错而不是把东西删掉。
+    """
+    if not staging_folder_path:
+        return
+    try:
+        remaining = await qbittorrent_client.get_torrents_by_save_path(staging_folder_path)
+    except Exception as e:
+        print(f"[ORGANIZE] 查询暂存目录占用情况失败,跳过清理: {staging_folder_path}: {e}")
+        return
+    if remaining:
+        return
+    try:
+        if os.path.isdir(staging_folder_path) and not os.listdir(staging_folder_path):
+            os.rmdir(staging_folder_path)
+            print(f"[ORGANIZE] 暂存目录已清空,已删除: {staging_folder_path}")
+    except OSError as e:
+        print(f"[ORGANIZE] 删除空暂存目录失败: {staging_folder_path}: {e}")
+
+
 async def _organize_single_torrent(db: Session, torrent: dict) -> None:
     torrent_hash = torrent["hash"]
+    staging_folder_path = torrent.get("save_path", "")
 
     context = await _resolve_organize_context(db, torrent)
     if context is None:
@@ -334,6 +365,7 @@ async def _organize_single_torrent(db: Session, torrent: dict) -> None:
             print(f"[ORGANIZE] 搬家失败(未改名模式) hash={torrent_hash}: {e}")
             return
         await qbittorrent_client.add_torrent_tags(torrent_hash, ORGANIZE_TAG)
+        await _maybe_cleanup_staging_folder(staging_folder_path)
         return
 
     try:
@@ -367,3 +399,4 @@ async def _organize_single_torrent(db: Session, torrent: dict) -> None:
     # 不管有没有文件失败,都打标签结束这一轮——失败文件的状态已经记进RenamedFile表,
     # 不会无限重试刷日志;后续要重跑,可以手动清掉这个标签(或者以后加个"重试"按钮)。
     await qbittorrent_client.add_torrent_tags(torrent_hash, ORGANIZE_TAG)
+    await _maybe_cleanup_staging_folder(staging_folder_path)

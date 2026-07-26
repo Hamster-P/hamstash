@@ -1,6 +1,6 @@
 // pages/LibraryPage.tsx
-import { useEffect, useLayoutEffect, useState, useRef } from "react";
-import { Play, FolderOpen, ArrowLeft, CheckCircle2 } from "lucide-react";
+import { useEffect, useLayoutEffect, useMemo, useState, useRef } from "react";
+import { Play, FolderOpen, ArrowLeft, CheckCircle2, Trash2 } from "lucide-react";
 import { invoke } from '@tauri-apps/api/core';
 import { isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -67,6 +67,20 @@ function compareSeasonNames(a: string, b: string): number {
   return a.localeCompare(b, undefined, { numeric: true });
 }
 
+// 三种排序模式全部依据/library/animes接口本来就返回的字段(latest_activity_at/
+// last_watched_at),纯前端本地排序即可——不需要为了换排序方式重新请求后端
+// (后端list_library_animes现在是纯读接口,不再自己排序,见routers/library.py)。
+// "default"保留接口返回的原始顺序,不参与这里的比较。
+function sortAnimes(list: LibraryAnime[], mode: SortMode): LibraryAnime[] {
+  if (mode === "default") return list;
+  const key: keyof LibraryAnime = mode === "recent_watched" ? "last_watched_at" : "latest_activity_at";
+  return [...list].sort((a, b) => {
+    const aTime = a[key] ? new Date(a[key] as string).getTime() : 0;
+    const bTime = b[key] ? new Date(b[key] as string).getTime() : 0;
+    return bTime - aTime;
+  });
+}
+
 // 从mpv上报的完整路径反推出 folder_name/filename,不依赖"当前正在看哪部番"这种UI状态
 // ——mpv连播是后台进行的,用户可能已经切走详情页,甚至切到别的番。
 function parseLibraryPath(
@@ -89,8 +103,18 @@ export default function LibraryPage({ onManualMatch }: LibraryPageProps) {
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
   const [sort, setSort] = useState<SortMode>("default");
-  // 重新匹配总开关:打开后所有卡片(不止未匹配的)都显示重新匹配按钮
+  // 管理模式总开关:打开后所有卡片(不止未匹配的)都显示重新匹配按钮,
+  // 同时额外露出删除入口(整部番删除,见handleDeleteAnime)
   const [matchMode, setMatchMode] = useState(false);
+  // 列表页删除整部番:二次确认态存的是正在确认哪个folder_name,取消/成功后清空
+  const [pendingDeleteFolder, setPendingDeleteFolder] = useState<string | null>(null);
+  const [deletingFolder, setDeletingFolder] = useState<string | null>(null);
+  const [deleteAnimeError, setDeleteAnimeError] = useState<string | null>(null);
+  // 详情页管理模式:打开后每一集的播放按钮变成删除按钮
+  const [episodeManageMode, setEpisodeManageMode] = useState(false);
+  const [pendingDeleteEpisode, setPendingDeleteEpisode] = useState<string | null>(null);
+  const [deletingEpisode, setDeletingEpisode] = useState<string | null>(null);
+  const [episodeDeleteError, setEpisodeDeleteError] = useState<string | null>(null);
   const isPlayingRef = useRef(false); // 新增：播放锁
   // 吸顶头部(封面+简介+分季快捷按钮)的实际高度,用来给每个分季区块留出滚动余量,
   // 避免点快捷按钮跳转后,区块顶部被吸顶头部盖住
@@ -104,10 +128,10 @@ export default function LibraryPage({ onManualMatch }: LibraryPageProps) {
     player_mode: "external",
   });
 
-  // 组件挂载时，先拉取设置，再拉取影视库
+  // 组件挂载时，先拉取设置，再扫盘+拉取影视库
   useEffect(() => {
     fetchSettings();
-    fetchAnimes();
+    scanAndFetchAnimes();
   }, []);
 
   // 从后端或本地获取设置
@@ -140,9 +164,11 @@ export default function LibraryPage({ onManualMatch }: LibraryPageProps) {
       });
   };
 
-  const fetchAnimes = (sortValue: SortMode = sort) => {
+  // 纯拉列表,不触发扫盘——后端list_library_animes现在是纯读接口(见
+  // routers/library.py),真正的扫盘只由scanAndFetchAnimes显式触发。
+  const fetchAnimes = () => {
     setLoading(true);
-    fetch(`${API_BASE}/library/animes?sort=${sortValue}`)
+    fetch(`${API_BASE}/library/animes`)
       .then((res) => res.json())
       .then((data) => {
         setAnimes(data);
@@ -151,15 +177,30 @@ export default function LibraryPage({ onManualMatch }: LibraryPageProps) {
       .catch(() => setLoading(false));
   };
 
+  // 唯一会触发完整扫盘的入口:先GET /library/scan(遍历硬盘、刷新mtime),
+  // 再拉一遍列表——挂载时和"刷新 & 扫盘"按钮用这个,其余场景(比如切换排序)
+  // 不需要重新问硬盘要一遍数据。
+  const scanAndFetchAnimes = () => {
+    setLoading(true);
+    fetch(`${API_BASE}/library/scan`)
+      .then(() => fetchAnimes())
+      .catch(() => setLoading(false));
+  };
+
+  // 切换排序方式纯本地重排已经拿到手的数据(见sortAnimes/displayedAnimes),
+  // 不重新请求后端,不触发扫盘——这是本次要修的"切排序按钮卡顿"的核心改动。
   const handleSortChange = (sortValue: SortMode) => {
     setSort(sortValue);
-    fetchAnimes(sortValue);
   };
 
   // 点击某部动漫后，获取具体季、集数据
   const handleSelectAnime = (anime: LibraryAnime) => {
     setSelectedAnime(anime);
     setDetailLoading(true);
+    // 管理模式/删除确认态是详情页局部状态,不能带着上一部番的状态进新一部的详情页
+    setEpisodeManageMode(false);
+    setPendingDeleteEpisode(null);
+    setEpisodeDeleteError(null);
     fetch(`${API_BASE}/library/detail/${encodeURIComponent(anime.folder_name)}`)
       .then((res) => res.json())
       .then((data) => {
@@ -172,6 +213,63 @@ export default function LibraryPage({ onManualMatch }: LibraryPageProps) {
   const handleBack = () => {
     setSelectedAnime(null);
     setDetail(null);
+    setEpisodeManageMode(false);
+    setPendingDeleteEpisode(null);
+    setEpisodeDeleteError(null);
+  };
+
+  // 删除整部番:磁盘文件夹+LocalMedia记录一起删,播放记录保留。
+  // 成功后重新拉一遍列表(本来就要重新过一遍scan_and_update_library),不做本地摘除。
+  const handleDeleteAnime = async (folderName: string) => {
+    setDeletingFolder(folderName);
+    setDeleteAnimeError(null);
+    try {
+      const res = await fetch(`${API_BASE}/library/animes/${encodeURIComponent(folderName)}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.detail ?? `HTTP ${res.status}`);
+      }
+      setPendingDeleteFolder(null);
+      fetchAnimes();
+    } catch (err) {
+      setDeleteAnimeError(err instanceof Error ? err.message : "删除失败");
+    } finally {
+      setDeletingFolder(null);
+    }
+  };
+
+  // 删除单集:成功后直接在本地detail状态里摘掉这一集,不用重新扫一遍硬盘目录结构;
+  // 如果某个季度删完变空,连同这个季度键一起摘掉,不渲染空的季度区块。
+  const handleDeleteEpisode = async (ep: Episode) => {
+    setDeletingEpisode(ep.rel_path);
+    setEpisodeDeleteError(null);
+    try {
+      const res = await fetch(`${API_BASE}/library/episode/delete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rel_path: ep.rel_path }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.detail ?? `HTTP ${res.status}`);
+      }
+      setPendingDeleteEpisode(null);
+      setDetail((prev) => {
+        if (!prev) return prev;
+        const newSeasons: Record<string, Episode[]> = {};
+        for (const [season, episodes] of Object.entries(prev.seasons)) {
+          const remaining = episodes.filter((e) => e.rel_path !== ep.rel_path);
+          if (remaining.length > 0) newSeasons[season] = remaining;
+        }
+        return { ...prev, seasons: newSeasons };
+      });
+    } catch (err) {
+      setEpisodeDeleteError(err instanceof Error ? err.message : "删除失败");
+    } finally {
+      setDeletingEpisode(null);
+    }
   };
 
   // 头部内容(简介行数、快捷按钮是否显示)会变,量出来的高度也要跟着更新
@@ -302,6 +400,9 @@ export default function LibraryPage({ onManualMatch }: LibraryPageProps) {
     ? Object.entries(detail.seasons).sort(([a], [b]) => compareSeasonNames(a, b))
     : [];
 
+  // 列表页展示顺序:纯本地按当前sort模式重排,animes本身始终保留接口返回的原始顺序
+  const displayedAnimes = useMemo(() => sortAnimes(animes, sort), [animes, sort]);
+
   return (
     <div className="text-paper">
       {selectedAnime ? (
@@ -312,12 +413,32 @@ export default function LibraryPage({ onManualMatch }: LibraryPageProps) {
             ref={headerRef}
             className="sticky top-0 z-10 bg-ink px-8 pb-4 pt-8"
           >
-            <button
-              onClick={handleBack}
-              className="mb-6 flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion"
-            >
-              <ArrowLeft size={14} /> 返回影视库
-            </button>
+            <div className="mb-6 flex items-center gap-2">
+              <button
+                onClick={handleBack}
+                className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion"
+              >
+                <ArrowLeft size={14} /> 返回影视库
+              </button>
+              <button
+                onClick={() => {
+                  setEpisodeManageMode((v) => !v);
+                  setPendingDeleteEpisode(null);
+                }}
+                className={`rounded-md border px-3 py-1.5 font-mono text-xs transition-colors ${
+                  episodeManageMode
+                    ? "border-vermillion bg-vermillion text-ink"
+                    : "border-border text-muted hover:border-vermillion hover:text-vermillion"
+                }`}
+              >
+                {episodeManageMode ? "结束管理" : "管理"}
+              </button>
+              {episodeDeleteError && (
+                <span className="font-mono text-[11px] text-vermillion">
+                  删除失败: {episodeDeleteError}
+                </span>
+              )}
+            </div>
 
             <div className="flex flex-col md:flex-row gap-6">
               <div className="w-40 aspect-[2/3] shrink-0 rounded-md bg-surface overflow-hidden shadow-lg">
@@ -403,18 +524,47 @@ export default function LibraryPage({ onManualMatch }: LibraryPageProps) {
                             )}
                           </div>
 
-                          {/* 右侧：播放按钮,固定宽度,不随文件名长短被挤压/挤出屏幕 */}
-                          <button
-                            onClick={() => handlePlay(ep)}
-                            className={`flex w-28 shrink-0 items-center justify-center gap-1.5 rounded-md border px-3 py-1.5 font-mono text-xs transition-colors ${
-                              ep.is_watched
-                                ? "border-border bg-surface text-muted hover:border-vermillion hover:text-vermillion"
-                                : "border-vermillion bg-vermillion text-ink hover:bg-vermillion/90"
-                            }`}
-                          >
-                            <Play size={14} fill="currentColor" />
-                            {ep.is_watched ? "再次播放" : "播放"}
-                          </button>
+                          {/* 右侧：播放按钮(固定宽度,不随文件名长短被挤压/挤出屏幕),
+                              管理模式下换成删除入口,点删除先原地变成确定/取消二次确认 */}
+                          {episodeManageMode ? (
+                            pendingDeleteEpisode === ep.rel_path ? (
+                              <div className="flex w-28 shrink-0 items-center justify-center gap-1.5 font-mono text-xs">
+                                <button
+                                  disabled={deletingEpisode === ep.rel_path}
+                                  onClick={() => handleDeleteEpisode(ep)}
+                                  className="rounded border border-vermillion bg-vermillion px-2 py-1 text-ink transition-colors hover:bg-vermillion/90 disabled:opacity-40"
+                                >
+                                  确定
+                                </button>
+                                <button
+                                  onClick={() => setPendingDeleteEpisode(null)}
+                                  className="rounded border border-border bg-surface px-2 py-1 text-muted transition-colors hover:text-paper"
+                                >
+                                  取消
+                                </button>
+                              </div>
+                            ) : (
+                              <button
+                                onClick={() => setPendingDeleteEpisode(ep.rel_path)}
+                                className="flex w-28 shrink-0 items-center justify-center gap-1.5 rounded-md border border-vermillion bg-vermillion px-3 py-1.5 font-mono text-xs text-ink transition-colors hover:bg-vermillion/90"
+                              >
+                                <Trash2 size={14} />
+                                删除
+                              </button>
+                            )
+                          ) : (
+                            <button
+                              onClick={() => handlePlay(ep)}
+                              className={`flex w-28 shrink-0 items-center justify-center gap-1.5 rounded-md border px-3 py-1.5 font-mono text-xs transition-colors ${
+                                ep.is_watched
+                                  ? "border-border bg-surface text-muted hover:border-vermillion hover:text-vermillion"
+                                  : "border-vermillion bg-vermillion text-ink hover:bg-vermillion/90"
+                              }`}
+                            >
+                              <Play size={14} fill="currentColor" />
+                              {ep.is_watched ? "再次播放" : "播放"}
+                            </button>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -461,29 +611,38 @@ export default function LibraryPage({ onManualMatch }: LibraryPageProps) {
                 ))}
               </div>
               <button
-                onClick={() => fetchAnimes()}
+                onClick={() => scanAndFetchAnimes()}
                 className="rounded-md border border-border px-3 py-1.5 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion"
               >
                 刷新 & 扫盘
               </button>
               <button
-                onClick={() => setMatchMode((v) => !v)}
+                onClick={() => {
+                  setMatchMode((v) => !v);
+                  setPendingDeleteFolder(null);
+                }}
                 className={`rounded-md border px-3 py-1.5 font-mono text-xs transition-colors ${
                   matchMode
                     ? "border-vermillion bg-vermillion text-ink"
                     : "border-border text-muted hover:border-vermillion hover:text-vermillion"
                 }`}
               >
-                {matchMode ? "结束匹配" : "重新匹配"}
+                {matchMode ? "结束管理" : "管理"}
               </button>
             </div>
           </div>
 
+          {deleteAnimeError && (
+            <div className="mb-4 rounded-md border border-vermillion/40 bg-surface p-3 font-mono text-xs text-vermillion">
+              删除失败: {deleteAnimeError}
+            </div>
+          )}
+
           {loading ? (
-            <div className="font-mono text-xs text-muted">正在扫盘中...</div>
+            <div className="font-mono text-xs text-muted">正在加载...</div>
           ) : (
             <div className="grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-4">
-              {animes.map((anime) => (
+              {displayedAnimes.map((anime) => (
                 <div
                   key={anime.id}
                   onClick={() => handleSelectAnime(anime)}
@@ -503,7 +662,7 @@ export default function LibraryPage({ onManualMatch }: LibraryPageProps) {
                       </div>
                     )}
                     {(matchMode || !anime.bgm_id) && (
-                      <div className="absolute inset-0 flex items-center justify-center bg-ink/60">
+                      <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-ink/60">
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
@@ -513,6 +672,39 @@ export default function LibraryPage({ onManualMatch }: LibraryPageProps) {
                         >
                           {anime.bgm_id ? "重新匹配" : "指定动漫"}
                         </button>
+                        {/* 删除入口只在管理模式下露出,不跟着"未匹配卡片始终显示覆盖层"这条 */}
+                        {matchMode && (
+                          pendingDeleteFolder === anime.folder_name ? (
+                            <div
+                              className="flex items-center gap-1.5 font-mono text-[10px]"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <button
+                                disabled={deletingFolder === anime.folder_name}
+                                onClick={() => handleDeleteAnime(anime.folder_name)}
+                                className="rounded border border-vermillion bg-vermillion px-2 py-1 text-ink transition-colors hover:bg-vermillion/90 disabled:opacity-40"
+                              >
+                                确定删除
+                              </button>
+                              <button
+                                onClick={() => setPendingDeleteFolder(null)}
+                                className="rounded border border-border bg-surface px-2 py-1 text-muted transition-colors hover:text-paper"
+                              >
+                                取消
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setPendingDeleteFolder(anime.folder_name);
+                              }}
+                              className="rounded border border-vermillion bg-vermillion px-2 py-1 font-mono text-[10px] text-ink transition-colors hover:bg-vermillion/90"
+                            >
+                              删除
+                            </button>
+                          )
+                        )}
                       </div>
                     )}
                   </div>

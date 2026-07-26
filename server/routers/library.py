@@ -1,17 +1,20 @@
 """对应前端 LibraryPage(影视库):本地媒体库扫描、番剧匹配、播放记录、播放。"""
 import os
 import re
+import glob
 import platform
 import asyncio
+import shutil
 from pathlib import Path
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import FileResponse
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
 import models
-from database import get_db
+import rename_engine
+from database import SessionLocal, get_db
 from services.common import get_setting
 from bangumi_client import get_subject_detail, normalize_bgm_subject
 from datetime import datetime
@@ -170,6 +173,21 @@ async def update_anime_details_from_bgm(db: Session, bgm_id: int):
         print(f"从 Bangumi 获取条目 {bgm_id} 失败: {e}")
 
 
+async def _update_anime_details_from_bgm_task(bgm_id: int) -> None:
+    """后台任务版本:list_library_animes遇到没有AnimeCatalog缓存的番剧时用这个,
+    不能直接await update_anime_details_from_bgm(request_db, bgm_id)——那样会让
+    列表接口的响应等一次真实的Bangumi网络请求,请求量一大(或者这次请求本身失败)
+    就会一直卡列表接口。开一个独立session,跟services/bgm_series_cache.py::
+    prefetch_rename_cache_task是同一种模式;这次列表响应先用兜底文案返回,
+    等这个任务跑完,下一次任意一次列表请求就能看到补全后的封面/简介。
+    """
+    db = SessionLocal()
+    try:
+        await update_anime_details_from_bgm(db, bgm_id)
+    finally:
+        db.close()
+
+
 class MatchRequest(BaseModel):
     folder_name: str
     bgm_id: int
@@ -251,15 +269,17 @@ async def scan_and_update_library(db: Session = Depends(get_db)):
 
 
 @router.get("/library/animes")
-async def list_library_animes(sort: str = "default", db: Session = Depends(get_db)):
+async def list_library_animes(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     """
     获取全部动漫列表。
     【重要修改】：不再保留左右侧原名对比。如果能取到 Bangumi 数据，直接使用 Bangumi 整理后的
     “中文标题”、“图片封面”、“剧集简介”、“总集数” 融合成一张卡片数据向前端渲染。
 
-    sort: default(原始顺序) / recent_watched(最近观看优先) / recent_updated(最新更新优先)
+    纯读接口:不再顺带触发扫盘(见GET /library/scan——现在是唯一的扫盘入口,
+    由前端挂载时和"刷新 & 扫盘"按钮显式调用),也不再服务端排序(排序字段
+    latest_activity_at/last_watched_at本来就随这个接口返回,前端自己按需要
+    的模式本地排序即可,不用为了换排序方式重新请求)。
     """
-    await scan_and_update_library(db)
     local_medias = db.query(models.LocalMedia).all()
 
     # 每个文件夹最近一次观看时间,直接从PlaybackRecord表聚合,不碰硬盘
@@ -288,8 +308,9 @@ async def list_library_animes(sort: str = "default", db: Session = Depends(get_d
                 # 尝试从数据库对象中取 total_episodes，如果没这列，它在更新后会被赋值
                 total_episodes = getattr(catalog, "total_episodes", 0) or 0
             else:
-                # 若本地暂无缓存，则异步触发一次单条更新，以备下一次加载使用
-                await update_anime_details_from_bgm(db, media.bgm_id)
+                # 若本地暂无缓存，扔进后台任务补一次更新，不阻塞这次列表响应——
+                # 这次请求先用兜底文案返回，下一次任意一次列表请求就能看到补全结果。
+                background_tasks.add_task(_update_anime_details_from_bgm_task, media.bgm_id)
 
         response_data.append({
             "id": media.id,
@@ -302,11 +323,6 @@ async def list_library_animes(sort: str = "default", db: Session = Depends(get_d
             "latest_activity_at": media.latest_activity_at,
             "last_watched_at": last_watched_map.get(media.folder_name),
         })
-
-    if sort == "recent_watched":
-        response_data.sort(key=lambda x: x["last_watched_at"] or datetime.min, reverse=True)
-    elif sort == "recent_updated":
-        response_data.sort(key=lambda x: x["latest_activity_at"] or datetime.min, reverse=True)
 
     for item in response_data:
         item["latest_activity_at"] = item["latest_activity_at"].isoformat() if item["latest_activity_at"] else None
@@ -360,3 +376,64 @@ def play_video(file_path: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Video file not found.")
 
     return FileResponse(target_path, media_type="video/mp4")
+
+
+@router.delete("/library/animes/{folder_name}")
+def delete_anime(folder_name: str, db: Session = Depends(get_db)):
+    """删除整部番:物理删除媒体库里的文件夹 + 清掉LocalMedia关联记录。
+
+    PlaybackRecord(播放记录)故意不清理——用户明确要求保留观看历史,
+    孤立的记录不影响任何现有功能(/library/detail按folder_name查询,
+    文件夹都没了自然查不到,不会渲染出任何东西)。
+    """
+    media = db.query(models.LocalMedia).filter(models.LocalMedia.folder_name == folder_name).first()
+    if not media:
+        raise HTTPException(status_code=404, detail="Anime not found in library.")
+
+    library_root = get_library_root(db)
+    anime_path = library_root / folder_name
+    if not anime_path.resolve().is_relative_to(library_root.resolve()):
+        raise HTTPException(status_code=403, detail="Access denied.")
+
+    if anime_path.exists():
+        try:
+            shutil.rmtree(anime_path)
+        except OSError as e:
+            # 物理删除失败(权限/文件被占用):不删数据库行,保持磁盘和记录状态一致,
+            # 不然下次扫描会因为记录已经没了而把这部番当成"新文件夹"重新入库。
+            raise HTTPException(status_code=500, detail=f"删除文件夹失败: {e}")
+
+    db.delete(media)
+    db.commit()
+    return {"status": "success", "folder_name": folder_name}
+
+
+class EpisodeDeleteRequest(BaseModel):
+    rel_path: str  # 相对library_root的路径,取值方式跟/library/play的file_path参数一致
+
+
+@router.post("/library/episode/delete")
+def delete_episode(req: EpisodeDeleteRequest, db: Session = Depends(get_db)):
+    """删除单集视频文件,以及同目录下同名的字幕文件(.srt/.ass等,复用
+    rename_engine.SUBTITLE_EXTS常量)。PlaybackRecord同样不清理,理由跟
+    delete_anime一致。
+    """
+    library_root = get_library_root(db)
+    target_path = library_root / req.rel_path
+    if not target_path.resolve().is_relative_to(library_root.resolve()):
+        raise HTTPException(status_code=403, detail="Access denied.")
+
+    if not target_path.exists():
+        raise HTTPException(status_code=404, detail="Video file not found.")
+
+    for sibling in target_path.parent.glob(f"{glob.escape(target_path.stem)}.*"):
+        if sibling == target_path:
+            continue
+        if sibling.suffix.lstrip(".").lower() in rename_engine.SUBTITLE_EXTS:
+            try:
+                sibling.unlink()
+            except OSError as e:
+                print(f"[LIBRARY] 删除字幕文件失败,不影响视频删除: {sibling}: {e}")
+
+    target_path.unlink()
+    return {"status": "success", "rel_path": req.rel_path}

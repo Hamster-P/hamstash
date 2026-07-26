@@ -71,14 +71,7 @@ try {
 Write-Host ""
 Write-Host "Done. Installers are under client\src-tauri\target\release\bundle\ (nsis and msi folders)." -ForegroundColor Green
 
-# 本地专用的服务账户修复脚本(不进版本库,见.gitignore的scripts/*.local.ps1)——
-# hooks.nsh每次装安装包都会把HamStashServer服务重置成默认的LocalSystem账户,
-# 这台机器媒体库配置的是网络共享路径,LocalSystem访问不了,必须改回本机账户才能
-# 正常启动。这里存在就自动调用一次;如果这时候安装包还没实际装完/服务还没重新
-# 注册,脚本内部自己会检测服务存不存在、跳过不报错,不影响这次打包本身的结果。
-#$restoreServiceAccountScript = Join-Path $PSScriptRoot "restore-service-account.local.ps1"
-#if (Test-Path $restoreServiceAccountScript) {
-#    Write-Host ""
-#    Write-Host "== 检测到本地服务账户修复脚本,自动运行 ==" -ForegroundColor Cyan
-#    & $restoreServiceAccountScript
-#}
+# 服务账户(LocalSystem访问不了网络共享媒体库的问题)现在由安装脚本自己在
+# 启动服务前处理——见client/src-tauri/windows/hooks.nsh::NSIS_HOOK_POSTINSTALL,
+# 装的时候检测%ProgramData%\hamstash\service-account.local.ini存不存在,存在就
+# 直接用里面的账户注册服务,不再需要打包完这里额外补跑一个本地脚本。

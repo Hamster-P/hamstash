@@ -27,6 +27,20 @@
   ExecWait '"$INSTDIR\backend\nssm.exe" set HamStashServer Start SERVICE_AUTO_START'
   ExecWait '"$INSTDIR\backend\nssm.exe" set HamStashServer AppStdout "$INSTDIR\backend\service.log"'
   ExecWait '"$INSTDIR\backend\nssm.exe" set HamStashServer AppStderr "$INSTDIR\backend\service.log"'
+
+  ; 本机专属:服务默认注册成LocalSystem,访问不了这台机器配置的网络共享媒体库
+  ; (LocalSystem没有对应的登录凭据,服务一启动就在database.py::_resolve_db_path
+  ; 检查库路径时崩溃退出)。如果存在本机专属的服务账户配置文件(不进安装包/
+  ; 不进版本库,%ProgramData%\hamstash\跟server/paths.py::get_data_dir()是
+  ; 同一套约定,装/卸载都不会清理),启动前就直接把服务账户切过去;文件不存在时
+  ; (绝大多数用户的正常安装场景)跳过这一步,服务照旧用默认的LocalSystem。
+  IfFileExists "$%ProgramData%\hamstash\service-account.local.ini" ApplyServiceAccount SkipServiceAccount
+  ApplyServiceAccount:
+    ReadINIStr $0 "$%ProgramData%\hamstash\service-account.local.ini" "service" "username"
+    ReadINIStr $1 "$%ProgramData%\hamstash\service-account.local.ini" "service" "password"
+    ExecWait '"$INSTDIR\backend\nssm.exe" set HamStashServer ObjectName "$0" "$1"'
+  SkipServiceAccount:
+
   ExecWait '"$INSTDIR\backend\nssm.exe" start HamStashServer'
 !macroend
 
