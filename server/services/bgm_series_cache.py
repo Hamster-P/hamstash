@@ -104,7 +104,7 @@ async def prefetch_rename_cache_task(bgm_id: int, anime_title: str) -> None:
     后台任务版本:下载页一打开(带着bgm_id进来的场景)就调用,提前把这部番的
     家族解析结果算出来、写进AnimeFamilyCache——开一个新的独立DB session,
     不复用请求处理函数里的db(请求结束后那个session可能已经被关闭),
-    跟services/subscription.py的activate_subscription_task是同一种模式。
+    跟services/rss_poller.py的poll_subscription_task是同一种模式。
 
     用户在下载页搜索/选种子/切换设置的这段时间里,这个后台任务在悄悄把结果
     算好;等用户真正点了预览、或者种子下载完触发organize_loop整理时,
