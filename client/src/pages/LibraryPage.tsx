@@ -5,6 +5,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { proxiedImageUrl } from "../utils/proxiedImage";
+import BangumiResultsList, { type BangumiSubject } from "../components/BangumiResultsList";
 
 interface LibraryAnime {
   id: number;
@@ -96,7 +97,7 @@ function parseLibraryPath(
   return { folderName: parts[0], filename: parts[parts.length - 1] };
 }
 
-export default function LibraryPage({ onManualMatch }: LibraryPageProps) {
+export default function LibraryPage({ onSelectAnime, onManualMatch }: LibraryPageProps) {
   const [animes, setAnimes] = useState<LibraryAnime[]>([]);
   const [selectedAnime, setSelectedAnime] = useState<LibraryAnime | null>(null);
   const [detail, setDetail] = useState<AnimeDetail | null>(null);
@@ -115,6 +116,12 @@ export default function LibraryPage({ onManualMatch }: LibraryPageProps) {
   const [pendingDeleteEpisode, setPendingDeleteEpisode] = useState<string | null>(null);
   const [deletingEpisode, setDeletingEpisode] = useState<string | null>(null);
   const [episodeDeleteError, setEpisodeDeleteError] = useState<string | null>(null);
+  // "补番"入口:拉这部番所在Bangumi系列的全部关联作品(续集/前传/剧场版/OVA等),
+  // 跟episodeManageMode互斥,复用SearchPage.tsx抽出来的BangumiResultsList渲染
+  const [showRelatedAnime, setShowRelatedAnime] = useState(false);
+  const [relatedAnime, setRelatedAnime] = useState<BangumiSubject[]>([]);
+  const [relatedLoading, setRelatedLoading] = useState(false);
+  const [relatedError, setRelatedError] = useState<string | null>(null);
   const isPlayingRef = useRef(false); // 新增：播放锁
   // 吸顶头部(封面+简介+分季快捷按钮)的实际高度,用来给每个分季区块留出滚动余量,
   // 避免点快捷按钮跳转后,区块顶部被吸顶头部盖住
@@ -197,10 +204,13 @@ export default function LibraryPage({ onManualMatch }: LibraryPageProps) {
   const handleSelectAnime = (anime: LibraryAnime) => {
     setSelectedAnime(anime);
     setDetailLoading(true);
-    // 管理模式/删除确认态是详情页局部状态,不能带着上一部番的状态进新一部的详情页
+    // 管理模式/删除确认态/补番列表都是详情页局部状态,不能带着上一部番的状态进新一部的详情页
     setEpisodeManageMode(false);
     setPendingDeleteEpisode(null);
     setEpisodeDeleteError(null);
+    setShowRelatedAnime(false);
+    setRelatedAnime([]);
+    setRelatedError(null);
     fetch(`${API_BASE}/library/detail/${encodeURIComponent(anime.folder_name)}`)
       .then((res) => res.json())
       .then((data) => {
@@ -216,6 +226,9 @@ export default function LibraryPage({ onManualMatch }: LibraryPageProps) {
     setEpisodeManageMode(false);
     setPendingDeleteEpisode(null);
     setEpisodeDeleteError(null);
+    setShowRelatedAnime(false);
+    setRelatedAnime([]);
+    setRelatedError(null);
   };
 
   // 删除整部番:磁盘文件夹+LocalMedia记录一起删,播放记录保留。
@@ -270,6 +283,35 @@ export default function LibraryPage({ onManualMatch }: LibraryPageProps) {
     } finally {
       setDeletingEpisode(null);
     }
+  };
+
+  // 拉这部番所在Bangumi系列的全部关联作品(后端用resolve_root_subject_id找根节点
+  // +resolve_family_season_map枚举整个家族,见server/routers/search.py::get_related_anime)
+  const fetchRelatedAnime = (bgmId: number) => {
+    setRelatedLoading(true);
+    setRelatedError(null);
+    fetch(`${API_BASE}/bangumi/related/${bgmId}`)
+      .then((res) => res.json())
+      .then((data) => {
+        setRelatedAnime(data?.data ?? []);
+        setRelatedLoading(false);
+      })
+      .catch((err: any) => {
+        setRelatedError(err instanceof Error ? err.message : "获取相关作品失败");
+        setRelatedLoading(false);
+      });
+  };
+
+  // "补番"按钮:跟管理模式互斥,第一次打开且还没拉过数据时才发请求
+  const handleToggleRelatedAnime = () => {
+    if (!showRelatedAnime) {
+      setEpisodeManageMode(false);
+      setPendingDeleteEpisode(null);
+      if (relatedAnime.length === 0 && selectedAnime?.bgm_id) {
+        fetchRelatedAnime(selectedAnime.bgm_id);
+      }
+    }
+    setShowRelatedAnime((v) => !v);
   };
 
   // 头部内容(简介行数、快捷按钮是否显示)会变,量出来的高度也要跟着更新
@@ -420,19 +462,34 @@ export default function LibraryPage({ onManualMatch }: LibraryPageProps) {
               >
                 <ArrowLeft size={14} /> 返回影视库
               </button>
-              <button
-                onClick={() => {
-                  setEpisodeManageMode((v) => !v);
-                  setPendingDeleteEpisode(null);
-                }}
-                className={`rounded-md border px-3 py-1.5 font-mono text-xs transition-colors ${
-                  episodeManageMode
-                    ? "border-vermillion bg-vermillion text-ink"
-                    : "border-border text-muted hover:border-vermillion hover:text-vermillion"
-                }`}
-              >
-                {episodeManageMode ? "结束管理" : "管理"}
-              </button>
+              {/* 补番:只有已经匹配了bgm_id的番剧才有起点可以查关联作品 */}
+              {selectedAnime.bgm_id && (
+                <button
+                  onClick={handleToggleRelatedAnime}
+                  className={`rounded-md border px-3 py-1.5 font-mono text-xs transition-colors ${
+                    showRelatedAnime
+                      ? "border-vermillion bg-vermillion text-ink"
+                      : "border-border text-muted hover:border-vermillion hover:text-vermillion"
+                  }`}
+                >
+                  {showRelatedAnime ? "返回集数" : "补番"}
+                </button>
+              )}
+              {!showRelatedAnime && (
+                <button
+                  onClick={() => {
+                    setEpisodeManageMode((v) => !v);
+                    setPendingDeleteEpisode(null);
+                  }}
+                  className={`rounded-md border px-3 py-1.5 font-mono text-xs transition-colors ${
+                    episodeManageMode
+                      ? "border-vermillion bg-vermillion text-ink"
+                      : "border-border text-muted hover:border-vermillion hover:text-vermillion"
+                  }`}
+                >
+                  {episodeManageMode ? "结束管理" : "管理"}
+                </button>
+              )}
               {episodeDeleteError && (
                 <span className="font-mono text-[11px] text-vermillion">
                   删除失败: {episodeDeleteError}
@@ -462,8 +519,9 @@ export default function LibraryPage({ onManualMatch }: LibraryPageProps) {
               </div>
             </div>
 
-            {/* 分季/剧场版快捷跳转:按实际扫到的分季动态生成,只有一季时不用显示 */}
-            {sortedSeasons.length > 1 && (
+            {/* 分季/剧场版快捷跳转:按实际扫到的分季动态生成,只有一季时不用显示;
+                补番视图下跟集数列表无关,不显示 */}
+            {!showRelatedAnime && sortedSeasons.length > 1 && (
               <div className="flex flex-wrap gap-2 pt-4">
                 {sortedSeasons.map(([seasonName]) => (
                   <button
@@ -479,7 +537,19 @@ export default function LibraryPage({ onManualMatch }: LibraryPageProps) {
           </div>
 
           <div className="px-8 pb-8">
-            {detailLoading ? (
+            {showRelatedAnime ? (
+              relatedLoading ? (
+                <div className="font-mono text-xs text-muted">正在查询相关作品...</div>
+              ) : relatedError ? (
+                <div className="font-mono text-xs text-vermillion">获取失败: {relatedError}</div>
+              ) : (
+                <BangumiResultsList
+                  results={relatedAnime}
+                  onSelect={(bgmId) => onSelectAnime?.(bgmId)}
+                  emptyText="没有找到相关的关联作品"
+                />
+              )
+            ) : detailLoading ? (
               <div className="font-mono text-xs text-muted">正在读取硬盘文件结构...</div>
             ) : sortedSeasons.length > 0 ? (
               <div className="space-y-6">

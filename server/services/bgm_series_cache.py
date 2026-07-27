@@ -42,6 +42,34 @@ async def resolve_series_identity(bgm_id: int | None, fallback_title: str):
     return folder_title, main_id, season_title
 
 
+def _persist_family_map(db: Session, main_bgm_id: int, family_map: dict) -> None:
+    """把resolve_family_season_map()算出来的整个家族结果写入AnimeFamilyCache——
+    从resolve_tv_season_ordinal_cached里抽出来的公共部分,resolve_related_family_ids_cached
+    (补番功能用)也要用同一段upsert逻辑,不重复写一遍。
+    """
+    for bid, info in family_map.items():
+        # folder_bucket只是给人查表用的展示字段,用跟preview_rename_file()同一个
+        # resolve_folder_bucket()算,保证不会出现"缓存表说进A桶、实际文件却进了B桶"的错位。
+        media_type = rename_engine.classify_media_type("", info.get("platform"))
+        folder_bucket = rename_engine.resolve_folder_bucket(
+            media_type, main_bgm_id, info.get("season_ordinal")
+        )
+
+        row = db.query(AnimeFamilyCache).filter(AnimeFamilyCache.bgm_id == bid).first()
+        if row is None:
+            row = AnimeFamilyCache(bgm_id=bid)
+            db.add(row)
+        row.source_bgm_id = main_bgm_id
+        row.name = info.get("name") or ""
+        row.date = info.get("date")
+        row.platform = info.get("platform")
+        row.eps = info.get("eps")
+        row.total_episodes = info.get("total_episodes")
+        row.season_ordinal = info.get("season_ordinal")
+        row.folder_bucket = folder_bucket
+    db.commit()
+
+
 async def resolve_tv_season_ordinal_cached(
     db: Session, season_bgm_id: int | None, main_bgm_id: int | None
 ) -> str | None:
@@ -67,30 +95,60 @@ async def resolve_tv_season_ordinal_cached(
     import bangumi_family  # 延迟导入,避免跟bangumi_family反过来import本模块形成循环import
 
     family_map = await bangumi_family.resolve_family_season_map(main_bgm_id)
-    for bid, info in family_map.items():
-        # folder_bucket只是给人查表用的展示字段,用跟preview_rename_file()同一个
-        # resolve_folder_bucket()算,保证不会出现"缓存表说进A桶、实际文件却进了B桶"的错位。
-        media_type = rename_engine.classify_media_type("", info.get("platform"))
-        folder_bucket = rename_engine.resolve_folder_bucket(
-            media_type, main_bgm_id, info.get("season_ordinal")
-        )
-
-        row = db.query(AnimeFamilyCache).filter(AnimeFamilyCache.bgm_id == bid).first()
-        if row is None:
-            row = AnimeFamilyCache(bgm_id=bid)
-            db.add(row)
-        row.source_bgm_id = main_bgm_id
-        row.name = info.get("name") or ""
-        row.date = info.get("date")
-        row.platform = info.get("platform")
-        row.eps = info.get("eps")
-        row.total_episodes = info.get("total_episodes")
-        row.season_ordinal = info.get("season_ordinal")
-        row.folder_bucket = folder_bucket
-    db.commit()
+    _persist_family_map(db, main_bgm_id, family_map)
 
     result = family_map.get(season_bgm_id)
     return result["season_ordinal"] if result else None
+
+
+async def resolve_related_family_ids_cached(db: Session, bgm_id: int) -> list[int]:
+    """
+    "补番"功能专用:返回bgm_id所在系列的全部相关bgm_id列表,优先走AnimeFamilyCache,
+    但会做一轮轻量的"有没有新成员"核实(bangumi_family.has_new_family_members),
+    不会为了省网络请求而漏掉真正新出的续作/剧场版——纯信旧缓存就违背了"补番"这个
+    功能存在的意义。
+
+    策略:
+    1. 查AnimeFamilyCache有没有这个bgm_id的记录。
+       - 没有(这部番从没被任何流程算过关联家族,理论上补番按钮很少遇到——按钮只在
+         本地已下载/匹配的番剧详情页出现,而下载流程本来就会预热这张缓存表,但仍要
+         兜底):走全量网络路径(resolve_root_subject_id + resolve_family_season_map),
+         写入缓存,返回全部成员id。
+       - 有:拿到source_bgm_id(家族根)+ 这个根下缓存里已知的全部成员id集合。
+    2. 对已知成员集合跑一轮has_new_family_members。
+       - 没发现新成员:直接返回缓存里的成员id列表,这次请求全程零次
+         resolve_root_subject_id/resolve_family_season_map调用。
+       - 发现新成员:触发一次完整的resolve_family_season_map(source_bgm_id)重算并
+         写回缓存,返回重算后的全部成员id;重算本身失败(网络问题)时退回已知的
+         旧缓存,不让这次请求整个失败。
+    """
+    import bangumi_family  # 延迟导入,避免跟bangumi_family反过来import本模块形成循环import
+
+    cached = db.query(AnimeFamilyCache).filter(AnimeFamilyCache.bgm_id == bgm_id).first()
+
+    if not cached:
+        root_id = await bangumi_family.resolve_root_subject_id(bgm_id)
+        family_map = await bangumi_family.resolve_family_season_map(root_id)
+        if family_map:
+            _persist_family_map(db, root_id, family_map)
+            return list(family_map.keys())
+        return [root_id]
+
+    main_bgm_id = cached.source_bgm_id
+    known_rows = (
+        db.query(AnimeFamilyCache).filter(AnimeFamilyCache.source_bgm_id == main_bgm_id).all()
+    )
+    known_ids = {row.bgm_id for row in known_rows}
+
+    grown = await bangumi_family.has_new_family_members(known_ids)
+    if not grown:
+        return list(known_ids)
+
+    family_map = await bangumi_family.resolve_family_season_map(main_bgm_id)
+    if family_map:
+        _persist_family_map(db, main_bgm_id, family_map)
+        return list(family_map.keys())
+    return list(known_ids)  # 重算失败(网络问题),退回已知的旧缓存,好歹能看到点东西
 
 
 # 进程内存,防止同一个bgm_id短时间内被并发触发多次重复的家族预热计算——

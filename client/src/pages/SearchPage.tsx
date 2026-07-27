@@ -1,16 +1,6 @@
 import { useState, useEffect } from "react";
 import { Search as SearchIcon } from "lucide-react";
-import { proxiedImageUrl } from "../utils/proxiedImage";
-
-interface BangumiSubject {
-  id: number;
-  name: string;
-  name_cn: string;
-  date?: string;
-  eps?: number;
-  images?: { large?: string; common?: string };
-  rating?: { score?: number };
-}
+import BangumiResultsList, { type BangumiSubject } from "../components/BangumiResultsList";
 
 interface SearchPageProps {
   onSelectAnime: (bgmId: number) => void;
@@ -214,34 +204,11 @@ export default function SearchPage({ onSelectAnime, manualMatchFolder }: SearchP
 
       {/* 列表渲染 */}
       <div className="flex-1 overflow-y-auto space-y-2">
-        {results.map((item) => (
-          <div
-            key={item.id}
-            onClick={() => onSelectAnime(item.id)}
-            className="flex cursor-pointer items-center gap-4 rounded-md border border-border p-3 transition-colors hover:border-vermillion"
-          >
-            <div className="h-12 w-16 shrink-0 rounded bg-muted overflow-hidden">
-              {item.images?.common && (
-                <img
-                  src={proxiedImageUrl(item.images.common)}
-                  className="h-full w-full object-cover"
-                />
-              )}
-            </div>
-            <div className="flex-1 min-w-0">
-              <div className="truncate text-sm">{item.name_cn || item.name}</div>
-              <div className="truncate font-mono text-[11px] text-muted">{item.name}</div>
-            </div>
-            <div className="flex shrink-0 items-center gap-3 text-right">
-              {item.rating?.score !== undefined && item.rating.score !== null && (
-                <div className="font-mono text-xs font-bold text-amber-500">
-                  ⭐ {item.rating.score.toFixed(1)}
-                </div>
-              )}
-              <div className="font-mono text-xs text-muted w-24">{item.date || "—"}</div>
-            </div>
-          </div>
-        ))}
+        <BangumiResultsList
+          results={results}
+          onSelect={onSelectAnime}
+          emptyText={!loading ? (hasSearched ? "未找到结果" : "输入番剧名称,点击检索开始查找") : ""}
+        />
         {hasMore && results.length > 0 && (
           <div className="flex justify-center py-3">
             <button
@@ -251,11 +218,6 @@ export default function SearchPage({ onSelectAnime, manualMatchFolder }: SearchP
             >
               {loadingMore ? "加载中..." : "加载更多"}
             </button>
-          </div>
-        )}
-        {!loading && results.length === 0 && (
-          <div className="text-center py-10 text-muted font-mono text-xs">
-            {hasSearched ? "未找到结果" : "输入番剧名称,点击检索开始查找"}
           </div>
         )}
       </div>

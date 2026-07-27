@@ -363,3 +363,39 @@ async def resolve_family_season_map(main_bgm_id: int | None) -> dict[int, dict]:
             "season_ordinal": ordinal_map.get(bid),
         }
     return family_map
+
+
+async def has_new_family_members(known_bgm_ids: set[int]) -> bool:
+    """
+    给"补番"功能用的轻量核实:只查known_bgm_ids里每一个成员自己的relations(),
+    看有没有一条_SAME_CONTINUITY_RELATIONS白名单内的关系指向一个不在
+    known_bgm_ids里的id——不做BFS多层递归,一轮并发就完事。
+
+    resolve_family_season_map的BFS对家族里每个成员的relations()总共也只查一次
+    (访问过的节点不会重复查),所以"全量BFS"和"只查已知成员"两者发出的网络请求
+    数量级相同,真正的差异在编排方式:全量BFS必须一层层顺序进行(不知道下一层
+    有哪些节点之前没法发下一层的请求),而已知成员集合可以一轮并发把relations()
+    一次查完。命中缓存的家族(已知成员已经确定)用这个函数替代重新跑一遍全量BFS,
+    没发现新内容就直接信缓存,发现了就交给调用方触发resolve_family_season_map
+    完整重算——补的是"缓存可能是旧的,但补番就是要发现新出的续作"这个缺口。
+    """
+    semaphore = asyncio.Semaphore(8)
+
+    async def _check(bgm_id: int) -> bool:
+        async with semaphore:
+            try:
+                relations = await bangumi_client.get_subject_relations(bgm_id)
+            except Exception:
+                return False
+        for r in relations:
+            if r.get("type") != 2:
+                continue
+            if r.get("relation") not in _SAME_CONTINUITY_RELATIONS:
+                continue
+            rid = r.get("id")
+            if rid and rid not in known_bgm_ids:
+                return True
+        return False
+
+    results = await asyncio.gather(*(_check(bid) for bid in known_bgm_ids))
+    return any(results)
