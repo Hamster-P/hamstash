@@ -80,7 +80,10 @@ Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)  # 全新安装时数据
 DATABASE_URL = f"sqlite:///{DB_PATH}"
 
 engine = create_engine(
-    DATABASE_URL, connect_args={"check_same_thread": False}
+    DATABASE_URL,
+    connect_args={"check_same_thread": False, "timeout": 15},
+    pool_pre_ping=True,
+    pool_recycle=1800,
 )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
