@@ -77,12 +77,21 @@ class SettingsUpdate(BaseModel):
     rss_poll_interval_seconds: int = 1800  # RSS引擎自动轮询间隔,默认30分钟
     player_mode: str = "external"  # external / builtin
     default_source: str = "dmhy"  # 下载页默认选中的数据源: dmhy / animegarden / nyaa
+    default_home_view: str = "tracking"  # 软件启动时默认显示的页面: tracking/search/library
     proxy_url: str = ""  # 访问外部动漫资源站时用的代理地址,留空=直连
 
     @field_validator("proxy_url")
     @classmethod
     def validate_proxy_url(cls, value: str) -> str:
         return validate_proxy_url_value(value)
+
+    @field_validator("default_home_view")
+    @classmethod
+    def validate_default_home_view(cls, value: str) -> str:
+        allowed = {"tracking", "search", "library"}
+        if value not in allowed:
+            raise ValueError(f"default_home_view 必须是 {sorted(allowed)} 之一")
+        return value
 
     @model_validator(mode="after")
     def validate_roots_distinct(self):

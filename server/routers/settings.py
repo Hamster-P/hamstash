@@ -36,6 +36,9 @@ def get_settings(db: Session = Depends(get_db)):
         "potplayer_path": get_setting(db, "potplayer_path", config_store.DEFAULTS["potplayer_path"]),
         "player_mode": get_setting(db, "player_mode", config_store.DEFAULTS["player_mode"]),
         "default_source": get_setting(db, "default_source", config_store.DEFAULTS["default_source"]),
+        "default_home_view": get_setting(
+            db, "default_home_view", config_store.DEFAULTS["default_home_view"]
+        ),
         "proxy_url": get_setting(db, "proxy_url", config_store.DEFAULTS["proxy_url"]),
         # 只读:实际生效的代理地址(手填留空时是探测到的系统代理)。跟proxy_url分开返回,
         # 不能把探测值回填进设置页输入框——那样用户一点保存就把探测结果固化成手动配置了。
@@ -77,6 +80,7 @@ def update_settings(payload: SettingsUpdate, db: Session = Depends(get_db)):
         "rename_poll_interval_seconds": str(payload.rename_poll_interval_seconds),
         "rss_poll_interval_seconds": str(payload.rss_poll_interval_seconds),
         "default_source": payload.default_source,
+        "default_home_view": payload.default_home_view,
         "proxy_url": payload.proxy_url,
     }
     for key, value in values.items():

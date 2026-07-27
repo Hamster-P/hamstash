@@ -56,6 +56,8 @@ export interface SettingsPageHandle {
   save: () => Promise<void>;
 }
 
+type DefaultHomeView = "tracking" | "search" | "library";
+
 interface SavedSnapshot {
   downloadRoot: string;
   libraryRoot: string;
@@ -64,6 +66,7 @@ interface SavedSnapshot {
   pollMinutes: number;
   rssPollMinutes: number;
   defaultSource: "dmhy" | "animegarden" | "nyaa";
+  defaultHomeView: DefaultHomeView;
   proxyUrl: string;
 }
 
@@ -77,6 +80,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
   const [potplayerPath, setPotplayerPath] = useState("");
   const [playerMode, setPlayerMode] = useState<"builtin" | "external">("external");
   const [defaultSource, setDefaultSource] = useState<"dmhy" | "animegarden" | "nyaa">("dmhy");
+  const [defaultHomeView, setDefaultHomeView] = useState<DefaultHomeView>("tracking");
   const [proxyUrl, setProxyUrl] = useState("");
   const [pollMinutes, setPollMinutes] = useState(5);
   const [rssPollMinutes, setRssPollMinutes] = useState(30);
@@ -115,6 +119,11 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
           )
             ? data.default_source
             : "dmhy",
+          defaultHomeView: (["tracking", "search", "library"] as const).includes(
+            data.default_home_view,
+          )
+            ? data.default_home_view
+            : "tracking",
           proxyUrl: data.proxy_url ?? "",
         };
         setDownloadRoot(next.downloadRoot);
@@ -124,6 +133,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
         setPollMinutes(next.pollMinutes);
         setRssPollMinutes(next.rssPollMinutes);
         setDefaultSource(next.defaultSource);
+        setDefaultHomeView(next.defaultHomeView);
         setProxyUrl(next.proxyUrl);
         setSavedSnapshot(next);
       })
@@ -141,6 +151,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
       pollMinutes !== savedSnapshot.pollMinutes ||
       rssPollMinutes !== savedSnapshot.rssPollMinutes ||
       defaultSource !== savedSnapshot.defaultSource ||
+      defaultHomeView !== savedSnapshot.defaultHomeView ||
       proxyUrl !== savedSnapshot.proxyUrl);
 
   const checkQbStatus = () => {
@@ -211,6 +222,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
           rename_poll_interval_seconds: clampPollMinutes(pollMinutes) * 60,
           rss_poll_interval_seconds: clampPollMinutes(rssPollMinutes) * 60,
           default_source: defaultSource,
+          default_home_view: defaultHomeView,
           proxy_url: proxyUrl.trim(),
         }),
       });
@@ -232,6 +244,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
         pollMinutes,
         rssPollMinutes,
         defaultSource,
+        defaultHomeView,
         proxyUrl: proxyUrl.trim(),
       });
     } catch (err) {
@@ -318,6 +331,23 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
         {dirConflictError && (
           <p className="mt-2 font-mono text-[11px] text-vermillion">{dirConflictError}</p>
         )}
+      </div>
+
+      {/* 默认首页:软件启动时默认显示的页面 */}
+      <div className="mb-6 rounded-md border border-border bg-surface p-4">
+        <div className="mb-1 text-sm">默认首页</div>
+        <p className="mb-3 font-mono text-[11px] text-muted">
+          软件启动时默认显示的页面,之后仍然可以在侧边栏随时切换。
+        </p>
+        <select
+          value={defaultHomeView}
+          onChange={(e) => setDefaultHomeView(e.target.value as DefaultHomeView)}
+          className="rounded border border-border bg-ink px-2 py-1.5 font-mono text-xs text-paper outline-none focus:border-vermillion"
+        >
+          <option value="tracking">连载页面</option>
+          <option value="search">搜索页面</option>
+          <option value="library">媒体库页面</option>
+        </select>
       </div>
 
       {/* 新增：播放方式选择 */}

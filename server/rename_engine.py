@@ -264,7 +264,14 @@ def preview_rename_file(
     # 导致正片也被错误分类进OVA分支(这正是多集OVA+正传混合种子整理错乱的根因)。
     # platform(Bangumi官方类型)不受这个影响,已经在classify_media_type内部优先判断。
     media_type = classify_media_type(file_name, platform)
-    file_ext = file_name.rsplit(".", 1)[-1] if "." in file_name else "mkv"
+    # 下载前的预览(routers/download_submit.py::preview_rename_endpoint)拿不到种子
+    # 内部真实文件名,只能拿整个种子标题当file_name占位——标题里常见"AV1 OPUS 2.0"
+    # 这种声道标注,朴素取"最后一个.后面的内容"会把"2.0"的"0"误判成扩展名。
+    # 真实文件名(下载完成后organize.py那边传进来的)本来就已经是VIDEO_EXTS过滤过的
+    # 视频文件,取出来的后缀必然在这个集合里;不在集合里就说明这次拿到的根本不是
+    # 真实文件名,退回"mkv"占位,不把标题里的噪音当成扩展名用。
+    candidate_ext = file_name.rsplit(".", 1)[-1].lower() if "." in file_name else ""
+    file_ext = candidate_ext if candidate_ext in VIDEO_EXTS else "mkv"
 
     tv_root = library_root
 

@@ -51,7 +51,14 @@ function AppContent() {
   useEffect(() => {
     fetch(`${API_BASE}/settings`)
       .then((res) => res.json())
-      .then((data) => setQbitSetupCompleted(Boolean(data.qbit_setup_completed)))
+      .then((data) => {
+        // 启动时按设置页配置的"默认首页"打开对应tab,仅在这里应用一次
+        // (之后用户在侧边栏手动切换不受这个设置影响)。
+        if (["tracking", "search", "library"].includes(data.default_home_view)) {
+          setView(data.default_home_view as View);
+        }
+        setQbitSetupCompleted(Boolean(data.qbit_setup_completed));
+      })
       .catch(() => setQbitSetupCompleted(false));
   }, []);
 
