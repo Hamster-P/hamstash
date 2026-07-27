@@ -127,6 +127,19 @@ export default function DownloadManagerPage() {
     }
   };
 
+  const handleRetryOne = async (hash: string) => {
+    setBusy(true);
+    try {
+      const res = await fetch(`${API_BASE}/downloads/tasks/${hash}/retry`, { method: "POST" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await loadTasks(false);
+    } catch (err) {
+      console.error("重试下载任务失败", err);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const handleBatchDelete = async () => {
     setBusy(true);
     try {
@@ -315,7 +328,16 @@ export default function DownloadManagerPage() {
                     ) : (
                       // 跟"删除+取消"两按钮状态占同样的最小宽度,点删除时这一列/整个表格
                       // 不会跟着变宽、把左边内容一起挤动
-                      <div className="flex min-w-[88px] items-center font-mono text-[11px]">
+                      <div className="flex min-w-[88px] items-center gap-3 font-mono text-[11px]">
+                        {task.status_label === "出错" && (
+                          <button
+                            disabled={busy}
+                            onClick={() => handleRetryOne(task.hash)}
+                            className="text-muted transition-colors hover:text-vermillion disabled:opacity-40"
+                          >
+                            重试
+                          </button>
+                        )}
                         <button
                           onClick={() => setPendingDeleteHash(task.hash)}
                           className="text-muted transition-colors hover:text-vermillion"

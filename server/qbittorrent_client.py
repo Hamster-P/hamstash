@@ -244,6 +244,17 @@ async def add_torrent_tags(torrent_hash: str, tags: str) -> None:
     )
     resp.raise_for_status()
 
+async def recheck_torrent(torrent_hash: str) -> None:
+    """重新校验种子磁盘文件,配合resume用于从error/missingFiles状态恢复
+    (比如网络共享暂时断开又恢复后,qBittorrent以为文件丢了)。"""
+    resp = await _request("post", "/api/v2/torrents/recheck", data={"hashes": torrent_hash})
+    resp.raise_for_status()
+
+async def resume_torrent(torrent_hash: str) -> None:
+    """恢复/继续一个种子。"""
+    resp = await _request("post", "/api/v2/torrents/resume", data={"hashes": torrent_hash})
+    resp.raise_for_status()
+
 async def delete_torrent(torrent_hash: str, delete_files: bool = True) -> None:
     """删除一个种子,delete_files=True时连同它已下载的文件一起删除磁盘空间。"""
     resp = await _request(

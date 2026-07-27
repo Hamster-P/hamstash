@@ -75,3 +75,17 @@ async def delete_download_task(torrent_hash: str):
 async def batch_delete_download_tasks(payload: BatchDeleteTasksRequest):
     results = [await _delete_one(h) for h in payload.hashes]
     return {"results": results}
+
+
+async def _retry_one(torrent_hash: str) -> dict:
+    try:
+        await qbittorrent_client.recheck_torrent(torrent_hash)
+        await qbittorrent_client.resume_torrent(torrent_hash)
+        return {"hash": torrent_hash, "success": True}
+    except Exception as e:
+        return {"hash": torrent_hash, "success": False, "error": str(e)}
+
+
+@router.post("/tasks/{torrent_hash}/retry")
+async def retry_download_task(torrent_hash: str):
+    return await _retry_one(torrent_hash)
