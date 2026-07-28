@@ -367,25 +367,30 @@ export default function LibraryPage({ onSelectAnime, onManualMatch }: LibraryPag
     return [ep];
   };
 
-  // 内置mpv自动连播切到下一集时,mpv上报start-file事件,乐观标记那一集已看
-  // (跟点击那一集的语义一样,不等播完)。第一集是点击时就已经标记过的,这里
-  // 只负责补上自动连播切到的后续集数。
+  // 播放器自动连播切到下一集时,乐观标记那一集已看(跟点击那一集的语义一样,不等播完)。
+  // 第一集是点击时就已经标记过的,这里只负责补上自动连播切到的后续集数。
+  // 内置mpv靠IPC上报start-file,外置PotPlayer靠轮询窗口标题(见lib.rs),
+  // 两边上报的负载形状一致,共用同一套处理。
   useEffect(() => {
-    let unlisten: (() => void) | undefined;
+    const unlistens: Array<() => void> = [];
     let cancelled = false;
 
-    listen<{ path: string }>("mpv-episode-started", (event) => {
+    const onEpisodeStarted = (event: { payload: { path: string } }) => {
       const parsed = parseLibraryPath(event.payload.path, settings.library_root);
       if (!parsed) return;
       markWatched(parsed.folderName, parsed.filename);
-    }).then((fn) => {
-      if (cancelled) fn();
-      else unlisten = fn;
-    });
+    };
+
+    for (const eventName of ["mpv-episode-started", "external-episode-started"]) {
+      listen<{ path: string }>(eventName, onEpisodeStarted).then((fn) => {
+        if (cancelled) fn();
+        else unlistens.push(fn);
+      });
+    }
 
     return () => {
       cancelled = true;
-      unlisten?.();
+      unlistens.forEach((fn) => fn());
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings.library_root]);

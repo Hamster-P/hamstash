@@ -354,7 +354,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
       <div className="mb-6 rounded-md border border-border bg-surface p-4">
         <div className="mb-1 text-sm">播放方式</div>
         <p className="mb-3 font-mono text-[11px] text-muted">
-          内置mpv能识别连续观看多集,逐集准确标记已看;外置播放器只在点击瞬间标记已看,后续播放行为无法感知。
+          内置播放器mpv;外置播放器暂时只支持Potplayer。
         </p>
         <div className="flex gap-3">
           <label className="flex items-center gap-2 font-mono text-xs">

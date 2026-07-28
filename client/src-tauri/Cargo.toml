@@ -1,6 +1,6 @@
 [package]
 name = "hamstash-client"
-version = "0.5.0"
+version = "0.5.1"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -29,4 +29,9 @@ tauri-plugin-http = "2"
 tokio = { version = "1", features = ["net", "io-util", "time", "sync"] }
 reqwest = { version = "0.12", features = ["json"] }
 url = "2"
+
+# 监视外置PotPlayer窗口标题用(见lib.rs::run_potplayer_title_watcher)。
+# tauri本身已经间接依赖了同一个版本,声明成直接依赖不会增加实际编译量。
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
 

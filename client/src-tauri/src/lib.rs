@@ -1,6 +1,7 @@
 // lib.rs
 use std::collections::HashMap;
 use std::process::Command;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tauri::webview::PageLoadEvent;
@@ -189,14 +190,195 @@ fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
 }
 
+const POTPLAYER_TITLE_SUFFIX: &str = " - PotPlayer";
+
+/// 每秒轮询一次:EnumWindows是纯本地调用(亚毫秒级),这个频率完全无感,
+/// 换来的是切集后1秒内就能标记上。
+const EXTERNAL_POLL: Duration = Duration::from_secs(1);
+/// 连续这么多轮一个PotPlayer窗口都没有,才认定播放器已经关了(切文件时标题可能短暂读不到)。
+const EXTERNAL_MISS_LIMIT: u32 = 8;
+
+/// 外置播放器当前的监视目标。
+///
+/// 刻意不跟踪pid:PotPlayer默认是单实例的,播放中再从HamStash点另一部番,新进程会把文件
+/// 交接给已有进程后自己立刻退出——真正在播的是那个老进程,认死spawn出来的pid会直接跟丢。
+/// 改成只认"标题里的文件名是否落在我们启动的那个目录下",单实例/多实例都天然支持,
+/// 也顺带满足了"只标记HamStash拉起的播放"这个约束(用户自己另开的视频不在这个目录里)。
+/// 同一时间只监视一个目标(最后一次点播放的那个),再点一次就整体切过去。
+struct ExternalTarget {
+    launch_dir: std::path::PathBuf,
+    last_filename: String,
+}
+
+static EXTERNAL_TARGET: OnceLock<Mutex<Option<ExternalTarget>>> = OnceLock::new();
+static EXTERNAL_WATCHER_RUNNING: OnceLock<Mutex<bool>> = OnceLock::new();
+
+fn external_target() -> &'static Mutex<Option<ExternalTarget>> {
+    EXTERNAL_TARGET.get_or_init(|| Mutex::new(None))
+}
+
+fn external_watcher_running() -> &'static Mutex<bool> {
+    EXTERNAL_WATCHER_RUNNING.get_or_init(|| Mutex::new(false))
+}
+
 // 新增：从 main.rs 剪切过来
 #[tauri::command]
-fn open_external_player(video_path: String, player_path: String) {
+fn open_external_player(app: AppHandle, video_path: String, player_path: String) {
     println!("准备播放视频: {} \n使用播放器: {}", video_path, player_path);
 
     match Command::new(&player_path).arg(&video_path).spawn() {
-        Ok(_) => println!("播放器启动成功"),
+        Ok(_) => {
+            println!("播放器启动成功");
+            // PotPlayer自动连播切到下一集时,我们这边没有任何回调可用(它不像mpv有IPC),
+            // 只能靠轮询窗口标题来发现"当前播放的文件变了"。启动目录用点击那一集的父目录——
+            // 自动连播是在同一个目录(同一季)里往下走的。
+            let path = std::path::Path::new(&video_path);
+            let dir = path.parent().map(|d| d.to_path_buf());
+            let filename = path.file_name().map(|n| n.to_string_lossy().to_string());
+            if let (Some(launch_dir), Some(filename)) = (dir, filename) {
+                // 立即切换监视目标,不等播放器窗口起来——窗口没起来之前轮询自然匹配不上,
+                // 起来了自然就匹配上了,不需要一个"先等窗口出现"的前置阶段。
+                // 点击的那一集前端在这之前已经乐观标记过了,拿它做种子避免重复上报。
+                *external_target().lock().unwrap() = Some(ExternalTarget {
+                    launch_dir,
+                    last_filename: filename,
+                });
+
+                // 监视循环全局只跑一个;已经在跑的话,它下一轮自然读到上面新设的目标。
+                let should_spawn = {
+                    let mut running = external_watcher_running().lock().unwrap();
+                    if *running {
+                        false
+                    } else {
+                        *running = true;
+                        true
+                    }
+                };
+                if should_spawn {
+                    tauri::async_runtime::spawn(async move {
+                        loop {
+                            run_potplayer_title_watcher(app.clone()).await;
+                            // 熄火前在持有running锁的情况下再确认一次有没有新目标:
+                            // 上面是"先设target再看running",这里是"先锁running再看target",
+                            // 两边顺序相反才能保证"监视循环正在退出时用户刚好点了播放"
+                            // 不会漏掉——要么这里看得到新target继续盯,要么那边看到
+                            // running已经false、自己拉起一个新的。
+                            let mut running = external_watcher_running().lock().unwrap();
+                            if external_target().lock().unwrap().is_none() {
+                                *running = false;
+                                break;
+                            }
+                        }
+                    });
+                }
+            }
+        }
         Err(e) => eprintln!("拉起播放器失败: {}", e),
+    }
+}
+
+/// 枚举当前所有PotPlayer播放窗口的标题(形如"<文件名> - PotPlayer")。
+/// 后端是以Windows服务(Session 0)跑的,读不到用户会话里的窗口,所以这件事
+/// 只能放在跑在用户会话里的Tauri客户端进程做。
+#[cfg(windows)]
+fn enum_potplayer_titles() -> Vec<String> {
+    use windows_sys::core::BOOL;
+    use windows_sys::Win32::Foundation::{HWND, LPARAM, TRUE};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetWindowTextLengthW, GetWindowTextW,
+    };
+
+    unsafe extern "system" fn cb(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let out = unsafe { &mut *(lparam as *mut Vec<String>) };
+
+        let len = unsafe { GetWindowTextLengthW(hwnd) };
+        if len <= 0 {
+            return TRUE; // 无标题窗口(PotPlayer有若干隐藏辅助窗口),跳过
+        }
+
+        let mut buf = vec![0u16; (len + 1) as usize];
+        let copied = unsafe { GetWindowTextW(hwnd, buf.as_mut_ptr(), buf.len() as i32) };
+        if copied > 0 {
+            let title = String::from_utf16_lossy(&buf[..copied as usize]);
+            if title.ends_with(POTPLAYER_TITLE_SUFFIX) {
+                out.push(title);
+            }
+        }
+        TRUE
+    }
+
+    let mut out: Vec<String> = Vec::new();
+    unsafe { EnumWindows(Some(cb), &mut out as *mut Vec<String> as isize) };
+    out
+}
+
+#[cfg(not(windows))]
+fn enum_potplayer_titles() -> Vec<String> {
+    Vec::new()
+}
+
+/// 轮询PotPlayer的窗口标题,发现当前播放文件变化就通知前端补标记已看。
+/// 标题形如"<文件名> - PotPlayer",去掉后缀就是文件名;再跟当前目标的启动目录拼成完整路径,
+/// 校验文件真实存在才上报——这一步同时承担了三件事:确认标题里确实是文件名(用户改过
+/// 标题格式的话会挡掉)、确认播的是这部番(切到别的番会挡掉)、确认播放器窗口已经真的
+/// 加载好了(加载中的临时标题会挡掉)。所以不需要任何"先等窗口出现"的前置阶段。
+/// 播放器关闭(窗口全部消失)后清空目标、结束循环。
+async fn run_potplayer_title_watcher(app: AppHandle) {
+    let mut misses: u32 = 0;
+
+    loop {
+        tokio::time::sleep(EXTERNAL_POLL).await;
+
+        let (launch_dir, last_filename) = {
+            let guard = external_target().lock().unwrap();
+            match guard.as_ref() {
+                Some(t) => (t.launch_dir.clone(), t.last_filename.clone()),
+                None => break,
+            }
+        };
+
+        let titles = enum_potplayer_titles();
+        if titles.is_empty() {
+            misses += 1;
+            if misses >= EXTERNAL_MISS_LIMIT {
+                *external_target().lock().unwrap() = None;
+                break;
+            }
+            continue;
+        }
+        misses = 0;
+
+        for title in titles {
+            let filename = title
+                .strip_suffix(POTPLAYER_TITLE_SUFFIX)
+                .unwrap_or(&title)
+                .trim()
+                .to_string();
+            if filename.is_empty() || filename == last_filename {
+                continue;
+            }
+
+            let path = launch_dir.join(&filename);
+            if !path.is_file() {
+                continue;
+            }
+
+            {
+                let mut guard = external_target().lock().unwrap();
+                match guard.as_mut() {
+                    // 期间用户又点了别的番的话,目标已经被换掉了,这条上报就作废
+                    Some(t) if t.launch_dir == launch_dir => t.last_filename = filename,
+                    _ => break,
+                }
+            }
+
+            // 负载形状跟mpv那条事件保持一致,前端可以共用同一套处理逻辑
+            let _ = app.emit(
+                "external-episode-started",
+                serde_json::json!({ "path": path.to_string_lossy() }),
+            );
+            break;
+        }
     }
 }
 
