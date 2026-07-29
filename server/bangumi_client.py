@@ -26,6 +26,88 @@ def _normalize_for_match(text: str) -> str:
     return re.sub(r"\s+", "", normalized)
 
 
+def _resolve_air_date_bounds(year: int | None, month: int | None) -> tuple[str, str] | None:
+    """把年份/季度转成(起始日期, 结束日期)这一对闭区间字符串,年份/季度不合法时返回None。
+    v0搜索的filter.air_date、legacy搜索兜底的手工日期过滤共用这一份换算,避免两处逻辑分叉。
+    """
+    if not year or str(year) == "不限":
+        return None
+    try:
+        y = int(year)
+        if month and str(month) != "":
+            m = int(month)
+            # 根据季度（1月/4月/7月/10月）构建范围
+            if m == 1:
+                return f"{y}-01-01", f"{y}-03-31"
+            elif m == 4:
+                return f"{y}-04-01", f"{y}-06-30"
+            elif m == 7:
+                return f"{y}-07-01", f"{y}-09-30"
+            elif m == 10:
+                return f"{y}-10-01", f"{y}-12-31"
+            else:
+                return f"{y}-{m:02d}-01", f"{y}-{m:02d}-28"
+        else:
+            # 只传了年份，搜索整年
+            return f"{y}-01-01", f"{y}-12-31"
+    except ValueError:
+        return None
+
+
+async def _search_anime_legacy_fallback(
+    keyword: str, year: int | None, month: int | None
+) -> list[dict]:
+    """v0搜索接口对某些条目的中文标题全文索引有缺口(比如bgm_id=489577"进入花园",
+    v0接口无论用全名还是子串关键词查中文标题都是空结果,但同一个接口用英文原名"Enter The
+    Garden"能立刻查到,Bangumi更老的legacy搜索接口用中文关键词也能查到——是Bangumi自己
+    索引没跟上,不是关键词或过滤器的问题),只在v0"真的一条都没有"时兜底调用一次,
+    把结果字段形状换算成跟v0搜索结果一致,让调用方后续处理不用区分数据来源。
+
+    legacy接口没有meta_tags字段,调用方不应该再对这里返回的结果做"日本"产地过滤
+    (那层过滤是基于v0结果才有意义的社区标签,legacy结果永远没有,过滤会把兜底结果又清空)。
+    """
+    if not keyword:
+        return []
+    url = f"{BASE_URL}/search/subject/{keyword}"
+    params: dict = {"type": 2, "responseGroup": "large", "max_results": 25}
+    async with httpx.AsyncClient(proxy=get_proxy_url(), follow_redirects=True) as client:
+        response = await client.get(url, params=params, headers=HEADERS, timeout=10.0)
+        response.raise_for_status()
+        legacy_data = response.json()
+
+    legacy_list = legacy_data.get("list") or []
+    bounds = _resolve_air_date_bounds(year, month)
+    if bounds:
+        start, end = bounds
+        legacy_list = [
+            item for item in legacy_list
+            if start <= (item.get("air_date") or "") <= end
+        ]
+
+    converted = []
+    for item in legacy_list:
+        images = item.get("images") or {}
+        rating = dict(item.get("rating") or {})
+        rating["rank"] = item.get("rank", rating.get("rank", 0))
+        converted.append({
+            "id": item.get("id"),
+            "type": item.get("type"),
+            "name": item.get("name") or "",
+            "name_cn": item.get("name_cn") or "",
+            "summary": item.get("summary") or "",
+            "date": item.get("air_date"),
+            "images": images,
+            "eps": item.get("eps"),
+            "total_episodes": item.get("eps_count") or item.get("eps"),
+            "rating": rating,
+            "collection": item.get("collection") or {},
+            # legacy接口不返回meta_tags/platform/nsfw/locked,调用方需要跳过依赖这些
+            # 字段的过滤(比如"日本"产地过滤),不能假装它们存在。
+            "meta_tags": None,
+        })
+    return converted
+
+
 async def search_anime(keyword: str, limit: int = 100, year: int | None = None, month: int | None = None, offset: int = 0):
     url = f"{BASE_URL}/v0/search/subjects"
     # 基础过滤器：锁定动画类型 (2代表动画)
@@ -34,27 +116,9 @@ async def search_anime(keyword: str, limit: int = 100, year: int | None = None, 
     }
 
     # 2. 核心修正：将年份和季度转换为官方支持的 air_date 日期区间数组
-    if year and str(year) != "不限":
-        try:
-            y = int(year)
-            if month and str(month) != "":
-                m = int(month)
-                # 根据季度（1月/4月/7月/10月）构建范围
-                if m == 1:
-                    filter_options["air_date"] = [f">={y}-01-01", f"<={y}-03-31"]
-                elif m == 4:
-                    filter_options["air_date"] = [f">={y}-04-01", f"<={y}-06-30"]
-                elif m == 7:
-                    filter_options["air_date"] = [f">={y}-07-01", f"<={y}-09-30"]
-                elif m == 10:
-                    filter_options["air_date"] = [f">={y}-10-01", f"<={y}-12-31"]
-                else:
-                    filter_options["air_date"] = [f">={y}-{m:02d}-01", f"<={y}-{m:02d}-28"]
-            else:
-                # 只传了年份，搜索整年
-                filter_options["air_date"] = [f">={y}-01-01", f"<={y}-12-31"]
-        except ValueError:
-            pass
+    bounds = _resolve_air_date_bounds(year, month)
+    if bounds:
+        filter_options["air_date"] = [f">={bounds[0]}", f"<={bounds[1]}"]
 
     payload = {
             "keyword": keyword,
@@ -81,8 +145,19 @@ async def search_anime(keyword: str, limit: int = 100, year: int | None = None, 
             # 下面会用我们过滤后的数量覆盖掉 raw_data["total"]，
             # 所以要在覆盖前保留一份，供前端判断是否还有下一页）。
             bangumi_total = raw_data.get("total", len(raw_list))
+
+            # v0搜索接口对个别条目的中文标题全文索引有缺口(比如bgm_id=489577"进入花园",
+            # 关键词/子串/type过滤器不管怎么组合v0都是0结果,但同一接口用英文原名能查到、
+            # Bangumi更老的legacy接口用中文关键词也能查到——是Bangumi自己索引没跟上)。
+            # 只在v0第一页就真的一条都没有时兜底一次,不影响v0能正常出结果的绝大多数场景,
+            # 也不在翻页(offset>0)时触发,避免跟"加载更多"的分页状态搅在一起。
+            if not raw_list and bangumi_total == 0 and offset == 0:
+                raw_list = await _search_anime_legacy_fallback(keyword, year, month)
+                bangumi_total = len(raw_list)
+
             keyword_norm = _normalize_for_match(keyword)
 
+            matched = []
             if keyword_norm:
                 matched = [
                     item for item in raw_list
@@ -100,10 +175,20 @@ async def search_anime(keyword: str, limit: int = 100, year: int | None = None, 
             # 默认只保留Bangumi官方meta_tags标了"日本"产地的条目,过滤掉国漫/
             # 其他产地番剧——这个字段搜索接口本身就带,不需要额外请求。放在关键词
             # 过滤(含空匹配兜底)之后,保证不管有没有走兜底逻辑,最终结果都只剩日漫。
-            filtered_list = [
+            # meta_tags是None(legacy兜底结果,这个接口根本不返回这个字段)时直接放行,
+            # 不能当成"没有日本标签"处理,否则兜底查到的结果会在这里被清空回到原点。
+            japan_filtered = [
                 item for item in filtered_list
-                if "日本" in (item.get("meta_tags") or [])
+                if item.get("meta_tags") is None or "日本" in (item.get("meta_tags") or [])
             ]
+            # 兜底：产地过滤把关键词强匹配(matched)的结果也清空了 -> 大概率是这个条目
+            # 社区meta_tags还没标全"日本"(常见于海外联合制作/小众NFT宣传短片这类冷门条目,
+            # 比如bgm_id=489577"进入花园",标签只有"WEB",没人补"日本"),而不是产地真的
+            # 不对。这时优先信任关键词强匹配,不要让一个缺失的社区标签把标题精确命中的
+            # 结果也清没——这正是之前"进入花园"搜不到的实际原因。
+            # 只在matched非空时回退,keyword为空(纯浏览/推荐场景)或matched本身也是空的
+            # 兜底情况下不触发,避免把产地过滤直接形同虚设。
+            filtered_list = japan_filtered if japan_filtered or not matched else matched
 
             raw_data["data"] = filtered_list
             raw_data["total"] = len(filtered_list)

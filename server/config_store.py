@@ -34,6 +34,7 @@ DEFAULTS = {
     "qbit_username": os.getenv("QBIT_USERNAME", "admin"),
     "qbit_password": os.getenv("QBIT_PASSWORD", ""),
     "qbit_setup_completed": "false",  # 引导向导是否已经走完,前端据此决定要不要弹首次引导
+    "library_sort_mode": "default",  # 影视库列表页排序方式记忆: default/recent_watched/recent_updated
 }
 
 
@@ -58,3 +59,11 @@ def write_ini(values: dict) -> None:
     parser["settings"] = {k: str(v) for k, v in values.items()}
     with open(INI_PATH, "w", encoding="utf-8") as f:
         parser.write(f)
+
+
+def update_ini_value(key: str, value: str) -> None:
+    """只更新INI里的单个键,不影响其他键——跟write_ini()不同,后者会用传入的
+    dict整个替换settings小节,单独调用会把没传的键全部冲掉。"""
+    merged = read_ini()
+    merged[key] = str(value)
+    write_ini(merged)

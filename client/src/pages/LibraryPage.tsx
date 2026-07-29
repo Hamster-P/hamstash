@@ -135,10 +135,16 @@ export default function LibraryPage({ onSelectAnime, onManualMatch }: LibraryPag
     player_mode: "external",
   });
 
-  // 组件挂载时，先拉取设置，再扫盘+拉取影视库
+  // 组件挂载时，先拉取设置，再扫盘+拉取影视库，同时恢复上次记住的排序方式
   useEffect(() => {
     fetchSettings();
     scanAndFetchAnimes();
+    fetch(`${API_BASE}/library/sort-mode`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (data?.mode) setSort(data.mode as SortMode);
+      })
+      .catch(() => {});
   }, []);
 
   // 从后端或本地获取设置
@@ -196,8 +202,14 @@ export default function LibraryPage({ onSelectAnime, onManualMatch }: LibraryPag
 
   // 切换排序方式纯本地重排已经拿到手的数据(见sortAnimes/displayedAnimes),
   // 不重新请求后端,不触发扫盘——这是本次要修的"切排序按钮卡顿"的核心改动。
+  // 同时把选择持久化到后端(DB+INI),下次打开页面能恢复上次的选择。
   const handleSortChange = (sortValue: SortMode) => {
     setSort(sortValue);
+    fetch(`${API_BASE}/library/sort-mode`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: sortValue }),
+    }).catch((err: any) => console.error("保存排序方式失败", err));
   };
 
   // 点击某部动漫后，获取具体季、集数据

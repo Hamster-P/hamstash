@@ -14,12 +14,34 @@ from pydantic import BaseModel
 
 import models
 import rename_engine
+import config_store
 from database import SessionLocal, get_db
-from services.common import get_setting
+from services.common import get_setting, upsert_setting
 from bangumi_client import get_subject_detail, normalize_bgm_subject
 from datetime import datetime
 
 router = APIRouter(tags=["影视库"])
+
+LIBRARY_SORT_MODES = {"default", "recent_watched", "recent_updated"}
+
+
+class SortModeUpdate(BaseModel):
+    mode: str
+
+
+@router.get("/library/sort-mode")
+def get_library_sort_mode(db: Session = Depends(get_db)):
+    """影视库列表页排序方式记忆:重新打开页面时恢复上次选择,而不是每次都回到默认。"""
+    return {"mode": get_setting(db, "library_sort_mode", config_store.DEFAULTS["library_sort_mode"])}
+
+
+@router.put("/library/sort-mode")
+def set_library_sort_mode(req: SortModeUpdate, db: Session = Depends(get_db)):
+    if req.mode not in LIBRARY_SORT_MODES:
+        raise HTTPException(status_code=400, detail=f"未知排序方式: {req.mode}")
+    upsert_setting(db, "library_sort_mode", req.mode)
+    config_store.update_ini_value("library_sort_mode", req.mode)
+    return {"mode": req.mode}
 
 # 跟rename_engine.VIDEO_EXTS共用同一份后缀清单(只是这边要带"."前缀跟Path.suffix比较),
 # 不再各自维护一份、之后加格式两处都要改——之前这里漏了m2t等格式,导致AT-X台标注的

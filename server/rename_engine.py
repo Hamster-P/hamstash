@@ -8,13 +8,16 @@ MOVIE_MARKERS = ["剧场版", "劇場版", "movie", "gekijouban"]
 OVA_MARKERS = ["ova", "oad", "特典", "特别篇", "番外篇", "sp", "总集篇", "回顾篇", ".5", "激活解说"]
 EXTRA_MARKERS = ["op", "ed", "ncop", "nced", "opening", "ending", "pv", "预告",
                   "menu", "cm", "sample", "logo", "credit", "trailer", "teaser",
-                  "interview", "spot", "bonus"]
+                  "interview", "spot", "bonus", "tokuten"]
 # EXTRA_MARKERS里的短标记(op/ed/pv/cm等)朴素子串匹配容易误伤普通单词内部的字母组合
 # (比如"Poppin'Dream"含有"op"),改用单词边界的正则;数字后缀0~2位是为了兼容
 # "OP1"/"ED2"这类多首插曲编号的字幕组命名习惯。
+# tokuten是"特典"的罗马字写法——BD花絮盘经常只在文件名里写罗马字,中文"特典"
+# 关键词(见OVA_MARKERS)只出现在种子内的父目录名里,传到这里的裸文件名根本看不到,
+# 漏了这个词会导致特典视频被当成正片走S03Exx编号,详见rename_engine相关bug记录。
 _EXTRA_PATTERN = re.compile(
     r"(?<![a-z0-9])(op|ed|ncop|nced|opening|ending|pv|menu|cm|sample|logo|credit|"
-    r"trailer|teaser|interview|spot|bonus)\d{0,2}(?![a-z0-9])|预告",
+    r"trailer|teaser|interview|spot|bonus|tokuten)\d{0,2}(?![a-z0-9])|预告",
     re.IGNORECASE,
 )
 
@@ -118,11 +121,18 @@ def _episode_fallback_str(search_text: str, generic_fallback: bool = False) -> s
     ——种子整体标题场景关掉这个兜底(标题里的数字噪音更多),单文件场景打开。
     """
     ep_match = re.search(r'(?:第|E|\[)(\d+\.5)(?:话|集|\])?', search_text, re.IGNORECASE)
-    if not ep_match and generic_fallback:
+    if ep_match:
+        return ep_match.group(1)
+    if generic_fallback:
         # 两侧都不能贴着字母,否则"10bit"/"1080p"这类分辨率/编码后缀里的数字
         # 会被误当成集数抓取(比如没有真实集数的OVA/PV文件会被错误猜出集数)。
-        ep_match = re.search(r'(?<![a-zA-Z\d])(\d{1,3})(?![a-zA-Z\d])', search_text)
-    return ep_match.group(1) if ep_match else "??"
+        generic_match = re.search(r'(?<![a-zA-Z\d])(\d{1,3})(?![a-zA-Z\d])', search_text)
+        if generic_match:
+            # 补零跟结构化解析路径(_extract_release_version等处的:02d)保持一致——
+            # 不补零的话,这里抓到的裸数字(比如误从标题季号"3"里抓出来的)跟同一季
+            # 正常补零的"03"只差一位,视觉上像是"同一集重复"了,详见相关bug记录。
+            return f"{int(generic_match.group(1)):02d}"
+    return "??"
 
 
 def _extract_episode_str(episode_number, search_text: str, generic_fallback: bool = False) -> str:
