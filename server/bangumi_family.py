@@ -349,7 +349,22 @@ async def resolve_family_season_map(main_bgm_id: int | None) -> dict[int, dict]:
         candidates.append((bid, detail.get("date") or ""))
 
     candidates.sort(key=lambda item: item[1])
-    ordinal_map = {bid: f"{idx:02d}" for idx, (bid, _) in enumerate(candidates, start=1)}
+
+    # 按首播日期排好序后不能无脑连续编号:同一季拆成两段播出时(比如"第2部分"/
+    # "後編"/日文原名的"第2クール"),Bangumi会把后半段建成独立的family成员,
+    # 但它不是一个新季,不该单独占用一个季度序号——否则后面每一部真正的新季都会
+    # 被顺移(无职转生第一季/第二季各自拆两段播出,实测下来会把2026年才开播的
+    # 第三季错误编号成"05"而不是"03")。复用bangumi_client.PART_PATTERN识别
+    # 这种"续播后半段":命中的成员直接沿用上一个候选已经分配到的序号,不递增计数器。
+    ordinal_map: dict[int, str] = {}
+    current_ordinal = 0
+    for bid, _date in candidates:
+        detail = details.get(bid) or {}
+        name = detail.get("name_cn") or detail.get("name") or ""
+        is_continuation = current_ordinal > 0 and bangumi_client.PART_PATTERN.search(name)
+        if not is_continuation:
+            current_ordinal += 1
+        ordinal_map[bid] = f"{current_ordinal:02d}"
 
     family_map: dict[int, dict] = {}
     for bid in visited:
