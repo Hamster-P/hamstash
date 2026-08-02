@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 
 interface RssSubscription {
   id: number;
@@ -209,152 +209,156 @@ export default function RssPage() {
             </thead>
             <tbody className="divide-y divide-border">
               {subs.map((sub) => (
-                <tr
-                  key={sub.id}
-                  onClick={() =>
-                    setSelectedId(selectedId === sub.id ? null : sub.id)
-                  }
-                  className={`cursor-pointer transition-colors hover:bg-surface-hover ${
-                    selectedId === sub.id ? "bg-surface-hover" : ""
-                  }`}
-                >
-                  <td className="px-3 py-2">{sub.anime_title}</td>
-                  <td className="max-w-[160px] truncate px-3 py-2 font-mono text-xs text-muted">
-                    {sub.keyword}
-                  </td>
-                  <td className="px-3 py-2 font-mono text-xs text-vermillion">
-                    {sub.fansub_name ?? "不限"}
-                  </td>
-                  <td className="px-3 py-2 font-mono text-xs">
-                    {sub.quality ?? "不限"}
-                  </td>
-                  <td className="px-3 py-2 font-mono text-[11px]">
-                    {sub.enabled ? (
-                      <span className="text-gold">运行中</span>
-                    ) : (
-                      <span className="text-muted">已暂停</span>
-                    )}
-                  </td>
-                  <td
-                    className="px-3 py-2"
-                    onClick={(e) => e.stopPropagation()}
+                <Fragment key={sub.id}>
+                  <tr
+                    onClick={() =>
+                      setSelectedId(selectedId === sub.id ? null : sub.id)
+                    }
+                    className={`cursor-pointer transition-colors hover:bg-surface-hover ${
+                      selectedId === sub.id ? "bg-surface-hover" : ""
+                    }`}
                   >
-                    <button
-                      type="button"
-                      disabled={busyId === sub.id}
-                      onClick={() => handleToggle(sub)}
-                      aria-pressed={sub.enabled}
-                      className={`relative h-6 w-11 shrink-0 rounded-full transition-colors duration-200 disabled:opacity-40 ${
-                        sub.enabled ? "bg-toggle-on" : "bg-border"
-                      }`}
+                    <td className="px-3 py-2">{sub.anime_title}</td>
+                    <td className="max-w-[160px] truncate px-3 py-2 font-mono text-xs text-muted">
+                      {sub.keyword}
+                    </td>
+                    <td className="px-3 py-2 font-mono text-xs text-vermillion">
+                      {sub.fansub_name ?? "不限"}
+                    </td>
+                    <td className="px-3 py-2 font-mono text-xs">
+                      {sub.quality ?? "不限"}
+                    </td>
+                    <td className="px-3 py-2 font-mono text-[11px]">
+                      {sub.enabled ? (
+                        <span className="text-gold">运行中</span>
+                      ) : (
+                        <span className="text-muted">已暂停</span>
+                      )}
+                    </td>
+                    <td
+                      className="px-3 py-2"
+                      onClick={(e) => e.stopPropagation()}
                     >
-                      <span
-                        className="absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-transform duration-200"
-                        style={{
-                          transform: sub.enabled
-                            ? "translateX(20px)"
-                            : "translateX(0px)",
-                        }}
-                      />
-                    </button>
-                  </td>
-                  <td
-                    className="px-3 py-2"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    {pendingDeleteId === sub.id ? (
-                      <div className="flex items-center gap-2 font-mono text-[11px]">
-                        <button
-                          disabled={busyId === sub.id}
-                          onClick={() => handleDelete(sub.id)}
-                          className="rounded border border-vermillion px-2 py-0.5 text-vermillion transition-colors hover:bg-vermillion hover:text-ink disabled:opacity-40"
-                        >
-                          删除
-                        </button>
-                        <button
-                          onClick={() => setPendingDeleteId(null)}
-                          className="rounded border border-border px-2 py-0.5 text-muted transition-colors hover:text-paper"
-                        >
-                          取消
-                        </button>
-                      </div>
-                    ) : (
-                      <div className="flex items-center min-w-[88px] font-mono text-[11px]">
-                        <button
-                          onClick={() => setPendingDeleteId(sub.id)}
-                          className="text-muted transition-colors hover:text-vermillion"
-                        >
-                          删除
-                        </button>
-                      </div>
-                    )}
-                  </td>
-                </tr>
+                      <button
+                        type="button"
+                        disabled={busyId === sub.id}
+                        onClick={() => handleToggle(sub)}
+                        aria-pressed={sub.enabled}
+                        className={`relative h-6 w-11 shrink-0 rounded-full transition-colors duration-200 disabled:opacity-40 ${
+                          sub.enabled ? "bg-toggle-on" : "bg-border"
+                        }`}
+                      >
+                        <span
+                          className="absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-transform duration-200"
+                          style={{
+                            transform: sub.enabled
+                              ? "translateX(20px)"
+                              : "translateX(0px)",
+                          }}
+                        />
+                      </button>
+                    </td>
+                    <td
+                      className="px-3 py-2"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      {pendingDeleteId === sub.id ? (
+                        <div className="flex items-center gap-2 font-mono text-[11px]">
+                          <button
+                            disabled={busyId === sub.id}
+                            onClick={() => handleDelete(sub.id)}
+                            className="rounded border border-vermillion px-2 py-0.5 text-vermillion transition-colors hover:bg-vermillion hover:text-ink disabled:opacity-40"
+                          >
+                            删除
+                          </button>
+                          <button
+                            onClick={() => setPendingDeleteId(null)}
+                            className="rounded border border-border px-2 py-0.5 text-muted transition-colors hover:text-paper"
+                          >
+                            取消
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="flex items-center min-w-[88px] font-mono text-[11px]">
+                          <button
+                            onClick={() => setPendingDeleteId(sub.id)}
+                            className="text-muted transition-colors hover:text-vermillion"
+                          >
+                            删除
+                          </button>
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                  {/* 详情/命中记录:内嵌成点击行紧跟着的下一行,而不是整张表格下面的
+                      独立区块——用户希望点哪行详情就跟在哪行下面展开,不用来回找。 */}
+                  {selected && selected.id === sub.id && (
+                    <tr key={`${sub.id}-detail`}>
+                      <td colSpan={7} className="bg-surface p-4">
+                        <div className="mb-2 flex items-center justify-between">
+                          <div className="font-mono text-[11px] uppercase tracking-wide text-muted">
+                            订阅详情 · #{selected.id}
+                          </div>
+                          <button
+                            onClick={() => handleRefreshNow(selected.id)}
+                            disabled={refreshing}
+                            className="rounded border border-vermillion px-2 py-1 font-mono text-[11px] text-vermillion transition-colors hover:bg-vermillion hover:text-ink disabled:opacity-40"
+                          >
+                            {refreshing ? "更新中..." : "立即更新"}
+                          </button>
+                        </div>
+                        <div className="flex flex-col gap-1.5 font-mono text-[11px] text-muted">
+                          <div>自动改名: {selected.auto_rename ? "开启" : "关闭"}</div>
+                          <div>创建时间: {formatDate(selected.created_at)}</div>
+                        </div>
+
+                        <div className="mt-4 border-t border-border pt-3">
+                          <div className="mb-2 font-mono text-[11px] uppercase tracking-wide text-muted">
+                            命中记录
+                          </div>
+                          {matchedLoading && (
+                            <div className="font-mono text-[11px] text-muted">加载中...</div>
+                          )}
+                          {!matchedLoading && matchedItems.length === 0 && (
+                            <div className="font-mono text-[11px] text-muted">
+                              还没有命中过任何文章,等下一轮自动轮询,或点击"立即更新"。
+                            </div>
+                          )}
+                          {!matchedLoading && matchedItems.length > 0 && (
+                            <div className="flex flex-col gap-2">
+                              {matchedItems.map((item) => (
+                                <div
+                                  key={item.id}
+                                  className="flex flex-col gap-0.5 rounded border border-border px-3 py-2 font-mono text-[11px]"
+                                >
+                                  <div className="flex items-center justify-between gap-2">
+                                    <span className="truncate text-paper">{item.title}</span>
+                                    <span
+                                      className={
+                                        item.download_status === "added"
+                                          ? "shrink-0 text-gold"
+                                          : item.download_status === "failed"
+                                            ? "shrink-0 text-vermillion"
+                                            : "shrink-0 text-muted"
+                                      }
+                                    >
+                                      {STATUS_LABEL[item.download_status] ?? item.download_status}
+                                    </span>
+                                  </div>
+                                  <div className="text-muted">{formatDate(item.matched_at)}</div>
+                                  {item.error && <div className="text-vermillion">{item.error}</div>}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
               ))}
             </tbody>
           </table>
-          </div>
-        </div>
-      )}
-
-      {selected && (
-        <div className="mt-6 rounded-md border border-border bg-surface p-4">
-          <div className="mb-2 flex items-center justify-between">
-            <div className="font-mono text-[11px] uppercase tracking-wide text-muted">
-              订阅详情 · #{selected.id}
-            </div>
-            <button
-              onClick={() => handleRefreshNow(selected.id)}
-              disabled={refreshing}
-              className="rounded border border-vermillion px-2 py-1 font-mono text-[11px] text-vermillion transition-colors hover:bg-vermillion hover:text-ink disabled:opacity-40"
-            >
-              {refreshing ? "更新中..." : "立即更新"}
-            </button>
-          </div>
-          <div className="flex flex-col gap-1.5 font-mono text-[11px] text-muted">
-            <div>自动改名: {selected.auto_rename ? "开启" : "关闭"}</div>
-            <div>创建时间: {formatDate(selected.created_at)}</div>
-          </div>
-
-          <div className="mt-4 border-t border-border pt-3">
-            <div className="mb-2 font-mono text-[11px] uppercase tracking-wide text-muted">
-              命中记录
-            </div>
-            {matchedLoading && (
-              <div className="font-mono text-[11px] text-muted">加载中...</div>
-            )}
-            {!matchedLoading && matchedItems.length === 0 && (
-              <div className="font-mono text-[11px] text-muted">
-                还没有命中过任何文章,等下一轮自动轮询,或点击"立即更新"。
-              </div>
-            )}
-            {!matchedLoading && matchedItems.length > 0 && (
-              <div className="flex flex-col gap-2">
-                {matchedItems.map((item) => (
-                  <div
-                    key={item.id}
-                    className="flex flex-col gap-0.5 rounded border border-border px-3 py-2 font-mono text-[11px]"
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="truncate text-paper">{item.title}</span>
-                      <span
-                        className={
-                          item.download_status === "added"
-                            ? "shrink-0 text-gold"
-                            : item.download_status === "failed"
-                              ? "shrink-0 text-vermillion"
-                              : "shrink-0 text-muted"
-                        }
-                      >
-                        {STATUS_LABEL[item.download_status] ?? item.download_status}
-                      </span>
-                    </div>
-                    <div className="text-muted">{formatDate(item.matched_at)}</div>
-                    {item.error && <div className="text-vermillion">{item.error}</div>}
-                  </div>
-                ))}
-              </div>
-            )}
           </div>
         </div>
       )}

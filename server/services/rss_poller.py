@@ -295,11 +295,17 @@ async def _poll_all_subscriptions() -> None:
     finally:
         db.close()
 
-    for rule_id in rule_ids:
+    # 订阅之间统一加10秒间隔:轮询是顺序执行的,不加间隔的话订阅数量一多,
+    # 同一个源(尤其是dmhy)会在很短时间内被连续密集请求,是之前被限流的风险点之一
+    # (见config_store.py里rss_poll_interval_seconds默认30分钟的注释)。最后一条
+    # 订阅后不用再等,不然只是白白拖长这一轮轮询的收尾时间。
+    for idx, rule_id in enumerate(rule_ids):
         try:
             await poll_subscription_task(rule_id, download_root)
         except Exception as e:
             print(f"[RSS引擎] 轮询订阅失败 subscription={rule_id}: {e}")
+        if idx < len(rule_ids) - 1:
+            await asyncio.sleep(10)
 
 
 async def rss_poll_loop() -> None:
