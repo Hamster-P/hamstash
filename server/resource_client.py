@@ -32,22 +32,13 @@ def _extract_fansub_name(title: str) -> str:
     return match.group(1) if match else "未知字幕组"
 
 
-# 字幕语言这个筛选项在services/rss_rules.py::_subtitle_terms里有一套完整的
-# "必须包含哪几个候选词之一 + 必须排除哪几个候选词"的正则组合,但那是给RSS
-# mustContain用的,针对的是"已经命中的条目要不要留下"这种精确复核。这里不一样,
-# 是要拼进站点自己的全文搜索关键词里——站点搜索只支持"必须包含哪些词"(空格
-# 分词、词与词之间AND),没有OR/NOT语法,没法照搬那套组合逻辑,只能取一个
-# 最有代表性的单词。查出来的结果不是100%精确,但覆盖的是站点全站历史,
-# 前端拿到结果后还会照旧再跑一遍filteredResults精确过滤,这里只负责把"能搜到
-# 的范围"从一页扩大到全站,精确度交给前端兜底。
-_SUBTITLE_REPRESENTATIVE_TERM = {
-    "纯简体": "简", "繁体": "繁", "简繁": "简繁", "简日": "简日", "繁日": "繁日", "RAW": "RAW",
-    # "日文/无字"本质是"没有中文字幕"这个否定条件,全文搜索表达不了"不包含",
-    # 没有可靠的正向关键词能代表它,这里不追加任何词,继续完全交给前端筛选。
-    "日文/无字": None,
-}
-
-
+# 字幕语言这个筛选项故意不拼进站点搜索关键词里(曾经试过用"简"/"繁"这类单字
+# 代表词,实测AnimeGarden的全文搜索对单个CJK字符查询词完全查不到东西——大概率
+# 是搜索引擎按CJK双字/多字分词建索引,单字构不成一个可检索token,加了反而让
+# 服务端返回空列表,把前端本地过滤好的结果又冲掉;两字词能查到,但覆盖不了
+# "chs"/"gb"这类英文缩写写法,始终不是100%可靠)。索性完全不发给站点搜索,
+# 统一交给前端filteredResults精确过滤——画质/格式两项因为是"1080p"/"MKV"这类
+# 英文数字词,没有CJK分词的问题,继续保留服务端narrowing。
 def _quote_term(term: str) -> str:
     """词里带空格时用双引号包起来,让站点自己的搜索引擎当一个短语整体匹配,
     不会被它自己的分词逻辑拆散——跟教用户手动加引号避免"3"误伤"第X集"是同一个道理。
@@ -55,17 +46,14 @@ def _quote_term(term: str) -> str:
     return f'"{term}"' if " " in term else term
 
 
-def _extra_query_terms(quality: str | None, subtitle: str | None, format_: str | None) -> list[str]:
-    """把画质/字幕语言/格式这几个筛选,翻译成能直接拼进站点搜索关键词的附加词。"""
+def _extra_query_terms(quality: str | None, format_: str | None) -> list[str]:
+    """把画质/格式这两个筛选,翻译成能直接拼进站点搜索关键词的附加词。
+    字幕语言不在这里(见上面模块级注释),完全交给前端本地过滤。"""
     terms = []
     if quality and quality != "不限":
         terms.append(quality)
     if format_ and format_ != "不限":
         terms.append(format_)
-    if subtitle and subtitle != "不限":
-        token = _SUBTITLE_REPRESENTATIVE_TERM.get(subtitle)
-        if token:
-            terms.append(token)
     return terms
 
 
@@ -343,15 +331,16 @@ async def search_by_source(
     按用户明确选择的数据源搜索,不做静默降级/自动切换。
     AnimeGarden在已知bgm_id时优先按subject查,比关键词文本匹配更精确、更能覆盖命名变体。
 
-    fansub_name/quality/subtitle/format这几个筛选条件,现在是真正发给站点服务端的
+    fansub_name/quality/format这几个筛选条件,现在是真正发给站点服务端的
     查询条件,不是"先拿一页搜索结果、再在前端本地筛"——之前那种做法,筛出来的
     结果数量取决于筛选条件命中的条目恰好有多少落在了"这一页"里,经常筛完只剩
     寥寥几条,不代表真实存量。AnimeGarden有结构化的fansub参数,单独传更精确;
-    其余情况(dmhy/nyaa的字幕组,以及三个源共通的画质/字幕语言/格式)站点搜索
+    其余情况(dmhy/nyaa的字幕组,以及两个源共通的画质/格式)站点搜索
     接口都没有对应的结构化参数,只能拼进关键词文本里,靠站点自己的全文检索去
     匹配(见_build_effective_keyword/_extra_query_terms)——这样查出来的范围
     覆盖站点全量历史,不再受"只看了一页"限制,前端拿到结果后还会照旧再跑一遍
-    本地精确过滤兜底精度。
+    本地精确过滤兜底精度。字幕语言(subtitle)不参与这一步,完全交给前端本地
+    过滤(见_extra_query_terms顶部注释)。
 
     每次调用只请求这一个源的这一页(page从1开始),服务端不预取多页——之前改成
     "一次性翻页翻到底"吃过亏,dmhy的防刷机制直接把这个IP的搜索功能封了一段时间。
@@ -363,7 +352,7 @@ async def search_by_source(
     才会返回False),rss_window_cap是这个源RSS/Feed接口的固定窗口上限,前端自己
     累加"已经翻了多少条"跟这个数比较,决定要不要提醒"订阅覆盖不到这么多存量"。
     """
-    extra_terms = _extra_query_terms(quality, subtitle, format)
+    extra_terms = _extra_query_terms(quality, format)
 
     if source == "animegarden":
         # fansub是AnimeGarden原生的结构化参数,单独传,比拼进关键词文本更精确;

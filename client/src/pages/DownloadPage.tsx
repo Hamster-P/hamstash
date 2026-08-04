@@ -43,7 +43,7 @@ const SOURCE_OPTIONS: { value: "dmhy" | "animegarden" | "nyaa"; label: string }[
   { value: "nyaa", label: "nyaa.si(英语圈综合站)" },
 ];
 // 1. 新增：细化的字幕语言与文件格式选项
-const SUBTITLE_OPTIONS = ["不限", "纯简体", "繁体", "简繁", "简日", "繁日", "RAW", "日文/无字"];
+const SUBTITLE_OPTIONS = ["不限", "简体", "繁体", "简繁", "简日", "繁日", "RAW", "日文/无字"];
 const FORMAT_OPTIONS = ["不限", "MKV", "MP4"];
 const TYPE_OPTIONS = ["不限", "单集(追更)", "合集/全集(完结)"];
 
@@ -303,7 +303,7 @@ export default function DownloadPage({
         const hasJapanese = ["日", "jp", "japanese"].some(k => titleLower.includes(k));
         const isRawKeyword = ["raw", "bilibili", "baha", "cr", "crunchyroll", "web-dl"].some(k => titleLower.includes(k));
 
-        if (subtitle === "纯简体") {
+        if (subtitle === "简体") {
           // 包含简体，但绝不能包含繁体、日文标志或RAW标志
           matched = hasSimplified && !hasTraditional && !titleLower.includes("简日") && !isRawKeyword;
         }

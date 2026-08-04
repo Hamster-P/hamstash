@@ -41,6 +41,7 @@ class SubscriptionRule(Base):
     rule_name = Column(String, nullable=True)  # 对应qBittorrent"自动下载规则"的名字
     last_error = Column(String, nullable=True)  # 最近一次激活/关闭qBittorrent RSS时的报错,给一览页展示
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    last_polled_at = Column(DateTime(timezone=True), nullable=True)  # 上次尝试轮询这条订阅的时间(不管成不成功),给一览页展示
 
 
 class DownloadTask(Base):

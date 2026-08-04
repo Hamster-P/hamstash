@@ -11,6 +11,7 @@ interface RssSubscription {
   enabled: boolean;
   rss_url: string | null;
   created_at: string;
+  last_polled_at: string | null;
 }
 
 interface RssMatchedItem {
@@ -157,20 +158,11 @@ export default function RssPage() {
 
   return (
     <div className="p-8">
-      <div className="mb-6 flex items-center justify-between">
-        <div>
-          <h1 className="font-display text-2xl tracking-tight">RSS订阅一览</h1>
-          <p className="mt-1 font-mono text-[11px] text-muted">
-            后台每隔一段时间自动轮询抓取匹配的新种子;开关只控制是否参与轮询,删除前会先要求二次确认
-          </p>
-        </div>
-        <button
-          onClick={loadSubs}
-          disabled={loading}
-          className="rounded-md border border-border px-3 py-1.5 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion disabled:opacity-40"
-        >
-          {loading ? "刷新中..." : "刷新"}
-        </button>
+      <div className="mb-6">
+        <h1 className="font-display text-2xl tracking-tight">RSS订阅一览</h1>
+        <p className="mt-1 font-mono text-[11px] text-muted">
+          后台每隔一段时间自动轮询抓取匹配的新种子;开关只控制是否参与轮询,删除前会先要求二次确认
+        </p>
       </div>
 
       {loadError && (
@@ -310,6 +302,12 @@ export default function RssPage() {
                         <div className="flex flex-col gap-1.5 font-mono text-[11px] text-muted">
                           <div>自动改名: {selected.auto_rename ? "开启" : "关闭"}</div>
                           <div>创建时间: {formatDate(selected.created_at)}</div>
+                          <div>
+                            上次更新时间:{" "}
+                            {selected.last_polled_at
+                              ? formatDate(selected.last_polled_at)
+                              : "还没轮询过"}
+                          </div>
                         </div>
 
                         <div className="mt-4 border-t border-border pt-3">

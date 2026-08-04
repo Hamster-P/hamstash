@@ -20,6 +20,7 @@ RSS引擎:取代qBittorrent自身的RSS订阅+自动下载规则机制。
 """
 import asyncio
 import re
+from datetime import datetime
 from urllib.parse import quote
 from xml.etree import ElementTree
 
@@ -220,6 +221,12 @@ async def poll_subscription(db: Session, rule: SubscriptionRule, download_root: 
     """轮询一条订阅:抓RSS、逐条判重+匹配,命中的直接发磁力链接下载。
     单条item处理失败不能影响同一轮里的其他item。
     """
+    # 不管这次轮询最终抓不抓得到/匹配不匹配得到东西,都记一下"尝试过"的时间——
+    # 一览页展示的是"上次rss尝试去取得的时间",不是"上次成功命中的时间",两者语义
+    # 不一样,所以在真正发请求之前就先落这个时间戳,而不是等到ok_count>0才写。
+    rule.last_polled_at = datetime.now()
+    db.commit()
+
     rss_urls = _build_rss_urls(rule)
     items: list[FeedItem] = []
     seen_guids: set[str] = set()

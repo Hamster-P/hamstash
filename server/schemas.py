@@ -136,6 +136,7 @@ class RssSubscriptionResponse(BaseModel):
     rss_url: Optional[str] = None
     last_error: Optional[str] = None
     created_at: datetime
+    last_polled_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
