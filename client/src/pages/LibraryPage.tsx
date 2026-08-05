@@ -489,7 +489,7 @@ export default function LibraryPage({ onSelectAnime, onManualMatch }: LibraryPag
                       : "border-border text-muted hover:border-vermillion hover:text-vermillion"
                   }`}
                 >
-                  {showRelatedAnime ? "返回集数" : "补番"}
+                  {showRelatedAnime ? "退出补番" : "补番"}
                 </button>
               )}
               {!showRelatedAnime && (
