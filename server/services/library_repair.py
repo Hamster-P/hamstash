@@ -52,6 +52,27 @@ def _to_db_relpath(relative_path: str) -> str:
     return relative_path.replace("/", "\\")
 
 
+def reset_season_cache(db: Session) -> int:
+    """清空AnimeFamilyCache,让接下来的扫描按当前算法重新解析季度关系。返回清掉的行数。
+
+    修复流程不能信任这张表的历史内容:季度归并算法演进过——早期版本给同一季拆播的
+    每个cour各分配一个独立的season_ordinal(01/02/03/04/05),现在会把它们合并成
+    同一季(01/01/02/02/03)。旧行留着会造成两种后果,而且都会动到用户的文件:
+    1) 真正过时的目录(比如实际只有3季却存在Season 05)在旧表里反而是"合法编号",
+       检查不出来、修不到;
+    2) 每季的集数/前序累计集数全是按cour切的,拿它算跨季绝对编号换算会减错偏移量,
+       把本来正确的文件改成错误集数(实测把S02E20改成了S02E09)。
+
+    放在"扫描"入口而不是"应用修复"入口:apply_rename_fixes内部会重跑一次扫描做
+    TOCTOU防护,如果等到apply才清缓存,界面上让用户确认的是旧缓存算出的建议、实际
+    执行的却是重算后的新结果,等于"确认了A、改成了B",破坏这个功能"逐条人工确认后
+    才动文件"的核心保证。
+    """
+    removed = db.query(models.AnimeFamilyCache).delete(synchronize_session=False)
+    db.commit()
+    return removed
+
+
 async def _resolve_season_table(db: Session, main_bgm_id: int) -> dict[str, dict]:
     """拿这部番的"每季集数/偏移量/季度本名"表(见bgm_series_cache.build_season_episode_table),
     它同时也是"当前算法下合法的季度编号集合"的权威来源。缓存未命中(这个bgm_id从没被

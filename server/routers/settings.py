@@ -218,7 +218,11 @@ async def scan_library_repair(db: Session = Depends(get_db)):
     没扫到——所以这里先重新跑一遍scan_and_update_library同步LocalMedia,
     保证不会因为索引过期而漏检。这一步不动任何视频文件,只增删LocalMedia这一张
     索引表的行,是"影视库"页本来就在用的常规操作,不算破坏性写入。
+
+    扫描之前还要先清掉季度关系缓存(见library_repair.reset_season_cache):这张表
+    可能是旧版本算法写的,拿它算出来的改名建议会改错用户的文件。
     """
+    library_repair.reset_season_cache(db)
     await scan_and_update_library(db)
     rename_mismatches = await library_repair.scan_rename_mismatches(db)
     orphans = library_repair.scan_orphaned_records(db)
