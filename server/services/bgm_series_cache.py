@@ -70,6 +70,65 @@ def _persist_family_map(db: Session, main_bgm_id: int, family_map: dict) -> None
     db.commit()
 
 
+def _member_eps(row: AnimeFamilyCache) -> int:
+    """一个家族成员的正片集数:优先用Bangumi原始的eps字段,为0/空时才退回total_episodes。
+
+    实测total_episodes会把特典/SP也算进去、比实际正片偏大(咒术回战第一季
+    eps=24但total_episodes=25、实际正片24集;无职转生第一季两个cour的eps
+    相加11+12=23正好是实际集数,total_episodes相加12+14=26就偏大了),用它
+    算集数偏移量会得出E00这种错误结果。反过来eps对连载中的番经常是0,
+    这时候只能退回total_episodes。
+    """
+    return row.eps or row.total_episodes or 0
+
+
+def build_season_episode_table(db: Session, main_bgm_id: int) -> dict[str, dict]:
+    """按season_ordinal汇总这部番每一季的集数信息,返回
+    season_ordinal -> {eps, episode_offset, cour_count, platform, name, date}:
+
+    - eps: 这一季自己总共多少集(同一季拆成多个cour播出时,各cour相加)
+    - episode_offset: 排在这一季之前的所有季累计多少集,用来把字幕组的跨季绝对
+      编号换算回季内编号(见rename_engine._normalize_absolute_episode)
+    - cour_count: 这一季拆成了几个cour播出,给"按第几个cour顺序编号的老目录结构
+      反推真实季度"用(见services/library_repair.py::_resolve_effective_season)
+    - platform/name/date: 取这一季内首播最早的那个成员,保证season_hint拿到的是
+      "第二季"这种季度本名而不是"第二季 第2クール",且结果不受数据库行顺序影响
+
+    只统计platform=="TV"且有season_ordinal的成员——剧场版/OVA/够不上真季的旁支
+    不参与季度集数计数,它们本来就不套SxxExx编号。
+    """
+    rows = (
+        db.query(AnimeFamilyCache)
+        .filter(
+            AnimeFamilyCache.source_bgm_id == main_bgm_id,
+            AnimeFamilyCache.platform == "TV",
+            AnimeFamilyCache.season_ordinal.isnot(None),
+        )
+        .all()
+    )
+
+    grouped: dict[str, list[AnimeFamilyCache]] = {}
+    for row in rows:
+        grouped.setdefault(row.season_ordinal, []).append(row)
+
+    table: dict[str, dict] = {}
+    cumulative = 0
+    for ordinal in sorted(grouped):
+        members = sorted(grouped[ordinal], key=lambda r: (r.date or "", r.bgm_id))
+        season_eps = sum(_member_eps(m) for m in members)
+        representative = members[0]
+        table[ordinal] = {
+            "eps": season_eps,
+            "episode_offset": cumulative,
+            "cour_count": len(members),
+            "platform": representative.platform,
+            "name": representative.name,
+            "date": representative.date,
+        }
+        cumulative += season_eps
+    return table
+
+
 async def resolve_tv_season_ordinal_cached(
     db: Session, season_bgm_id: int | None, main_bgm_id: int | None
 ) -> str | None:

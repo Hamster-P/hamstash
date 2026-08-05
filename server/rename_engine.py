@@ -5,6 +5,10 @@ import anitopy
 SUBTITLE_EXTS = {"ass", "srt", "ssa", "vtt", "sup"}
 VIDEO_EXTS = {"mkv", "mp4", "ts", "avi", "flv", "mov", "wmv", "m2ts", "m2t", "webm", "rmvb", "m4v"}
 MOVIE_MARKERS = ["剧场版", "劇場版", "movie", "gekijouban"]
+# 柯南/哆啦A梦这类长篇剧场版系列,字幕组常用"[M28]"这种方括号包住的数字编号
+# 标记"剧场版第28部",不含"movie"/"剧场版"这类文本关键词——要求方括号包住,
+# 避免跟普通单词里偶然出现的"m+数字"片段(比如某些编码标签)混淆。
+_MOVIE_NUMBER_TAG = re.compile(r"\[m\d{1,3}\]", re.IGNORECASE)
 OVA_MARKERS = ["ova", "oad", "特典", "特别篇", "番外篇", "sp", "总集篇", "回顾篇", ".5", "激活解说"]
 EXTRA_MARKERS = ["op", "ed", "ncop", "nced", "opening", "ending", "pv", "预告",
                   "menu", "cm", "sample", "logo", "credit", "trailer", "teaser",
@@ -39,7 +43,7 @@ def classify_media_type(torrent_title: str, platform: str | None = None) -> str:
     lowered = torrent_title.lower()
     if _EXTRA_PATTERN.search(lowered):
         return "extra"
-    if any(marker in lowered for marker in MOVIE_MARKERS):
+    if _MOVIE_NUMBER_TAG.search(lowered) or any(marker in lowered for marker in MOVIE_MARKERS):
         return "movie"
     if any(marker in lowered for marker in OVA_MARKERS):
         return "ova"
@@ -237,17 +241,35 @@ def find_sibling_subtitles(video_path: str, all_paths: list[str]) -> list[str]:
     return matches
 
 
-# 集数偏移量自动加减目前还没做全(大合集横跨多季、追更绝对编号延续等情况都还没处理好),
-# 先关闭这个功能,只信任字幕组/合集包自己的集数编号,哪怕编号重复或者跳跃也不管——
-# 我们只负责判断"这是第几季",不负责修正季内具体第几集。
-# 想恢复实验,把这个开关改成True即可,不用再改调用方代码。
-ENABLE_EPISODE_OFFSET = False
+def _normalize_absolute_episode(
+    raw_episode: int, episode_offset: int, season_total_eps: int | None
+) -> int:
+    """把"跨季连续的绝对编号"换算成"这一季内部的第几集"。
+
+    有些字幕组从第一季结尾接着往下数,不在新一季重新从1开始(实测咒术回战
+    第二季发的就是25~47,而这一季自己只有23集,正确结果是01~23)。判定信号只有
+    一个、而且是通用的:**解析出来的原始数字超过了这一季自己的总集数**——
+    超了就说明这个数字不可能是季内编号,只能是绝对编号,减掉前序各季的累计集数
+    (episode_offset)就是真实的季内集数。
+
+    没超上限的一律原样保留,不做任何猜测(实测无职转生第二季E20、第三季E06都是
+    正常的季内编号,不能动)。episode_offset/season_total_eps任一为0或缺失时
+    (Bangumi没有集数数据、或者这是第一季没有前序)同样原样保留——宁可漏改,
+    也不能靠猜把本来正确的编号改坏。
+    """
+    if episode_offset <= 0 or not season_total_eps or season_total_eps <= 0:
+        return raw_episode
+    if raw_episode <= season_total_eps:
+        return raw_episode
+    candidate = raw_episode - episode_offset
+    return candidate if candidate >= 1 else raw_episode
 
 
 def preview_rename_file(
     anime_title: str, file_name: str, torrent_title: str, library_root: str,
     bgm_id: int | None = None, season_hint: str | None = None, episode_offset: int = 0,
     season_ordinal: str | None = None, platform: str | None = None,
+    season_total_eps: int | None = None,
 ):
     """
     按种子内部单个文件计算目标路径,是合集场景的核心入口。
@@ -260,6 +282,10 @@ def preview_rename_file(
                    只信Bangumi关联图谱本身——有值时直接采用,不再走下面的文本正则猜测。
     platform: 这个bgm_id在Bangumi的官方类型(TV/OVA/剧场版/...),传给classify_media_type
                    做权威分流,比种子标题关键词猜测可靠。
+    episode_offset / season_total_eps: 这一季之前各季的累计集数 / 这一季自己的总集数,
+                   由调用方从services/bgm_series_cache.py::build_season_episode_table()
+                   取得,用于把字幕组的跨季绝对编号换算成季内编号,详见
+                   _normalize_absolute_episode()。
 
     返回值里的relative_path是"相对anime_root"的路径,配合qBittorrent的API约束:
     一个种子的setLocation只能设一个根位置,Season/Other子目录分类要靠renameFile的
@@ -295,13 +321,9 @@ def preview_rename_file(
         episode_str = _episode_fallback_str(file_name, generic_fallback=True)
     else:
         try:
-            raw_episode = int(episode_number)
-            # 只有原始集数"看起来还没偏移过"(<=偏移量)才加偏移;
-            # 如果字幕组自己发布时已经用了绝对集数(原始数字比偏移量还大),
-            # 说明这份文件本身已经是正确的绝对编号,不需要再加一次,
-            # 否则会变成"偏移量+已经偏移过的数字"两次叠加导致集数错乱。
-            if ENABLE_EPISODE_OFFSET and episode_offset and raw_episode <= episode_offset:
-                 raw_episode += episode_offset
+            raw_episode = _normalize_absolute_episode(
+                int(episode_number), episode_offset, season_total_eps
+            )
             episode_str = f"{raw_episode:02d}"
         except (ValueError, TypeError):
             episode_str = str(episode_number)

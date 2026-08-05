@@ -549,6 +549,8 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
         )}
       </div>
 
+      <LibraryRepairSection />
+
       <BackupSection />
     </div>
   );
@@ -840,6 +842,275 @@ function BackupSection() {
         </label>
       </div>
       {message && <p className="mt-3 font-mono text-[11px] text-muted">{message}</p>}
+    </div>
+  );
+}
+
+interface RenameMismatch {
+  folder_name: string;
+  current_relative_path: string;
+  proposed_relative_path: string;
+  blocked: boolean;
+  block_reason: string | null;
+}
+
+interface OrphanedRenamedFile {
+  id: number;
+  torrent_hash: string;
+  target_relative_path: string;
+}
+
+interface OrphanedAnimeFolder {
+  id: number;
+  staging_folder: string;
+}
+
+interface RepairScanReport {
+  rename_mismatches: RenameMismatch[];
+  orphaned_renamed_files: OrphanedRenamedFile[];
+  orphaned_anime_folders: OrphanedAnimeFolder[];
+}
+
+interface RepairApplyResult {
+  renames?: {
+    succeeded: { from: string; to: string }[];
+    skipped: { path: string; reason: string | null }[];
+    failed: { path: string; error: string }[];
+  };
+  local_media?: { added: string[]; current_total: number };
+  orphans?: { removed_renamed_files: number; removed_anime_folders: number };
+}
+
+function LibraryRepairSection() {
+  const [scanning, setScanning] = useState(false);
+  const [applying, setApplying] = useState(false);
+  const [report, setReport] = useState<RepairScanReport | null>(null);
+  const [applyResult, setApplyResult] = useState<RepairApplyResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  // 改名建议里未被阻塞的条目,默认全选;用户可以取消勾选个别项
+  const [selectedRenames, setSelectedRenames] = useState<Set<string>>(new Set());
+  const [cleanLocalMedia, setCleanLocalMedia] = useState(true);
+  const [cleanRenamedFiles, setCleanRenamedFiles] = useState(true);
+  const [cleanAnimeFolders, setCleanAnimeFolders] = useState(true);
+
+  const handleScan = async () => {
+    setScanning(true);
+    setError(null);
+    setApplyResult(null);
+    try {
+      const res = await fetch(`${API_BASE}/library/repair/scan`);
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(extractValidationMessage(body) ?? `HTTP ${res.status}`);
+      }
+      const data = (await res.json()) as RepairScanReport;
+      setReport(data);
+      setSelectedRenames(
+        new Set(
+          data.rename_mismatches
+            .filter((m) => !m.blocked)
+            .map((m) => m.current_relative_path),
+        ),
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "扫描失败,请检查后端连接");
+      console.error(err);
+    } finally {
+      setScanning(false);
+    }
+  };
+
+  const toggleRename = (path: string) => {
+    setSelectedRenames((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  };
+
+  const renameItems = report?.rename_mismatches ?? [];
+  const hasOrphans =
+    (report?.orphaned_renamed_files.length ?? 0) > 0 ||
+    (report?.orphaned_anime_folders.length ?? 0) > 0;
+  const canApply =
+    report !== null &&
+    (selectedRenames.size > 0 || cleanLocalMedia || cleanRenamedFiles || cleanAnimeFolders);
+
+  const handleApply = async () => {
+    if (!report) return;
+    setApplying(true);
+    setError(null);
+    setApplyResult(null);
+    try {
+      const res = await fetch(`${API_BASE}/library/repair/apply`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          fix_renames: selectedRenames.size > 0,
+          rename_paths: Array.from(selectedRenames),
+          clean_local_media: cleanLocalMedia,
+          clean_renamed_files: cleanRenamedFiles,
+          clean_anime_folders: cleanAnimeFolders,
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(extractValidationMessage(body) ?? `HTTP ${res.status}`);
+      }
+      const data = (await res.json()) as RepairApplyResult;
+      setApplyResult(data);
+      setReport(null); // 应用完成后报告已经过期,强制用户重新扫描才能看到最新状态
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "应用修复失败,请检查后端连接");
+      console.error(err);
+    } finally {
+      setApplying(false);
+    }
+  };
+
+  return (
+    <div className="mb-6 rounded-md border border-border bg-surface p-4">
+      <div className="mb-1 text-sm">修复媒体库</div>
+      <p className="mb-3 font-mono text-[11px] text-muted">
+        按当前改名规则重新核对媒体库里每个文件的命名/路径,并清理指向已不存在文件的数据库记录。
+        涉及文件改名/移动和数据删除,请先扫描确认再应用。
+      </p>
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          onClick={handleScan}
+          disabled={scanning || applying}
+          className="min-w-[88px] rounded-md border border-border px-3 py-1.5 text-center font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion disabled:opacity-40"
+        >
+          {scanning ? (
+            <span className="flex items-center justify-center gap-1.5">
+              <Loader2 size={14} className="animate-spin" />
+              扫描中...
+            </span>
+          ) : (
+            "扫描"
+          )}
+        </button>
+        <button
+          type="button"
+          onClick={handleApply}
+          disabled={!canApply || applying || scanning}
+          className="min-w-[88px] rounded-md border border-vermillion px-3 py-1.5 text-center font-mono text-xs text-vermillion transition-colors hover:bg-vermillion hover:text-ink disabled:opacity-40"
+        >
+          {applying ? "应用中..." : "应用修复"}
+        </button>
+      </div>
+
+      {error && <p className="mt-3 font-mono text-[11px] text-vermillion">{error}</p>}
+
+      {report && (
+        <div className="mt-3 space-y-3 rounded border border-border bg-ink p-3">
+          {renameItems.length === 0 && !hasOrphans && (
+            <p className="font-mono text-[11px] text-muted">没有发现需要修复的问题</p>
+          )}
+
+          {renameItems.length > 0 && (
+            <div>
+              <div className="mb-1.5 font-mono text-[11px] text-paper">
+                命名/路径不一致({renameItems.length})
+              </div>
+              <div className="max-h-56 space-y-1 overflow-y-auto">
+                {renameItems.map((m) => (
+                  <label
+                    key={m.current_relative_path}
+                    className={`flex items-start gap-2 font-mono text-[11px] leading-snug ${
+                      m.blocked ? "text-muted/60" : "text-muted"
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      className="mt-0.5 accent-vermillion"
+                      disabled={m.blocked}
+                      checked={selectedRenames.has(m.current_relative_path)}
+                      onChange={() => toggleRename(m.current_relative_path)}
+                    />
+                    <span className="min-w-0 break-all">
+                      <span className="text-paper">{m.folder_name}</span>
+                      <br />
+                      {m.current_relative_path}
+                      <br />→ {m.proposed_relative_path}
+                      {m.blocked && (
+                        <>
+                          <br />
+                          <span className="text-vermillion">未处理: {m.block_reason}</span>
+                        </>
+                      )}
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {hasOrphans && (
+            <div className="space-y-1.5 border-t border-border pt-2">
+              <label className="flex items-center gap-2 font-mono text-[11px] text-muted">
+                <input
+                  type="checkbox"
+                  className="accent-vermillion"
+                  checked={cleanLocalMedia}
+                  onChange={(e) => setCleanLocalMedia(e.target.checked)}
+                />
+                同步清理已不存在的媒体库文件夹记录(等同于"影视库"页的扫描)
+              </label>
+              {report.orphaned_renamed_files.length > 0 && (
+                <label className="flex items-center gap-2 font-mono text-[11px] text-muted">
+                  <input
+                    type="checkbox"
+                    className="accent-vermillion"
+                    checked={cleanRenamedFiles}
+                    onChange={(e) => setCleanRenamedFiles(e.target.checked)}
+                  />
+                  清理指向已不存在文件的整理记录({report.orphaned_renamed_files.length})
+                </label>
+              )}
+              {report.orphaned_anime_folders.length > 0 && (
+                <label className="flex items-center gap-2 font-mono text-[11px] text-muted">
+                  <input
+                    type="checkbox"
+                    className="accent-vermillion"
+                    checked={cleanAnimeFolders}
+                    onChange={(e) => setCleanAnimeFolders(e.target.checked)}
+                  />
+                  清理指向已不存在暂存目录的记录({report.orphaned_anime_folders.length})
+                </label>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {applyResult && (
+        <div className="mt-3 rounded border border-border bg-ink p-3 font-mono text-[11px] text-muted">
+          {applyResult.renames && (
+            <div>
+              改名: 成功{applyResult.renames.succeeded.length} / 跳过
+              {applyResult.renames.skipped.length} / 失败{applyResult.renames.failed.length}
+              {applyResult.renames.failed.map((f) => (
+                <div key={f.path} className="mt-1 break-all text-vermillion">
+                  {f.path}: {f.error}
+                </div>
+              ))}
+            </div>
+          )}
+          {applyResult.orphans && (
+            <div>
+              清理: 整理记录 {applyResult.orphans.removed_renamed_files} 条 / 暂存记录{" "}
+              {applyResult.orphans.removed_anime_folders} 条
+            </div>
+          )}
+          {applyResult.local_media && (
+            <div>媒体库文件夹: 当前共 {applyResult.local_media.current_total} 个</div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

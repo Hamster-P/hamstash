@@ -4,12 +4,15 @@ import time
 
 import httpx
 from fastapi import APIRouter, Depends
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 import config_store
 import qbittorrent_client
 from database import get_db
+from routers.library import scan_and_update_library
 from schemas import ProxyTestRequest, SettingsUpdate
+from services import library_repair
 from services.common import get_setting, upsert_setting
 from services.proxy import get_proxy_url, get_system_proxy, set_proxy_url_cache
 
@@ -201,3 +204,56 @@ async def qbittorrent_status():
     """健康检查:确认后端能不能正常登录qBittorrent。"""
     ok = await qbittorrent_client.test_connection()
     return {"connected": ok}
+
+
+@router.get("/library/repair/scan")
+async def scan_library_repair(db: Session = Depends(get_db)):
+    """"修复媒体库"按钮:分两部分:
+    1) 按当前改名规则重算每个已入库文件的目标路径,跟磁盘实际路径不一致的记为改名建议;
+    2) RenamedFile/AnimeFolder里指向磁盘上已不存在的文件/目录的孤儿记录。
+
+    第1步的遍历入口是LocalMedia表,如果用户很久没点过"影视库"页的"刷新 & 扫描"
+    (GET /library/scan),LocalMedia可能落后于磁盘实际内容(新增的番剧文件夹还没
+    登记进去),会导致这些番剧完全不出现在扫描结果里,看起来像是"没问题"其实只是
+    没扫到——所以这里先重新跑一遍scan_and_update_library同步LocalMedia,
+    保证不会因为索引过期而漏检。这一步不动任何视频文件,只增删LocalMedia这一张
+    索引表的行,是"影视库"页本来就在用的常规操作,不算破坏性写入。
+    """
+    await scan_and_update_library(db)
+    rename_mismatches = await library_repair.scan_rename_mismatches(db)
+    orphans = library_repair.scan_orphaned_records(db)
+    return {
+        "rename_mismatches": rename_mismatches,
+        **orphans,
+    }
+
+
+class RepairApplyRequest(BaseModel):
+    fix_renames: bool = False
+    rename_paths: list[str] | None = None  # None代表扫描结果里未被阻塞的全部改名建议
+    clean_local_media: bool = False
+    clean_renamed_files: bool = False
+    clean_anime_folders: bool = False
+
+
+@router.post("/library/repair/apply")
+async def apply_library_repair(payload: RepairApplyRequest, db: Session = Depends(get_db)):
+    """按用户勾选的分类实际执行修复。应用前重新跑一次对应的只读检查(TOCTOU防护),
+    不信任前端传来的、可能已经过期的扫描结果快照。
+    """
+    result: dict = {}
+
+    if payload.fix_renames:
+        selected = set(payload.rename_paths) if payload.rename_paths is not None else None
+        result["renames"] = await library_repair.apply_rename_fixes(db, selected)
+
+    if payload.clean_local_media:
+        result["local_media"] = await scan_and_update_library(db)
+
+    if payload.clean_renamed_files or payload.clean_anime_folders:
+        result["orphans"] = library_repair.apply_orphan_cleanup(db, {
+            "clean_renamed_files": payload.clean_renamed_files,
+            "clean_anime_folders": payload.clean_anime_folders,
+        })
+
+    return result

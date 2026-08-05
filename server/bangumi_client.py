@@ -191,6 +191,11 @@ async def get_subject_relations(bgm_id: int) -> list[dict]:
 
 async def resolve_episode_offset(season_bgm_id: int) -> int:
     """
+    已废弃,当前没有调用方。集数偏移量改由services/bgm_series_cache.py::
+    build_season_episode_table()按season_ordinal分组汇总AnimeFamilyCache算出——
+    那套算法直接读已缓存的家族数据、不发额外网络请求,也不依赖下面这种
+    "名字里有没有第X部分"的文本匹配,更可靠。保留这个函数只是为了留个历史参照。
+
     计算某一季"拆分播出的后半部分",相对完整这一季的集数偏移量。
     纯文本判断,不依赖relation字段具体取值:
     1. 这个条目名字没有"第X部分"字样 -> 不是拆分,偏移量0。

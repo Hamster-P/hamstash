@@ -153,8 +153,12 @@ class AnimeFamilyCache(Base):
     name = Column(String, nullable=False)
     date = Column(String, nullable=True)  # 首播日期,Bangumi原始字符串,未定档的可能是空
     platform = Column(String, nullable=True)
+    # 集数判断优先用eps,为0/空时才退回total_episodes(见services/bgm_series_cache.py::
+    # _member_eps)——实测total_episodes会把特典/SP也算进去、比实际正片偏大(咒术回战
+    # 第一季eps=24但total_episodes=25、实际正片就是24集),拿它算跨季集数偏移量会算错。
+    # 反过来eps对连载中的番经常是0,所以两个字段都得留着互相兜底。
     eps = Column(Integer, nullable=True)  # Bangumi原始eps字段,连载中的番这里通常是0
-    total_episodes = Column(Integer, nullable=True)  # 集数判断实际用这个(为0则退回eps)
+    total_episodes = Column(Integer, nullable=True)  # eps为0时的兜底集数
     season_ordinal = Column(String, nullable=True)  # "01"/"02"/...,None代表不是真季候选
     folder_bucket = Column(String, nullable=True)  # 顶层桶,仅供人工查表时直接可读,不参与改名逻辑判断
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())

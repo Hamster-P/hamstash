@@ -18,7 +18,7 @@ import qbittorrent_client
 import rename_engine
 from database import SessionLocal
 from models import AnimeFolder, RenamedFile
-from services.bgm_series_cache import resolve_tv_season_ordinal_cached
+from services.bgm_series_cache import build_season_episode_table, resolve_tv_season_ordinal_cached
 from services.common import get_setting
 from services.staging import ORGANIZE_TAG, get_current_version_at_target, upsert_renamed_file
 
@@ -97,17 +97,15 @@ async def _resolve_season_context(db: Session, folder: AnimeFolder) -> dict:
     (BD原盘/合集光盘)在_organize_single_torrent里会提前return,不会走到这里,
     省一轮不必要的Bangumi请求。
     """
-    episode_offset = 0
     season_hint = folder.anime_title
     platform = None
     if folder.season_bgm_id:
         try:
-            # 先注释 episode_offset = await bangumi_client.resolve_episode_offset(folder.season_bgm_id)
             season_detail = await bangumi_client.get_subject_detail(folder.season_bgm_id)
             season_hint = season_detail.get("name_cn") or season_detail.get("name") or folder.anime_title
             platform = season_detail.get("platform")
         except Exception as e:
-            print(f"[ORGANIZE] 计算集数偏移量/季度提示失败,按0偏移继续: {e}")
+            print(f"[ORGANIZE] 查询季度提示失败,按番名继续: {e}")
 
     # 季度序号完全不看种子标题文本,只信Bangumi关联图谱本身(platform+集数+首播日期)——
     # 详见bangumi_family.resolve_family_season_map的文档,修的是"旁支正片/剧场版TV重制版
@@ -124,8 +122,21 @@ async def _resolve_season_context(db: Session, folder: AnimeFolder) -> dict:
         except Exception as e:
             print(f"[ORGANIZE] 计算季度序号失败,按platform分流继续: {e}")
 
+    # 这一季自己的总集数 + 前序各季累计集数:用来把字幕组的跨季绝对编号换算回季内编号
+    # (实测咒术回战第二季发的是25~47,而这一季自己只有23集,正确结果是01~23),
+    # 详见rename_engine._normalize_absolute_episode。resolve_tv_season_ordinal_cached
+    # 上面已经把这个家族写进AnimeFamilyCache了,这里直接读表,不额外发网络请求。
+    episode_offset = 0
+    season_total_eps = None
+    if season_ordinal and folder.main_bgm_id:
+        season_info = build_season_episode_table(db, folder.main_bgm_id).get(season_ordinal)
+        if season_info:
+            episode_offset = season_info["episode_offset"]
+            season_total_eps = season_info["eps"]
+
     return {
         "episode_offset": episode_offset,
+        "season_total_eps": season_total_eps,
         "season_hint": season_hint,
         "platform": platform,
         "season_ordinal": season_ordinal,
@@ -167,6 +178,7 @@ def _preview_files_for_organize(
             bgm_id=folder.main_bgm_id,
             season_hint=season_context["season_hint"],
             episode_offset=season_context["episode_offset"],
+            season_total_eps=season_context["season_total_eps"],
             season_ordinal=season_context["season_ordinal"],
             platform=season_context["platform"],
         )
