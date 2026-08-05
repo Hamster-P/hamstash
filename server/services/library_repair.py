@@ -13,6 +13,7 @@
 """
 import os
 import re
+from datetime import datetime
 from pathlib import Path
 
 from sqlalchemy.orm import Session
@@ -336,10 +337,54 @@ def scan_orphaned_records(db: Session) -> dict:
     }
 
 
+def _migrate_playback_record(db: Session, old_relpath: str, new_relpath: str) -> None:
+    """把这一集的观看标记跟着改名迁过去。
+
+    PlaybackRecord是按(folder_name, filename)存的,而详情页判断"看过没有"是拿裸文件名
+    去匹配的(见routers/library.py::get_anime_seasons_and_episodes里的watched_map)。
+    改完名如果不迁这张表,记录行还在、但文件名对不上,这一集在界面上就变回"没看过"——
+    行没删,等于白丢了观看进度。
+
+    修复只在同一个番剧顶层文件夹内部搬动(anime_root是按同一个folder_name拼出来的),
+    所以folder_name一定不变,只需要改filename。
+    """
+    old_parts = old_relpath.split("/")
+    new_parts = new_relpath.split("/")
+    if len(old_parts) < 2 or len(new_parts) < 2:
+        return
+    folder_name, old_name = old_parts[0], old_parts[-1]
+    new_name = new_parts[-1]
+    if old_name == new_name:
+        return
+
+    rows = (
+        db.query(models.PlaybackRecord)
+        .filter(
+            models.PlaybackRecord.folder_name == folder_name,
+            models.PlaybackRecord.filename.in_([old_name, new_name]),
+        )
+        .all()
+    )
+    old_row = next((r for r in rows if r.filename == old_name), None)
+    if old_row is None:
+        return  # 这一集本来没被标记看过,不凭空插入新记录
+
+    new_row = next((r for r in rows if r.filename == new_name), None)
+    if new_row is None:
+        old_row.filename = new_name
+        return
+
+    # 旧名和新名两条都存在(两集都标记过看过,改名后撞到同一个文件名):只能留一条,
+    # 保留看得更晚的那个时间,否则会在同一个(folder_name, filename)上留下重复行。
+    if (old_row.watched_at or datetime.min) > (new_row.watched_at or datetime.min):
+        new_row.watched_at = old_row.watched_at
+    db.delete(old_row)
+
+
 async def apply_rename_fixes(db: Session, selected_paths: set[str] | None) -> dict:
     """重新执行一次只读扫描(防止扫描和点击应用之间用户手动改动了文件的TOCTOU问题),
-    对选中且未被阻塞的条目实际执行文件系统rename/move,成功后如果有对应的RenamedFile
-    行(按旧的target_relative_path匹配),一并把它的target_relative_path更新为新值。
+    对选中且未被阻塞的条目实际执行文件系统rename/move,成功后把对应的RenamedFile路径
+    和PlaybackRecord观看标记一起同步过去(都在同一次commit里,保证"文件改名成功才写库")。
     """
     library_root = get_library_root(db)
     mismatches = await scan_rename_mismatches(db)
@@ -383,6 +428,7 @@ async def apply_rename_fixes(db: Session, selected_paths: set[str] | None) -> di
             row = rows_by_relpath.get(_same_relpath(current_rel))
             if row:
                 row.target_relative_path = _to_db_relpath(item["proposed_relative_path"])
+            _migrate_playback_record(db, current_rel, item["proposed_relative_path"])
             db.commit()
             succeeded.append({"from": current_rel, "to": item["proposed_relative_path"]})
         except OSError as e:
