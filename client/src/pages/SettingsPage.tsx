@@ -344,7 +344,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
           onChange={(e) => setDefaultHomeView(e.target.value as DefaultHomeView)}
           className="rounded border border-border bg-ink px-2 py-1.5 font-mono text-xs text-paper outline-none focus:border-vermillion"
         >
-          <option value="tracking">连载页面</option>
+          <option value="tracking">追更页面</option>
           <option value="search">搜索页面</option>
           <option value="library">媒体库页面</option>
         </select>
