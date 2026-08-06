@@ -514,6 +514,9 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        // 记住主窗口的位置/大小,关闭时自动保存、下次启动自动还原(只有一个"main"
+        // 窗口,embed_bgm_webview嵌的是子Webview不是独立窗口,不需要额外过滤)。
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(BgmEmbedState(tokio::sync::Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
             open_external_player,
