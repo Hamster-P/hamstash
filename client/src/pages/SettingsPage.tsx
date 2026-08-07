@@ -9,6 +9,9 @@ import { AlertTriangle, CheckCircle2, XCircle, Loader2, Moon, Sun } from "lucide
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { writeFile } from "@tauri-apps/plugin-fs";
 import { isTauri } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
+import { check } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import { useTheme } from "../theme/ThemeContext";
 
 const API_BASE = "http://127.0.0.1:8080";
@@ -283,6 +286,8 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
       </div>
 
       <AppearanceSection />
+
+      <UpdateSection />
 
       <div className="mb-6 rounded-md border border-border bg-surface p-4">
         <div className="mb-1 text-sm">下载暂存目录</div>
@@ -743,6 +748,164 @@ function AppearanceSection() {
           浅色
         </button>
       </div>
+    </div>
+  );
+}
+
+// 应用内更新:常驻显示当前版本(getVersion,应用内唯一能确认版本号的地方),
+// 手动点"检查更新"走Tauri updater的check()->downloadAndInstall()流程。仅在Tauri
+// 环境渲染(浏览器预览没有updater API)。
+function UpdateSection() {
+  const [currentVersion, setCurrentVersion] = useState<string | null>(null);
+  const [inTauri, setInTauri] = useState<boolean | null>(null);
+  // idle: 未操作 / checking: 查询中 / latest: 已是最新 / available: 有新版待安装
+  // / downloading: 下载安装中 / error: 出错
+  const [phase, setPhase] = useState<
+    "idle" | "checking" | "latest" | "available" | "downloading" | "error"
+  >("idle");
+  const [newVersion, setNewVersion] = useState("");
+  const [releaseNotes, setReleaseNotes] = useState("");
+  const [progress, setProgress] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const tauri = await isTauri();
+      if (cancelled) return;
+      setInTauri(tauri);
+      if (!tauri) return;
+      try {
+        const v = await getVersion();
+        if (!cancelled) setCurrentVersion(v);
+      } catch {
+        // 读版本号失败不影响检查更新按钮可用,静默忽略。
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleCheck = async () => {
+    setPhase("checking");
+    setError(null);
+    try {
+      const update = await check();
+      if (!update) {
+        setPhase("latest");
+        return;
+      }
+      setNewVersion(update.version);
+      setReleaseNotes(update.body ?? "");
+      setPhase("available");
+    } catch (err) {
+      setError(
+        `检查更新失败:${
+          err instanceof Error ? err.message : "无法连接更新服务器,请检查网络"
+        }`,
+      );
+      setPhase("error");
+      console.error(err);
+    }
+  };
+
+  const handleDownloadAndInstall = async () => {
+    setPhase("downloading");
+    setProgress(0);
+    setError(null);
+    try {
+      const update = await check();
+      if (!update) {
+        // 罕见:刚才还有,现在没了(比如中途撤了Release),当作已是最新。
+        setPhase("latest");
+        return;
+      }
+      let downloaded = 0;
+      let contentLength = 0;
+      await update.downloadAndInstall((event) => {
+        switch (event.event) {
+          case "Started":
+            contentLength = event.data.contentLength ?? 0;
+            break;
+          case "Progress":
+            downloaded += event.data.chunkLength;
+            if (contentLength > 0) {
+              setProgress(Math.round((downloaded / contentLength) * 100));
+            }
+            break;
+          case "Finished":
+            setProgress(100);
+            break;
+        }
+      });
+      // Windows下NSIS安装器会接管并重启应用;relaunch作为兜底/跨平台一致性调用。
+      await relaunch();
+    } catch (err) {
+      setError(
+        `下载安装失败:${
+          err instanceof Error ? err.message : "请检查网络后重试"
+        }`,
+      );
+      setPhase("error");
+      console.error(err);
+    }
+  };
+
+  // 非Tauri环境(浏览器预览)不渲染此区块。
+  if (inTauri === false) return null;
+
+  const busy = phase === "checking" || phase === "downloading";
+
+  return (
+    <div className="mb-6 rounded-md border border-border bg-surface p-4">
+      <div className="mb-1 text-sm">软件更新</div>
+      <p className="mb-3 font-mono text-[11px] text-muted">
+        手动检查是否有新版本,有则下载并安装(安装过程需要管理员授权,完成后自动重启)。
+      </p>
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          onClick={phase === "available" ? handleDownloadAndInstall : handleCheck}
+          disabled={busy}
+          className="flex min-w-[104px] items-center justify-center gap-1.5 rounded-md border border-vermillion px-4 py-2 font-mono text-xs text-vermillion transition-colors hover:bg-vermillion hover:text-ink disabled:opacity-40"
+        >
+          {busy && <Loader2 size={14} className="animate-spin" />}
+          {phase === "checking"
+            ? "检查中..."
+            : phase === "downloading"
+              ? `下载中 ${progress}%`
+              : phase === "available"
+                ? "下载并安装"
+                : "检查更新"}
+        </button>
+        <span className="font-mono text-[11px] text-muted">
+          {currentVersion ? `当前版本 v${currentVersion}` : "当前版本 —"}
+        </span>
+      </div>
+
+      {phase === "latest" && (
+        <p className="mt-3 font-mono text-[11px] text-gold">
+          已是最新版本{currentVersion ? ` (v${currentVersion})` : ""}
+        </p>
+      )}
+
+      {phase === "available" && (
+        <div className="mt-3 rounded border border-border bg-ink p-3">
+          <div className="font-mono text-[11px] text-paper">
+            发现新版本 v{newVersion}
+          </div>
+          {releaseNotes && (
+            <p className="mt-1.5 whitespace-pre-wrap font-mono text-[11px] leading-snug text-muted">
+              {releaseNotes}
+            </p>
+          )}
+        </div>
+      )}
+
+      {phase === "error" && error && (
+        <p className="mt-3 font-mono text-[11px] text-vermillion">{error}</p>
+      )}
     </div>
   );
 }

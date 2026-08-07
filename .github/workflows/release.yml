@@ -1,0 +1,85 @@
+name: Release
+
+# 推送 v* 标签时触发(例如 git tag v0.6.0 && git push origin v0.6.0)。
+# 复现 scripts/build-release.ps1 的三步:PyInstaller 打包后端 -> 下载 nssm ->
+# tauri build(由 tauri-action 完成构建/签名/生成 latest.json/建 Release)。
+# mpv 与 vulkan-1.dll 已在仓库里,checkout 后即存在,无需额外获取。
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write # tauri-action 需要写权限来创建 Release 和上传产物
+
+jobs:
+  release:
+    runs-on: windows-latest # 应用仅 Windows(捆绑 nssm 服务 / vulkan / mpv)
+    steps:
+      - uses: actions/checkout@v4
+
+      # 1/3 PyInstaller 打包后端到 client/src-tauri/backend/hamstash-server
+      # (对应 build-release.ps1 第 1 步;CI 用全新环境 pip install,不依赖本地 venv)
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12" # 如后端需要特定版本,改这里
+
+      - name: Build backend (PyInstaller)
+        working-directory: server
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+          python -m PyInstaller --onedir --name hamstash-server `
+            --distpath "../client/src-tauri/backend" --workpath build --specpath . --noconfirm `
+            run_service.py
+
+      # 2/3 下载 nssm.exe 到 backend/(对应 build-release.ps1 第 2 步)
+      - name: Fetch NSSM
+        shell: pwsh
+        run: |
+          $zip = "$env:TEMP\nssm.zip"
+          Invoke-WebRequest -Uri "https://nssm.cc/release/nssm-2.24.zip" -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath "$env:TEMP\nssm-extract" -Force
+          Copy-Item "$env:TEMP\nssm-extract\nssm-2.24\win64\nssm.exe" "client/src-tauri/backend/nssm.exe"
+
+      # 3/3 前端依赖 + Rust 工具链 + tauri build/签名/发布
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: client/src-tauri
+
+      - name: Install frontend deps
+        working-directory: client
+        run: npm ci
+
+      - name: Build & release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 在仓库 Settings > Secrets and variables > Actions 里配置这两个:
+          #   TAURI_SIGNING_PRIVATE_KEY          -> hamstash.key 私钥文件的完整内容
+          #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD -> 生成密钥时设的密码
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: client
+          tagName: ${{ github.ref_name }} # 复用推送的 v* 标签
+          releaseName: "HamStash ${{ github.ref_name }}"
+          releaseBody: "详见 CHANGELOG.md。"
+          # 先建成草稿:人工核对产物 + latest.json 后再手动 Publish;
+          # updater 只认已发布(非草稿/非预发布)的 latest release。
+          releaseDraft: true
+          prerelease: false
+          # 生成并上传 latest.json(updater 端点即指向它),默认已开启,显式写明。
+          includeUpdaterJson: true
