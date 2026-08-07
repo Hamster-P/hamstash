@@ -9,5 +9,6 @@ server/*.spec
 cookies.txt
 test
 scripts/*.local.ps1
+scripts/bump-version.ps1
 ideas/
 .claude/

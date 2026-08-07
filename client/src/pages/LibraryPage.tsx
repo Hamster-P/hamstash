@@ -367,6 +367,17 @@ export default function LibraryPage({ onSelectAnime, onManualMatch }: LibraryPag
       }
       return { ...prev, seasons: newSeasons };
     });
+
+    // 同步乐观更新列表数据里这部番的last_watched_at,让"最近观看"排序在返回列表时
+    // 立即重排——不重新请求后端(避免加载闪烁/与上面watch写入的竞态)。这里必须用
+    // 可被new Date()解析的ISO时间戳(sortAnimes用new Date(last_watched_at).getTime()),
+    // 不能用上面那个本地化显示串nowStr。
+    const nowIso = new Date().toISOString();
+    setAnimes((prev) =>
+      prev.map((a) =>
+        a.folder_name === folderName ? { ...a, last_watched_at: nowIso } : a,
+      ),
+    );
   };
 
   // 找到这一集所在的季,以及从这一集开始(含)往后的剩余集数(升序,即"接下来该看的顺序")
