@@ -63,6 +63,28 @@ jobs:
         working-directory: client
         run: npm ci
 
+      # 从 CHANGELOG.md 抽取当前版本那一段作为发布说明,喂给 tauri-action。
+      # 它会同时写进 latest.json 的 notes(App 更新弹窗读的就是这个)和 Release 网页说明。
+      # CI 的 pwsh 是 PowerShell 7,默认 UTF-8,读中文无 GBK 问题。
+      - name: Extract release notes from CHANGELOG
+        id: changelog
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}" -replace '^v', ''
+          $content = Get-Content -Raw CHANGELOG.md
+          $pattern = "(?ms)^##\s*\[" + [regex]::Escape($version) + "\][^\r\n]*\r?\n(.*?)(?=^##\s|\z)"
+          $m = [regex]::Match($content, $pattern)
+          if ($m.Success -and $m.Groups[1].Value.Trim()) {
+              $body = $m.Groups[1].Value.Trim()
+          } else {
+              $body = "详见 CHANGELOG.md。"
+          }
+          Write-Host "提取到的更新说明:`n$body"
+          $delim = "CHANGELOG_EOF_$([System.Guid]::NewGuid().ToString('N'))"
+          "body<<$delim" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          $body | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "$delim" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
       - name: Build & release
         uses: tauri-apps/tauri-action@v0
         env:
@@ -76,7 +98,7 @@ jobs:
           projectPath: client
           tagName: ${{ github.ref_name }} # 复用推送的 v* 标签
           releaseName: "HamStash ${{ github.ref_name }}"
-          releaseBody: "详见 CHANGELOG.md。"
+          releaseBody: ${{ steps.changelog.outputs.body }}
           # 先建成草稿:人工核对产物 + latest.json 后再手动 Publish;
           # updater 只认已发布(非草稿/非预发布)的 latest release。
           releaseDraft: true
