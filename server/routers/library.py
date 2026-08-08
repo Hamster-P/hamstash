@@ -47,6 +47,28 @@ def set_library_sort_mode(req: SortModeUpdate, db: Session = Depends(get_db)):
 # 不再各自维护一份、之后加格式两处都要改——之前这里漏了m2t等格式,导致AT-X台标注的
 # .m2t录播文件在影视库详情页里"未找到符合格式的视频文件"。
 VIDEO_EXTENSIONS = {f".{ext}" for ext in rename_engine.VIDEO_EXTS}
+
+# 详情接口的结构缓存:folder_name -> (签名, structure)。签名 = (番剧根目录mtime, 各直接
+# 子目录mtime的frozenset),由一次os.scandir算出;签名没变就复用缓存、跳过整棵目录树的遍历,
+# 重复点同一部番时几乎瞬开。进程内缓存,重启即清空——无需持久化。
+# (缓存的structure是"纯磁盘结构",不含is_watched等观看态,那些在端点里每次现查后叠加。)
+_detail_structure_cache: dict[str, tuple] = {}
+
+
+def _folder_structure_signature(anime_path: Path):
+    """一次scandir算出目录签名,用于判断缓存是否失效。目录不存在返回None。"""
+    try:
+        with os.scandir(anime_path) as it:
+            sub_mtimes = frozenset(
+                entry.stat().st_mtime for entry in it if entry.is_dir()
+            )
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    try:
+        root_mtime = anime_path.stat().st_mtime
+    except OSError:
+        return None
+    return (root_mtime, sub_mtimes)
 # ----------------- 数据模型定义 -----------------
 class WatchedRequest(BaseModel):
     folder_name: str
@@ -111,33 +133,46 @@ def scan_local_folder_structure(anime_path: Path, library_root: Path):
     if not anime_path.exists():
         return structure
 
-    for item in anime_path.iterdir():
-        if item.is_dir():
-            # rename_engine.py 实际会创建的子目录名只有这几种:Season NN、Season 00(OVA)、
-            # 剧场版、Other——这几个要保留各自的桶,不能被下面的兜底正则一起归进"Specials/Others"
-            season_match = re.match(r"^(Season\s*|S|Specials|SP|第\s*)(\d+|[a-zA-Z]+)", item.name, re.IGNORECASE)
-            is_known_bucket = bool(season_match) or item.name in ("剧场版", "劇場版", "Other", "OVA")
-            season_name = item.name if is_known_bucket else "Specials/Others"
-            episodes = []
-            for sub_item in item.rglob("*"):
-                if sub_item.is_file() and sub_item.suffix.lower() in VIDEO_EXTENSIONS:
-                    episodes.append({
-                        "filename": sub_item.name,
-                        "rel_path": str(sub_item.relative_to(library_root)).replace("\\", "/")
-                    })
-            if episodes:
-                # 用extend而不是直接赋值:避免不同子目录被归到同一个桶名时(比如两个都落进
-                # "Specials/Others"兜底桶)后处理的目录把前一个目录的集数覆盖掉
-                structure.setdefault(season_name, []).extend(episodes)
-        else:
-            if item.is_file() and item.suffix.lower() in VIDEO_EXTENSIONS:
+    library_root_str = str(library_root)
+
+    def to_rel(full_path: str) -> str:
+        return os.path.relpath(full_path, library_root_str).replace("\\", "/")
+
+    def is_video(name: str) -> bool:
+        return os.path.splitext(name)[1].lower() in VIDEO_EXTENSIONS
+
+    # 用os.scandir/os.walk代替pathlib的iterdir/rglob:scandir/walk的条目类型直接来自
+    # 目录读取结果(DirEntry),不再对每个文件单独.is_file()触发一次stat——番剧目录里
+    # 混着的字幕/字体子目录(几十上百文件)/样图不会再被逐个stat,网络共享媒体库下尤其明显。
+    with os.scandir(anime_path) as it:
+        for entry in it:
+            if entry.is_dir():
+                # rename_engine.py 实际会创建的子目录名只有这几种:Season NN、Season 00(OVA)、
+                # 剧场版、Other——这几个要保留各自的桶,不能被下面的兜底正则一起归进"Specials/Others"
+                season_match = re.match(r"^(Season\s*|S|Specials|SP|第\s*)(\d+|[a-zA-Z]+)", entry.name, re.IGNORECASE)
+                is_known_bucket = bool(season_match) or entry.name in ("剧场版", "劇場版", "Other", "OVA")
+                season_name = entry.name if is_known_bucket else "Specials/Others"
+                episodes = []
+                for dirpath, _dirnames, filenames in os.walk(entry.path):
+                    for fname in filenames:
+                        if is_video(fname):
+                            full = os.path.join(dirpath, fname)
+                            episodes.append({
+                                "filename": fname,
+                                "rel_path": to_rel(full),
+                            })
+                if episodes:
+                    # 用extend而不是直接赋值:避免不同子目录被归到同一个桶名时(比如两个都落进
+                    # "Specials/Others"兜底桶)后处理的目录把前一个目录的集数覆盖掉
+                    structure.setdefault(season_name, []).extend(episodes)
+            elif entry.is_file() and is_video(entry.name):
                 # 视频直接堆在番剧根目录(没有Season子目录)时,靠文件名里的关键词
                 # 区分是剧场版/OVA合集还是正常的单季番,不再一律标成"Season 1"
-                is_movie = re.search(r"剧场版|劇場版|movie|OVA", item.name, re.IGNORECASE)
+                is_movie = re.search(r"剧场版|劇場版|movie|OVA", entry.name, re.IGNORECASE)
                 bucket_name = "剧场版/OVA" if is_movie else "Season 1"
                 structure.setdefault(bucket_name, []).append({
-                    "filename": item.name,
-                    "rel_path": str(item.relative_to(library_root)).replace("\\", "/")
+                    "filename": entry.name,
+                    "rel_path": to_rel(entry.path),
                 })
     for episodes in structure.values():
         episodes.sort(key=lambda x: x["filename"])
@@ -242,7 +277,7 @@ async def match_anime(req: MatchRequest, db: Session = Depends(get_db)):
 
 
 @router.get("/library/scan")
-async def scan_and_update_library(db: Session = Depends(get_db)):
+async def scan_and_update_library(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     """
     扫描媒体库。扫描后，如果发现新绑定的 bgm_id，会自动异步向 Bangumi 请求最新的数据
     """
@@ -253,7 +288,20 @@ async def scan_and_update_library(db: Session = Depends(get_db)):
         print(f"警告：目标路径 {library_root} 不存在，请检查设置页面配置！")
         return {"message": f"Library root {library_root} does not exist.", "added": [], "current_total": 0}
 
-    local_folders = [f.name for f in library_root.iterdir() if f.is_dir()]
+    # 一次os.scandir同时拿到子目录名和各自mtime:scandir的entry.stat()走的是目录读取时
+    # 已缓存的元数据,避免了原先"iterdir列目录 + 再对每部番单独Path.stat()"的N次额外stat
+    # (网络共享媒体库下每次stat都是一次SMB往返,番剧一多就明显卡)。
+    folder_mtimes: dict[str, datetime] = {}
+    with os.scandir(library_root) as it:
+        for entry in it:
+            if entry.is_dir():
+                try:
+                    folder_mtimes[entry.name] = datetime.fromtimestamp(entry.stat().st_mtime)
+                except OSError:
+                    folder_mtimes[entry.name] = None
+    local_folders = list(folder_mtimes.keys())
+    local_folder_set = set(local_folders)
+
     db_media = db.query(models.LocalMedia).all()
     db_folder_names = {m.folder_name for m in db_media}
 
@@ -268,29 +316,32 @@ async def scan_and_update_library(db: Session = Depends(get_db)):
                 bgm_id = int(match.group(1))
             else:
                 catalog_match = db.query(models.AnimeCatalog).filter(
-                    (models.AnimeCatalog.title == folder) | 
+                    (models.AnimeCatalog.title == folder) |
                     (models.AnimeCatalog.title_original == folder)
                 ).first()
                 if catalog_match:
                     bgm_id = catalog_match.bgm_id
-            
+
             new_media = models.LocalMedia(folder_name=folder, bgm_id=bgm_id)
             db.add(new_media)
             added.append(folder)
-            
-            # 如果新入库的动漫绑定了 bgm_id，立即尝试更新其 Bangumi 详细元数据
+
+            # 新入库且绑定了bgm_id的番:补详情元数据丢后台任务,不在扫盘里同步await一次
+            # Bangumi网络请求(新增一批番时会把整个扫盘接口卡在串行网络请求上)。跟
+            # list_library_animes遇到无缓存时同一种处理,下次列表请求即可看到补全结果。
             if bgm_id:
-                await update_anime_details_from_bgm(db, bgm_id)
-            
+                background_tasks.add_task(_update_anime_details_from_bgm_task, bgm_id)
+
     for media in db_media:
-        if media.folder_name not in local_folders:
+        if media.folder_name not in local_folder_set:
             db.delete(media)
 
     db.commit()
 
     # 刷新每部番的"最近活动时间",不止新增文件夹——已有番剧新增文件也要能反映到排序上。
+    # 直接用上面scandir已经拿到的mtime,不再对每部番单独get_latest_activity(再stat一次)。
     for media in db.query(models.LocalMedia).all():
-        media.latest_activity_at = get_latest_activity(library_root / media.folder_name)
+        media.latest_activity_at = folder_mtimes.get(media.folder_name)
     db.commit()
 
     return {"status": "success", "added": added, "current_total": len(local_folders)}
@@ -361,21 +412,35 @@ async def list_library_animes(background_tasks: BackgroundTasks, db: Session = D
 
 @router.get("/library/detail/{folder_name}")
 def get_anime_seasons_and_episodes(folder_name: str, db: Session = Depends(get_db)):
-    library_root = get_library_root(db) 
+    library_root = get_library_root(db)
     anime_path = library_root / folder_name
-    if not anime_path.exists() or not anime_path.is_dir():
-        raise HTTPException(status_code=404, detail="Anime folder not found on disk.") 
 
-    structure = scan_local_folder_structure(anime_path, library_root) 
+    # 先算目录签名(一次scandir)。签名为None说明文件夹不存在。
+    signature = _folder_structure_signature(anime_path)
+    if signature is None:
+        _detail_structure_cache.pop(folder_name, None)
+        raise HTTPException(status_code=404, detail="Anime folder not found on disk.")
+
+    cached = _detail_structure_cache.get(folder_name)
+    if cached and cached[0] == signature:
+        base_structure = cached[1]
+    else:
+        base_structure = scan_local_folder_structure(anime_path, library_root)
+        _detail_structure_cache[folder_name] = (signature, base_structure)
 
     # 提取已播放记录
     watched_records = db.query(models.PlaybackRecord).filter(
         models.PlaybackRecord.folder_name == folder_name
-    ).all() 
-    
+    ).all()
+
     # 修复点：转为字典，映射 filename -> record，方便取时间
     watched_map = {record.filename: record for record in watched_records}
 
+    # 深拷一份再叠加观看态:不能直接改缓存里的base_structure(会把is_watched等固化进缓存)。
+    structure = {
+        season: [dict(ep) for ep in eps]
+        for season, eps in base_structure.items()
+    }
     for season, eps in structure.items():
         for ep in eps:
             record = watched_map.get(ep["filename"])

@@ -135,10 +135,15 @@ export default function LibraryPage({ onSelectAnime, onManualMatch }: LibraryPag
     player_mode: "external",
   });
 
-  // 组件挂载时，先拉取设置，再扫盘+拉取影视库，同时恢复上次记住的排序方式
+  // 组件挂载时:先拉取设置,再"先秒开列表、后台扫盘",同时恢复上次记住的排序方式。
+  // 进页面不再阻塞等扫盘(scandir/stat 在网络共享媒体库下会卡)——先 fetchAnimes 从 DB
+  // 直接把列表渲染出来,扫盘丢后台跑,跑完再静默(silent,不闪"正在加载")刷新一次。
   useEffect(() => {
     fetchSettings();
-    scanAndFetchAnimes();
+    fetchAnimes();
+    fetch(`${API_BASE}/library/scan`)
+      .then(() => fetchAnimes(true))
+      .catch(() => {});
     fetch(`${API_BASE}/library/sort-mode`)
       .then((res) => res.json())
       .then((data) => {
@@ -179,15 +184,19 @@ export default function LibraryPage({ onSelectAnime, onManualMatch }: LibraryPag
 
   // 纯拉列表,不触发扫盘——后端list_library_animes现在是纯读接口(见
   // routers/library.py),真正的扫盘只由scanAndFetchAnimes显式触发。
-  const fetchAnimes = () => {
-    setLoading(true);
+  // silent=true:后台静默刷新(比如挂载时扫盘完成后的二次拉取),不翻 loading,
+  // 避免已经渲染出来的网格闪一下"正在加载"。
+  const fetchAnimes = (silent = false) => {
+    if (!silent) setLoading(true);
     fetch(`${API_BASE}/library/animes`)
       .then((res) => res.json())
       .then((data) => {
         setAnimes(data);
-        setLoading(false);
+        if (!silent) setLoading(false);
       })
-      .catch(() => setLoading(false));
+      .catch(() => {
+        if (!silent) setLoading(false);
+      });
   };
 
   // 唯一会触发完整扫盘的入口:先GET /library/scan(遍历硬盘、刷新mtime),
