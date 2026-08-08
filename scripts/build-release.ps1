@@ -61,6 +61,17 @@ if (-not (Test-Path $nssmExe)) {
 }
 
 Write-Host "== 3/3 Building client installer (Tauri) ==" -ForegroundColor Cyan
+# 加载本地签名环境变量(scripts\sign-env.local.ps1,被 .gitignore 忽略、只在本机)——
+# 里面设 TAURI_SIGNING_PRIVATE_KEY / _PASSWORD,给自动更新包签名用。密码只存在那个
+# 本地文件里,绝不写进这个会进仓库的脚本。文件不存在(比如别人 clone)就跳过,
+# tauri build 会因缺私钥报错提示,自行按模板补建即可。
+$signEnv = Join-Path $PSScriptRoot "sign-env.local.ps1"
+if (Test-Path $signEnv) {
+    . $signEnv
+    Write-Host "已加载本地签名环境变量" -ForegroundColor DarkGray
+} else {
+    Write-Host "警告：未找到 $signEnv，本次构建不会带更新签名" -ForegroundColor Yellow
+}
 Push-Location $clientDir
 try {
     npx tauri build
