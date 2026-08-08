@@ -787,11 +787,27 @@ function UpdateSection() {
     };
   }, []);
 
+  // GitHub 端点/安装包国内默认访问不了,复用设置页里那个"网络代理"(proxy_url,本来
+  // 给后端访问Bangumi/dmhy用)——GitHub同属外部站点。检查时现读,拿到用户最新填的值;
+  // 后端没起/读失败就静默降级为不带代理(走直连,TUN/全局模式下本就透明)。
+  const getProxyOptions = async (): Promise<{ proxy?: string } | undefined> => {
+    try {
+      const res = await fetch(`${API_BASE}/settings`);
+      if (!res.ok) return undefined;
+      const data = await res.json();
+      const proxy = (data?.proxy_url ?? "").trim();
+      return proxy ? { proxy } : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+
   const handleCheck = async () => {
     setPhase("checking");
     setError(null);
     try {
-      const update = await check();
+      // check()传入的proxy会一并作用于后续downloadAndInstall的下载(见CheckOptions.proxy)。
+      const update = await check(await getProxyOptions());
       if (!update) {
         setPhase("latest");
         return;
@@ -815,7 +831,7 @@ function UpdateSection() {
     setProgress(0);
     setError(null);
     try {
-      const update = await check();
+      const update = await check(await getProxyOptions());
       if (!update) {
         // 罕见:刚才还有,现在没了(比如中途撤了Release),当作已是最新。
         setPhase("latest");
