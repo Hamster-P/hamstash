@@ -250,6 +250,13 @@ export default function LibraryPage({ onSelectAnime, onManualMatch }: LibraryPag
     setShowRelatedAnime(false);
     setRelatedAnime([]);
     setRelatedError(null);
+
+    // 返回列表时,若存在"已匹配bgm但封面还没补上"的番(通常是新加入/移动后
+    // Bangumi详情刚由后台补全,见list_library_animes的懒加载补全),静默重拉一次
+    // 把封面补上;没有待补的就不发请求。未匹配(无bgm_id)的番不算待补。
+    if (animes.some((a) => a.bgm_id != null && !a.cover_url)) {
+      fetchAnimes(true);
+    }
   };
 
   // 删除整部番:磁盘文件夹+LocalMedia记录一起删,播放记录保留。
