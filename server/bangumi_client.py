@@ -6,6 +6,11 @@ import unicodedata
 from services.proxy import get_proxy_url
 
 BASE_URL = "https://api.bgm.tv"
+# Bangumi meta_tags 里的非日本产地标签,命中即判为国漫/他国番剧过滤掉。
+# 搜索结果按"黑名单"过滤(见search_anime):只剔除明确标了这些产地的,无产地标签的
+# 一律保留——否则社区没补产地标签的日本剧场版(如"游戏王剧场版 光之金字塔",meta_tags
+# 只有[剧场版,原创])会被误杀。
+FOREIGN_ORIGIN_TAGS = {"中国", "中国大陆", "香港", "台湾", "韩国", "美国", "欧美", "英国", "法国"}
 HEADERS = {
     "User-Agent": "hamstash/0.1 (personal project)",
     "Accept": "application/json",
@@ -107,15 +112,15 @@ async def search_anime(keyword: str, limit: int = 100, year: int | None = None, 
             else:
                 filtered_list = raw_list
 
-            # 默认只保留Bangumi官方meta_tags标了"日本"或"WEB"的条目,过滤掉国漫/
-            # 其他产地番剧——这个字段搜索接口本身就带,不需要额外请求。放在关键词
-            # 过滤(含空匹配兜底)之后,保证不管有没有走兜底逻辑,最终结果都只剩日漫。
-            # 放行"WEB"是因为部分日本制作的条目(比如海外联合出品的宣传短片)社区没有
-            # 补全"日本"标签,只标了"WEB"——牺牲一点精确度(可能混入个别国漫/韩番),
-            # 换取"标题精确匹配却搜不出来"不再发生,这个取舍是有意为之。
+            # 产地过滤用"黑名单"而非"白名单":只剔除meta_tags明确标了非日本产地
+            # (中国/韩国/美国...见FOREIGN_ORIGIN_TAGS)的条目,无产地标签的一律保留。
+            # 之前用"只留日本/WEB"的白名单有两个毛病:①社区没补产地标签的日本剧场版
+            # (如光之金字塔,tags只有[剧场版,原创])被误杀;②国漫普遍也带WEB,反而从
+            # WEB放行口漏进来。改黑名单同时修好这两点——国漫靠"中国"标签被准确剔除,
+            # 无标签的日本片得以保留。这个字段搜索接口本身就带,不需要额外请求。
             filtered_list = [
                 item for item in filtered_list
-                if "日本" in (item.get("meta_tags") or []) or "WEB" in (item.get("meta_tags") or [])
+                if not (FOREIGN_ORIGIN_TAGS & set(item.get("meta_tags") or []))
             ]
 
             raw_data["data"] = filtered_list
