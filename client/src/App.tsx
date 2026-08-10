@@ -45,6 +45,9 @@ function AppContent() {
   const [qbitSetupCompleted, setQbitSetupCompleted] = useState<boolean | null>(null);
 
   const settingsRef = useRef<SettingsPageHandle>(null);
+  // 真正带滚动条的元素是这个 <main>;影视库列表/详情共用它,LibraryPage 内部
+  // 切换详情时靠它保存/恢复滚动位置(见 LibraryPage 的 scrollContainerRef)
+  const mainScrollRef = useRef<HTMLElement>(null);
   // 从设置页切走时如果有未保存的修改,先暂存目标tab,弹确认框问用户
   const [pendingView, setPendingView] = useState<View | null>(null);
 
@@ -157,7 +160,7 @@ function AppContent() {
   return (
     <div className="flex h-screen w-screen overflow-hidden">
       <Sidebar active={view} onChange={handleViewChange} />
-      <main className="flex-1 overflow-y-auto">
+      <main ref={mainScrollRef} className="flex-1 overflow-y-auto">
         {selectedBgmId !== null ? (
           <DetailPage
             bgmId={selectedBgmId}
@@ -195,6 +198,7 @@ function AppContent() {
               <LibraryPage
                 onSelectAnime={handleSelectAnime}
                 onManualMatch={handleManualMatch}
+                scrollContainerRef={mainScrollRef}
               />
             )}
             {view === "rss" && <RssPage />}

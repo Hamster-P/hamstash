@@ -42,6 +42,8 @@ interface AppSettings {
 interface LibraryPageProps {
   onSelectAnime?: (bgmId: number) => void;
   onManualMatch?: (folderName: string) => void;
+  // 带滚动条的 <main>(见 App.tsx),用来在列表↔详情内部切换时保存/恢复网格滚动位置
+  scrollContainerRef?: React.RefObject<HTMLElement | null>;
 }
 
 const API_BASE = "http://127.0.0.1:8080";
@@ -97,7 +99,7 @@ function parseLibraryPath(
   return { folderName: parts[0], filename: parts[parts.length - 1] };
 }
 
-export default function LibraryPage({ onSelectAnime, onManualMatch }: LibraryPageProps) {
+export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContainerRef }: LibraryPageProps) {
   const [animes, setAnimes] = useState<LibraryAnime[]>([]);
   const [selectedAnime, setSelectedAnime] = useState<LibraryAnime | null>(null);
   const [detail, setDetail] = useState<AnimeDetail | null>(null);
@@ -123,6 +125,9 @@ export default function LibraryPage({ onSelectAnime, onManualMatch }: LibraryPag
   const [relatedLoading, setRelatedLoading] = useState(false);
   const [relatedError, setRelatedError] = useState<string | null>(null);
   const isPlayingRef = useRef(false); // 新增：播放锁
+  // 进详情视图那一刻网格的滚动位置,返回列表时恢复。列表/详情共用 <main> 这一个滚动条,
+  // 内部切换不卸载组件,所以用 ref 存即可,不需要 sessionStorage。
+  const gridScrollTop = useRef(0);
   // 吸顶头部(封面+简介+分季快捷按钮)的实际高度,用来给每个分季区块留出滚动余量,
   // 避免点快捷按钮跳转后,区块顶部被吸顶头部盖住
   const headerRef = useRef<HTMLDivElement>(null);
@@ -223,6 +228,8 @@ export default function LibraryPage({ onSelectAnime, onManualMatch }: LibraryPag
 
   // 点击某部动漫后，获取具体季、集数据
   const handleSelectAnime = (anime: LibraryAnime) => {
+    // 先同步记下当前网格滚动量,返回列表时恢复
+    gridScrollTop.current = scrollContainerRef?.current?.scrollTop ?? 0;
     setSelectedAnime(anime);
     setDetailLoading(true);
     // 管理模式/删除确认态/补番列表都是详情页局部状态,不能带着上一部番的状态进新一部的详情页
@@ -341,6 +348,19 @@ export default function LibraryPage({ onSelectAnime, onManualMatch }: LibraryPag
     }
     setShowRelatedAnime((v) => !v);
   };
+
+  // 列表↔详情内部切换时管理 <main> 的滚动位置:进详情从顶部开始,返回列表恢复原位置。
+  // 返回时 animes/displayedAnimes 仍在 state 里(handleBack 不清空、不阻塞重载),
+  // 网格高度已就绪,scrollTop 恢复能生效。
+  useLayoutEffect(() => {
+    const el = scrollContainerRef?.current;
+    if (!el) return;
+    if (selectedAnime) {
+      el.scrollTop = 0;
+    } else {
+      el.scrollTop = gridScrollTop.current;
+    }
+  }, [selectedAnime]);
 
   // 头部内容(简介行数、快捷按钮是否显示)会变,量出来的高度也要跟着更新
   useLayoutEffect(() => {

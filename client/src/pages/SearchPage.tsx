@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useLayoutEffect, useRef } from "react";
 import { Search as SearchIcon } from "lucide-react";
 import BangumiResultsList, { type BangumiSubject } from "../components/BangumiResultsList";
 
@@ -22,6 +22,10 @@ interface SearchSessionState {
 }
 
 const SEARCH_SESSION_KEY = "search_session_state_v1";
+// 列表滚动位置单独存:它会脱离"搜索"这个动作独立变化(用户只是滚动、没重新检索),
+// 所以不塞进 SearchSessionState,单独一个 key。搜索页点进详情会整页卸载重挂(见
+// App.tsx 的 selectedBgmId 三元),必须存到组件外才能在返回时恢复。
+const SEARCH_SCROLL_KEY = "search_scroll_top_v1";
 
 function loadSearchSession(): SearchSessionState | null {
   try {
@@ -68,6 +72,26 @@ export default function SearchPage({ onSelectAnime, manualMatchFolder }: SearchP
   const [hasMore, setHasMore] = useState(initialSession?.hasMore ?? false);
   // 是否已经执行过至少一次搜索,用来区分"还没搜索"和"搜索了但没结果"两种空状态
   const [hasSearched, setHasSearched] = useState(initialSession !== null);
+
+  // 结果列表滚动容器:进详情再返回时恢复到离开时的滚动位置
+  const listRef = useRef<HTMLDivElement>(null);
+  const scrollSaveRaf = useRef<number | null>(null);
+
+  // mount 后恢复上次的滚动位置。结果来自 initialSession(同步 state),首帧列表高度
+  // 就已存在,useLayoutEffect 在 paint 前赋值 scrollTop,不会闪一下再跳回去。
+  useLayoutEffect(() => {
+    const saved = Number(sessionStorage.getItem(SEARCH_SCROLL_KEY) ?? 0);
+    if (listRef.current && saved > 0) listRef.current.scrollTop = saved;
+  }, []);
+
+  // 滚动时把位置记下来(rAF 节流,避免每个滚动事件都同步写 sessionStorage 造成卡顿)
+  const handleListScroll = () => {
+    if (scrollSaveRaf.current !== null) return;
+    scrollSaveRaf.current = requestAnimationFrame(() => {
+      scrollSaveRaf.current = null;
+      sessionStorage.setItem(SEARCH_SCROLL_KEY, String(listRef.current?.scrollTop ?? 0));
+    });
+  };
 
   // 2. 联动逻辑
   useEffect(() => {
@@ -203,7 +227,7 @@ export default function SearchPage({ onSelectAnime, manualMatchFolder }: SearchP
       </div>
 
       {/* 列表渲染 */}
-      <div className="flex-1 overflow-y-auto space-y-2">
+      <div ref={listRef} onScroll={handleListScroll} className="flex-1 overflow-y-auto space-y-2">
         <BangumiResultsList
           results={results}
           onSelect={onSelectAnime}
