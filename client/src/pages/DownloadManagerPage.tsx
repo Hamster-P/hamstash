@@ -19,6 +19,7 @@ interface TorrentFile {
 
 const API_BASE = "http://127.0.0.1:8080";
 const POLL_INTERVAL_MS = 5000;
+const PAGE_SIZE = 20;
 const STATUS_OPTIONS = ["全部", "下载中", "已完成", "已整理", "出错"] as const;
 
 function formatSize(bytes: number) {
@@ -58,6 +59,9 @@ export default function DownloadManagerPage() {
   const [expandedHash, setExpandedHash] = useState<string | null>(null);
   const [files, setFiles] = useState<TorrentFile[]>([]);
   const [filesLoading, setFilesLoading] = useState(false);
+
+  // 前端分页游标:默认只渲染前PAGE_SIZE条,点"加载更多"再+PAGE_SIZE。
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
 
   const loadTasks = async (showLoading = true) => {
     if (showLoading) setLoading(true);
@@ -132,6 +136,14 @@ export default function DownloadManagerPage() {
       return true;
     });
   }, [tasks, statusFilter, keyword]);
+
+  // 筛选条件变化时回到第一页(重置游标)。注意依赖里只有筛选项,不含tasks——
+  // 5秒轮询更新的是tasks,不能让轮询把游标塌回PAGE_SIZE、收回用户已"加载更多"的行。
+  useEffect(() => {
+    setVisibleCount(PAGE_SIZE);
+  }, [statusFilter, keyword]);
+
+  const visibleTasks = filteredTasks.slice(0, visibleCount);
 
   const allChecked =
     filteredTasks.length > 0 && filteredTasks.every((t) => selected.has(t.hash));
@@ -304,7 +316,7 @@ export default function DownloadManagerPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
-              {filteredTasks.map((task, index) => (
+              {visibleTasks.map((task, index) => (
                 <Fragment key={task.hash}>
                 <tr
                   onClick={() =>
@@ -439,6 +451,17 @@ export default function DownloadManagerPage() {
               ))}
             </tbody>
           </table>
+          {visibleCount < filteredTasks.length && (
+            <div className="border-t border-border p-2 text-center">
+              <button
+                type="button"
+                onClick={() => setVisibleCount((c) => c + PAGE_SIZE)}
+                className="font-mono text-xs text-muted transition-colors hover:text-vermillion"
+              >
+                加载更多(已显示 {visibleTasks.length} / {filteredTasks.length})
+              </button>
+            </div>
+          )}
           </div>
         </div>
       )}
