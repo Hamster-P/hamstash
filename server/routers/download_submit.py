@@ -27,11 +27,21 @@ async def search_resources(
     quality: str | None = None,
     subtitle: str | None = None,
     format: str | None = None,
+    release_type: str | None = None,
 ):
     return await resource_client.search_by_source(
         keyword, source, bgm_id, page,
         fansub_name=fansub_name, quality=quality, subtitle=subtitle, format=format,
+        release_type=release_type,
     )
+
+
+@router.get("/resources/sources")
+def list_sources():
+    """下载源清单:前端下载页下拉(只取 enabled)、设置页源编辑器(全部,含默认值/覆盖值/启用开关)
+    都从这里拿,不再在前端硬编码 dmhy/animegarden/nyaa。"""
+    from sources.registry import all_sources
+    return {"sources": [a.config_state() for a in all_sources()]}
 
 
 @router.post("/resources/prefetch-rename-cache")

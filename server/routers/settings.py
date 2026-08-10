@@ -22,13 +22,24 @@ router = APIRouter(tags=["设置"])
 # "能上网就行"的地址——国内网络下这几个的可达性差别很大(实测api.bgm.tv能直连,
 # 但图床lain.bgm.tv和主站bgm.tv经常不行),分开报才看得出到底是哪一段断了。
 PROXY_PROBE_TIMEOUT = 10.0
-PROXY_PROBES = [
+# Bangumi 相关的探测点是固定的(追更/详情页都要用),下载源的探测点则按当前启用/勾选的源
+# 动态生成(见 _source_probes),换了源/改了地址/停用了某个源,测试对象自动跟着变。
+BANGUMI_PROBES = [
     ("Bangumi API", "https://api.bgm.tv/calendar", "追更页的放送数据"),
     ("Bangumi 主站", "https://bgm.tv/subject/1", "详情页内嵌的那块网页"),
-    ("dmhy", "https://dmhy.org/topics/rss/rss.xml", "下载页数据源"),
-    ("AnimeGarden", "https://api.animes.garden/resources", "下载页数据源"),
-    ("nyaa", "https://nyaa.si", "下载页数据源"),
 ]
+
+
+def _source_probes(source_ids: list[str] | None) -> list[dict]:
+    """按要探测的下载源 id 生成探测点(名字/地址/说明)。
+    source_ids=None(设置页没传)时回落到"当前已启用的源";传了就按传入的交集来
+    (设置页把当前勾选启用的源传过来,能反映还没保存的改动)。地址取各源当前配置的主 URL。"""
+    from sources.registry import enabled_sources, get_source, has_source
+    if source_ids is None:
+        adapters = enabled_sources()
+    else:
+        adapters = [get_source(sid) for sid in source_ids if has_source(sid)]
+    return [a.proxy_probe() for a in adapters]
 
 
 @router.get("/settings")
@@ -43,6 +54,8 @@ def get_settings(db: Session = Depends(get_db)):
             db, "default_home_view", config_store.DEFAULTS["default_home_view"]
         ),
         "proxy_url": get_setting(db, "proxy_url", config_store.DEFAULTS["proxy_url"]),
+        # 下载源覆盖配置的原始 JSON 字符串;设置页拿它 + GET /resources/sources 的默认值渲染编辑器
+        "download_sources": get_setting(db, "download_sources", config_store.DEFAULTS["download_sources"]),
         # 只读:实际生效的代理地址(手填留空时是探测到的系统代理)。跟proxy_url分开返回,
         # 不能把探测值回填进设置页输入框——那样用户一点保存就把探测结果固化成手动配置了。
         # 客户端Rust侧创建内嵌webview时读的是这个值(见src-tauri/src/lib.rs)。
@@ -85,6 +98,9 @@ def update_settings(payload: SettingsUpdate, db: Session = Depends(get_db)):
         "default_source": payload.default_source,
         "default_home_view": payload.default_home_view,
         "proxy_url": payload.proxy_url,
+        # 必须放进这个 values dict:write_ini 会用它整段重写 INI 的 [settings] 段,
+        # 漏掉的话每次保存都会把下载源覆盖配置从 INI 抹掉(SQLite 副本还在,但两边会不一致)。
+        "download_sources": payload.download_sources,
     }
     for key, value in values.items():
         upsert_setting(db, key, value)
@@ -185,9 +201,11 @@ async def test_proxy(payload: ProxyTestRequest):
             cover_url = "https://lain.bgm.tv/pic/cover/l/ce/e2/456080_C4q4C.jpg"
             cover_scheme_note = "拿不到实时封面地址,用了一个固定地址兜底"
 
+        source_probes = _source_probes(payload.sources)
         probes = [
             _probe(client, "Bangumi 图床", cover_url, f"封面图 — {cover_scheme_note}"),
-            *[_probe(client, name, url, note) for name, url, note in PROXY_PROBES],
+            *[_probe(client, name, url, note) for name, url, note in BANGUMI_PROBES],
+            *[_probe(client, p["name"], p["url"], p["note"]) for p in source_probes],
         ]
         checks = await asyncio.gather(*probes)
 

@@ -79,11 +79,40 @@ class SettingsUpdate(BaseModel):
     default_source: str = "dmhy"  # 下载页默认选中的数据源: dmhy / animegarden / nyaa
     default_home_view: str = "tracking"  # 软件启动时默认显示的页面: tracking/search/library
     proxy_url: str = ""  # 访问外部动漫资源站时用的代理地址,留空=直连
+    # 下载源覆盖配置(JSON 字符串,见 config_store.DEFAULTS['download_sources']),留空=全用默认
+    download_sources: str = ""
 
     @field_validator("proxy_url")
     @classmethod
     def validate_proxy_url(cls, value: str) -> str:
         return validate_proxy_url_value(value)
+
+    @field_validator("download_sources")
+    @classmethod
+    def validate_download_sources(cls, value: str) -> str:
+        """必须是合法 JSON 对象(或空串)。存原始字符串,读取时按 source 取覆盖项。
+        并且强制:至少要有一个源处于启用状态——全部停用会让下载页/RSS 订阅无源可用。"""
+        import json
+        if not value.strip():
+            return ""  # 空串=全用默认,三个源默认都启用,天然满足"至少一个"
+        try:
+            data = json.loads(value)
+        except (ValueError, TypeError):
+            raise ValueError("download_sources 必须是合法的 JSON")
+        if not isinstance(data, dict):
+            raise ValueError("download_sources 必须是 JSON 对象")
+        # 计算生效后的启用集合:注册表里的每个源,覆盖里显式写了 enabled 就用它,否则默认启用
+        from sources.registry import all_sources
+        any_enabled = False
+        for adapter in all_sources():
+            entry = data.get(adapter.id)
+            enabled = entry.get("enabled", True) if isinstance(entry, dict) else True
+            if enabled:
+                any_enabled = True
+                break
+        if not any_enabled:
+            raise ValueError("至少需要启用一个下载源")
+        return value
 
     @field_validator("default_home_view")
     @classmethod
@@ -112,6 +141,9 @@ class ProxyTestRequest(BaseModel):
     留空代表没有手填配置,后端会回落到探测出来的系统代理(跟实际运行时的行为一致)。
     """
     proxy_url: str = ""
+    # 要探测的下载源 id 列表(设置页当前勾选启用的那些,可能还没保存)。
+    # None=没传,后端回落到"当前已启用的源";空列表=一个源都不探(只探 Bangumi 相关)。
+    sources: Optional[list[str]] = None
 
     @field_validator("proxy_url")
     @classmethod

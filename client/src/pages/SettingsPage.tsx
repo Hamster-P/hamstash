@@ -61,6 +61,34 @@ export interface SettingsPageHandle {
 
 type DefaultHomeView = "tracking" | "search" | "library";
 
+// 下载源配置(来自后端 GET /resources/sources):每个源的启用开关 + 可编辑的 URL 字段
+interface SourceUrlField {
+  key: string;
+  label: string;
+  default: string;
+  value: string; // 用户覆盖值,空串=用 default
+}
+interface SourceConfig {
+  id: string;
+  label: string;
+  enabled: boolean;
+  urls: SourceUrlField[];
+}
+
+// 把源配置序列化成后端要存的 download_sources JSON(只放启用开关 + 非空 URL 覆盖)。
+// 也用于"是否有未保存修改"的语义比较(避免默认态与空串直接字符串比对误判为 dirty)。
+function serializeSources(configs: SourceConfig[]): string {
+  const obj: Record<string, Record<string, unknown>> = {};
+  for (const c of configs) {
+    const entry: Record<string, unknown> = { enabled: c.enabled };
+    for (const u of c.urls) {
+      if (u.value.trim()) entry[u.key] = u.value.trim();
+    }
+    obj[c.id] = entry;
+  }
+  return JSON.stringify(obj);
+}
+
 interface SavedSnapshot {
   downloadRoot: string;
   libraryRoot: string;
@@ -68,9 +96,10 @@ interface SavedSnapshot {
   playerMode: "builtin" | "external";
   pollMinutes: number;
   rssPollMinutes: number;
-  defaultSource: "dmhy" | "animegarden" | "nyaa";
+  defaultSource: string;
   defaultHomeView: DefaultHomeView;
   proxyUrl: string;
+  sourcesJson: string; // serializeSources 的结果,做 dirty 比较
 }
 
 const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function SettingsPage(
@@ -82,7 +111,9 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
   // 新增：PotPlayer 路径状态
   const [potplayerPath, setPotplayerPath] = useState("");
   const [playerMode, setPlayerMode] = useState<"builtin" | "external">("external");
-  const [defaultSource, setDefaultSource] = useState<"dmhy" | "animegarden" | "nyaa">("dmhy");
+  const [defaultSource, setDefaultSource] = useState<string>("dmhy");
+  // 下载源配置(启用开关 + URL 覆盖),从 GET /resources/sources 加载
+  const [sourceConfigs, setSourceConfigs] = useState<SourceConfig[]>([]);
   const [defaultHomeView, setDefaultHomeView] = useState<DefaultHomeView>("tracking");
   const [proxyUrl, setProxyUrl] = useState("");
   const [pollMinutes, setPollMinutes] = useState(5);
@@ -102,9 +133,23 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
   );
 
   useEffect(() => {
-    fetch(`${API_BASE}/settings`)
-      .then((res) => res.json())
-      .then((data) => {
+    Promise.all([
+      fetch(`${API_BASE}/settings`).then((r) => r.json()),
+      fetch(`${API_BASE}/resources/sources`).then((r) => r.json()).catch(() => ({ sources: [] })),
+    ])
+      .then(([data, srcData]) => {
+        const configs: SourceConfig[] = (srcData.sources ?? []).map((s: any) => ({
+          id: s.id,
+          label: s.label,
+          enabled: s.enabled !== false,
+          urls: (s.urls ?? []).map((u: any) => ({
+            key: u.key, label: u.label, default: u.default, value: u.value ?? "",
+          })),
+        }));
+        setSourceConfigs(configs);
+        const sourcesJson = serializeSources(configs);
+        // 默认源:后端存的 default_source 若已不在(启用的)源里,退回第一个源
+        const validIds = configs.map((c) => c.id);
         const next: SavedSnapshot = {
           downloadRoot: data.download_root ?? "",
           libraryRoot: data.library_root ?? "",
@@ -117,17 +162,16 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
           rssPollMinutes: clampPollMinutes(
             Math.round((data.rss_poll_interval_seconds ?? 1800) / 60),
           ),
-          defaultSource: (["dmhy", "animegarden", "nyaa"] as const).includes(
-            data.default_source,
-          )
+          defaultSource: validIds.includes(data.default_source)
             ? data.default_source
-            : "dmhy",
+            : (validIds[0] ?? "dmhy"),
           defaultHomeView: (["tracking", "search", "library"] as const).includes(
             data.default_home_view,
           )
             ? data.default_home_view
             : "tracking",
           proxyUrl: data.proxy_url ?? "",
+          sourcesJson,
         };
         setDownloadRoot(next.downloadRoot);
         setLibraryRoot(next.libraryRoot);
@@ -155,7 +199,8 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
       rssPollMinutes !== savedSnapshot.rssPollMinutes ||
       defaultSource !== savedSnapshot.defaultSource ||
       defaultHomeView !== savedSnapshot.defaultHomeView ||
-      proxyUrl !== savedSnapshot.proxyUrl);
+      proxyUrl !== savedSnapshot.proxyUrl ||
+      serializeSources(sourceConfigs) !== savedSnapshot.sourcesJson);
 
   const checkQbStatus = () => {
     setQbStatus("checking");
@@ -227,6 +272,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
           default_source: defaultSource,
           default_home_view: defaultHomeView,
           proxy_url: proxyUrl.trim(),
+          download_sources: serializeSources(sourceConfigs),
         }),
       });
       if (!res.ok) {
@@ -249,6 +295,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
         defaultSource,
         defaultHomeView,
         proxyUrl: proxyUrl.trim(),
+        sourcesJson: serializeSources(sourceConfigs),
       });
     } catch (err) {
       setSaveMessage(err instanceof Error ? err.message : "保存失败,请检查后端连接");
@@ -419,15 +466,66 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
         </p>
         <select
           value={defaultSource}
-          onChange={(e) =>
-            setDefaultSource(e.target.value as "dmhy" | "animegarden" | "nyaa")
-          }
+          onChange={(e) => setDefaultSource(e.target.value)}
           className="rounded border border-border bg-ink px-2 py-1.5 font-mono text-xs text-paper outline-none focus:border-vermillion"
         >
-          <option value="dmhy">dmhy(全量历史)</option>
-          <option value="animegarden">AnimeGarden(近期资源)</option>
-          <option value="nyaa">nyaa.si(英语圈综合站)</option>
+          {sourceConfigs.filter((s) => s.enabled).map((s) => (
+            <option key={s.id} value={s.id}>{s.label}</option>
+          ))}
         </select>
+      </div>
+
+      {/* 下载源管理:启用/停用某个源、修改站点地址(换域名/换镜像时用)。
+          停用只是从下载页下拉隐藏并不再新建订阅,已有订阅继续轮询。 */}
+      <div className="mb-6 rounded-md border border-border bg-surface p-4">
+        <div className="mb-1 text-sm">下载源</div>
+        <p className="mb-3 font-mono text-[11px] text-muted">
+          管理搜索/RSS订阅使用的数据源:可停用某个源(从下载页下拉隐藏,已有订阅仍继续轮询),
+          或在站点换域名/换镜像时修改地址。留空表示使用内置默认地址。新增全新的源需要在后端代码里加适配器。
+          <span className="text-vermillion"> 至少需要启用一个源。</span>
+        </p>
+        <div className="flex flex-col gap-3">
+          {sourceConfigs.map((s) => (
+            <div key={s.id} className="rounded border border-border bg-ink p-3">
+              <label className="flex items-center justify-between gap-3">
+                <span className="font-mono text-xs text-paper">{s.label}</span>
+                <input
+                  type="checkbox"
+                  checked={s.enabled}
+                  // 不允许取消最后一个启用的源(至少保留一个),此时把这个复选框禁用掉
+                  disabled={s.enabled && sourceConfigs.filter((c) => c.enabled).length === 1}
+                  onChange={(e) =>
+                    setSourceConfigs((prev) =>
+                      prev.map((c) => (c.id === s.id ? { ...c, enabled: e.target.checked } : c)),
+                    )
+                  }
+                  className="h-4 w-4 accent-vermillion disabled:opacity-40"
+                />
+              </label>
+              <div className="mt-2 flex flex-col gap-2">
+                {s.urls.map((u) => (
+                  <div key={u.key} className="flex flex-col gap-1">
+                    <span className="font-mono text-[10px] text-muted">{u.label}</span>
+                    <input
+                      value={u.value}
+                      placeholder={u.default}
+                      onChange={(e) =>
+                        setSourceConfigs((prev) =>
+                          prev.map((c) =>
+                            c.id === s.id
+                              ? { ...c, urls: c.urls.map((x) => (x.key === u.key ? { ...x, value: e.target.value } : x)) }
+                              : c,
+                          ),
+                        )
+                      }
+                      className="w-full rounded border border-border bg-surface px-2 py-1.5 font-mono text-[11px] text-paper outline-none placeholder:text-muted/50 focus:border-vermillion focus:ring-1 focus:ring-vermillion"
+                    />
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
 
       {/* 新增：访问外部动漫资源站(Bangumi/dmhy/AnimeGarden/nyaa)用的代理 */}
@@ -447,7 +545,10 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
           placeholder="http://127.0.0.1:8000"
           className="w-full rounded border border-border bg-ink px-3 py-2 text-sm text-paper outline-none placeholder:text-muted/60 focus:border-vermillion focus:ring-1 focus:ring-vermillion"
         />
-        <ProxyTestSection proxyUrl={proxyUrl} />
+        <ProxyTestSection
+          proxyUrl={proxyUrl}
+          sourceIds={sourceConfigs.filter((s) => s.enabled).map((s) => s.id)}
+        />
       </div>
 
       <div className="mb-6 rounded-md border border-border bg-surface p-4">
@@ -603,7 +704,7 @@ function formatProxyReport(result: ProxyTestResult): string {
   return lines.join("\n");
 }
 
-function ProxyTestSection({ proxyUrl }: { proxyUrl: string }) {
+function ProxyTestSection({ proxyUrl, sourceIds }: { proxyUrl: string; sourceIds: string[] }) {
   const [testing, setTesting] = useState(false);
   const [result, setResult] = useState<ProxyTestResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -618,7 +719,8 @@ function ProxyTestSection({ proxyUrl }: { proxyUrl: string }) {
       const res = await fetch(`${API_BASE}/settings/proxy-test`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ proxy_url: proxyUrl.trim() }),
+        // 只探当前勾选启用的下载源(能反映还没保存的改动),Bangumi 相关的固定项后端总会探
+        body: JSON.stringify({ proxy_url: proxyUrl.trim(), sources: sourceIds }),
       });
       const body = await res.json();
       if (!res.ok) {

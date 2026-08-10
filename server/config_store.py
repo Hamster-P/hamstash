@@ -35,6 +35,11 @@ DEFAULTS = {
     "qbit_password": os.getenv("QBIT_PASSWORD", ""),
     "qbit_setup_completed": "false",  # 引导向导是否已经走完,前端据此决定要不要弹首次引导
     "library_sort_mode": "default",  # 影视库列表页排序方式记忆: default/recent_watched/recent_updated
+    # 下载源的用户覆盖配置(JSON 字符串),形如
+    # {"dmhy":{"enabled":true,"search_url":"...","rss_url":"..."}, "nyaa":{"enabled":false}, ...}。
+    # 留空=全部用各 source adapter 的内置默认。用于站点换域名/换镜像、临时停用某个源。
+    # 读取见 sources/base.py::source_overrides,注册的源见 sources/registry.py。
+    "download_sources": "",
 }
 
 

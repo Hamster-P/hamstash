@@ -19,234 +19,60 @@ RSS引擎:取代qBittorrent自身的RSS订阅+自动下载规则机制。
 之后再统一清理。
 """
 import asyncio
-import re
 from datetime import datetime
-from urllib.parse import quote
-from xml.etree import ElementTree
 
-import httpx
 from sqlalchemy.orm import Session
 
 import config_store
 import qbittorrent_client
-import resource_client
 from database import SessionLocal
 from models import RssMatchedItem, SubscriptionRule
-from resource_client import _split_keyword
+from sources.base import SearchCriteria, matches_criteria
+from sources.registry import get_source, has_source
 from services.bgm_series_cache import resolve_series_identity
 from services.common import get_setting
-from services.proxy import get_proxy_url
 from services.staging import staging_folder, upsert_anime_folder
 
-_NYAA_NS = {"nyaa": "https://nyaa.si/xmlns/nyaa"}
 
-# 给"自己拼磁力链接"(nyaa)场景用的一批公共tracker——只有info hash的磁力链接
-# 理论上纯靠DHT也能找到peer,带上这些能加快首次连上peer的速度,不是必需项。
-_PUBLIC_TRACKERS = [
-    "udp://tracker.opentrackr.org:1337/announce",
-    "udp://open.stealth.si:80/announce",
-    "udp://tracker.torrent.eu.org:451/announce",
-    "http://nyaa.tracker.wf:7777/announce",
-]
-
-_SIMPLIFIED_TERMS = ["简", "chs", "gb"]
-_TRADITIONAL_TERMS = ["繁", "cht", "big5"]
-_JAPANESE_TERMS = ["日", "jp", "japanese"]
-_RAW_TERMS = ["raw", "bilibili", "baha", "cr", "crunchyroll", "web-dl"]
-_BATCH_TERMS = ["合集", "全集", "batch", "pack", "fin"]
-_BATCH_RANGE_RE = re.compile(r"\d+-\d+")
-
-
-class FeedItem:
-    def __init__(self, guid: str, title: str, magnet: str, info_hash: str | None):
-        self.guid = guid
-        self.title = title
-        self.magnet = magnet
-        self.info_hash = info_hash
-
-
-def _build_magnet_from_hash(info_hash: str, title: str) -> str:
-    trackers = "&".join(f"tr={quote(t, safe='')}" for t in _PUBLIC_TRACKERS)
-    return f"magnet:?xt=urn:btih:{info_hash}&dn={quote(title)}&{trackers}"
-
-
-def _parse_dmhy_or_animegarden(xml_bytes: bytes) -> list[FeedItem]:
-    """dmhy/animegarden的RSS格式一致:<enclosure url="magnet:?...">直接给完整磁力链接。"""
-    root = ElementTree.fromstring(xml_bytes)
-    items = []
-    for item in root.iter("item"):
-        title_el = item.find("title")
-        guid_el = item.find("guid")
-        enclosure_el = item.find("enclosure")
-        if title_el is None or guid_el is None or enclosure_el is None:
-            continue
-        magnet = enclosure_el.get("url")
-        if not magnet or not magnet.startswith("magnet:"):
-            continue
-        items.append(
-            FeedItem(
-                guid=(guid_el.text or "").strip(),
-                title=(title_el.text or "").strip(),
-                magnet=magnet,
-                info_hash=None,
-            )
-        )
-    return items
-
-
-def _parse_nyaa(xml_bytes: bytes) -> list[FeedItem]:
-    """nyaa的RSS <link> 只给.torrent文件下载链接,但item里有nyaa:infoHash,
-    自己拼磁力链接,不需要经过下载.torrent文件这一步。"""
-    root = ElementTree.fromstring(xml_bytes)
-    items = []
-    for item in root.iter("item"):
-        title_el = item.find("title")
-        guid_el = item.find("guid")
-        hash_el = item.find("nyaa:infoHash", _NYAA_NS)
-        if title_el is None or guid_el is None or hash_el is None or not hash_el.text:
-            continue
-        title = (title_el.text or "").strip()
-        items.append(
-            FeedItem(
-                guid=(guid_el.text or "").strip(),
-                title=title,
-                magnet=_build_magnet_from_hash(hash_el.text.strip(), title),
-                info_hash=hash_el.text.strip(),
-            )
-        )
-    return items
-
-
-def parse_feed_items(source: str, xml_bytes: bytes) -> list[FeedItem]:
-    if source == "nyaa":
-        return _parse_nyaa(xml_bytes)
-    return _parse_dmhy_or_animegarden(xml_bytes)
-
-
-def _subtitle_matches(title_lower: str, subtitle: str) -> bool:
-    has_simplified = any(k in title_lower for k in _SIMPLIFIED_TERMS)
-    has_traditional = any(k in title_lower for k in _TRADITIONAL_TERMS)
-    has_japanese = any(k in title_lower for k in _JAPANESE_TERMS)
-    is_raw = any(k in title_lower for k in _RAW_TERMS)
-
-    if subtitle == "纯简体":
-        return has_simplified and not has_traditional and "简日" not in title_lower and not is_raw
-    if subtitle == "繁体":
-        return has_traditional and not has_simplified and "繁日" not in title_lower and not is_raw
-    if subtitle == "简繁":
-        return "简繁" in title_lower or (has_simplified and has_traditional)
-    if subtitle == "简日":
-        return any(k in title_lower for k in ["简日", "chs_jp", "chs&jpg", "jp_ch"]) or (
-            has_simplified and has_japanese and not has_traditional
-        )
-    if subtitle == "繁日":
-        return any(k in title_lower for k in ["繁日", "cht_jp"]) or (
-            has_traditional and has_japanese and not has_simplified
-        )
-    if subtitle == "RAW":
-        return is_raw
-    if subtitle == "日文/无字":
-        return has_japanese and not has_simplified and not has_traditional and not is_raw
-    return True
-
-
-def matches_rule(title: str, rule: SubscriptionRule) -> bool:
-    """判断一篇RSS文章标题是否命中这条订阅的筛选条件——跟DownloadPage.tsx::
-    filteredResults(预览时本地过滤)、services/rss_rules.py::build_must_contain
-    (旧实现翻译成qBittorrent正则)是同一套判断标准的第三份实现,三处必须保持一致,
-    不然会出现"预览看到的"和"实际下载的"对不上。
-
-    字幕组名称这里统一按大小写不敏感匹配(旧实现services/rss_rules.py里这块是
-    大小写敏感的,跟同一文件其他条件的处理方式不一致,是个已知的既有缺陷——这里
-    重新实现时直接改成不敏感,不重复这个问题)。
-    """
-    title_lower = title.lower()
-
-    keywords = _split_keyword(rule.keyword.strip().lower()) if rule.keyword else []
-    if keywords and not all(kw in title_lower for kw in keywords if kw):
-        return False
-
-    if rule.fansub_name and rule.fansub_name.lower() not in title_lower:
-        return False
-
-    if rule.quality and rule.quality.lower() not in title_lower:
-        return False
-
-    if rule.format and rule.format.lower() not in title_lower:
-        return False
-
-    if rule.subtitle and not _subtitle_matches(title_lower, rule.subtitle):
-        return False
-
-    is_batch = any(k in title_lower for k in _BATCH_TERMS) or bool(_BATCH_RANGE_RE.search(title_lower))
-    if rule.release_type == "单集(追更)" and is_batch:
-        return False
-    if rule.release_type == "合集/全集(完结)" and not is_batch:
-        return False
-
-    return True
-
-
-def _build_rss_urls(rule: SubscriptionRule) -> list[str]:
-    """跟resource_client.py::search_by_source的animegarden union逻辑保持一致
-    (见该函数注释):AnimeGarden不是所有资源都回填了subjectId,只订阅subject版
-    的Feed会跟手动搜索一样漏掉这批资源,这里同时订阅subject版+关键词版两个Feed,
-    轮询时把两边item合并去重(见poll_subscription),不是二选一。
-    """
-    if rule.source == "animegarden":
-        if rule.bgm_id:
-            urls = [resource_client.build_animegarden_rss_url_by_subject(rule.bgm_id, rule.fansub_name)]
-            if rule.keyword:
-                urls.append(resource_client.build_animegarden_rss_url(rule.keyword, rule.fansub_name))
-            return urls
-        return [resource_client.build_animegarden_rss_url(rule.keyword, rule.fansub_name)]
-    if rule.source == "nyaa":
-        return [resource_client.build_nyaa_rss_url(rule.keyword)]
-    return [resource_client.build_dmhy_rss_url(rule.keyword)]
-
-
-async def _fetch_rss(rss_url: str) -> bytes:
-    """走跟resource_client.py搜索请求完全一样的代理配置(services/proxy.py::
-    get_proxy_url())——手动搜索/下载已经验证这条路径可靠,轮询复用同一套,
-    不会重新掉进qBittorrent内部那套代理配置的坑里。"""
-    async with httpx.AsyncClient(
-        headers=resource_client.HEADERS, timeout=15.0, proxy=get_proxy_url(), follow_redirects=True
-    ) as client:
-        resp = await client.get(rss_url)
-        resp.raise_for_status()
-        return resp.content
+def _criteria_from_rule(rule: SubscriptionRule) -> SearchCriteria:
+    """把一条订阅规则翻成搜索过滤条件,喂给唯一权威谓词 matches_criteria——
+    搜索接口(服务端过滤)和这里的轮询命中判断从此用同一套判断,保证"看到=下到"。"""
+    return SearchCriteria(
+        keyword=rule.keyword,
+        fansub_name=rule.fansub_name,
+        quality=rule.quality,
+        subtitle=rule.subtitle,
+        format=rule.format,
+        release_type=rule.release_type,
+    )
 
 
 async def poll_subscription(db: Session, rule: SubscriptionRule, download_root: str) -> None:
-    """轮询一条订阅:抓RSS、逐条判重+匹配,命中的直接发磁力链接下载。
-    单条item处理失败不能影响同一轮里的其他item。
+    """轮询一条订阅:交给对应源 adapter 取候选(dmhy/nyaa 抓 RSS Feed、animegarden 走
+    search 同源取数),逐条判重 + 过 matches_criteria,命中的直接发磁力链接下载。
+    单条 item 处理失败不能影响同一轮里的其他 item。
     """
     # 不管这次轮询最终抓不抓得到/匹配不匹配得到东西,都记一下"尝试过"的时间——
-    # 一览页展示的是"上次rss尝试去取得的时间",不是"上次成功命中的时间",两者语义
-    # 不一样,所以在真正发请求之前就先落这个时间戳,而不是等到ok_count>0才写。
+    # 一览页展示的是"上次rss尝试去取得的时间",不是"上次成功命中的时间"。
     rule.last_polled_at = datetime.now()
     db.commit()
 
-    rss_urls = _build_rss_urls(rule)
-    items: list[FeedItem] = []
-    seen_guids: set[str] = set()
-    ok_count = 0
-    for rss_url in rss_urls:
-        try:
-            xml_bytes = await _fetch_rss(rss_url)
-            # 一条订阅可能同时轮询subject版+关键词版两个Feed(见_build_rss_urls),
-            # 同一篇资源可能在两边都出现,按guid去重合并——list顺序里subject版
-            # 排在前面,天然让它的那份保留下来。
-            for item in parse_feed_items(rule.source, xml_bytes):
-                if item.guid not in seen_guids:
-                    seen_guids.add(item.guid)
-                    items.append(item)
-            ok_count += 1
-        except Exception as e:
-            print(f"[RSS引擎] 拉取/解析RSS失败 subscription={rule.id} url={rss_url}: {e}")
-    if ok_count == 0:
+    # 禁用某源只是在设置里隐藏它、不再新建订阅,adapter 仍留在注册表里,历史订阅继续轮询。
+    # 只有真正未知的 source 字面量(理论上不会出现)才在这里跳过,避免整轮轮询被 KeyError 打断。
+    if not has_source(rule.source):
+        print(f"[RSS引擎] 订阅 {rule.id} 的数据源 {rule.source} 未知,跳过")
+        return
+    adapter = get_source(rule.source)
+
+    try:
+        items = await adapter.poll(rule)
+    except Exception as e:
+        print(f"[RSS引擎] 轮询取数失败 subscription={rule.id} source={rule.source}: {e}")
+        return
+    if not items:
         return
 
+    criteria = _criteria_from_rule(rule)
     folder_title, main_bgm_id, _ = await resolve_series_identity(rule.bgm_id, rule.anime_title)
     staging_folder_path = staging_folder(download_root, folder_title, main_bgm_id)
 
@@ -256,7 +82,7 @@ async def poll_subscription(db: Session, rule: SubscriptionRule, download_root: 
             .filter(RssMatchedItem.subscription_id == rule.id, RssMatchedItem.guid == item.guid)
             .first()
         )
-        if already or not matches_rule(item.title, rule):
+        if already or not matches_criteria(item, criteria):
             continue
 
         try:

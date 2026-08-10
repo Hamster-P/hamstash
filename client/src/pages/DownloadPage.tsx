@@ -36,12 +36,8 @@ interface DownloadPageProps {
 
 const API_BASE = "http://127.0.0.1:8080";
 const QUALITY_OPTIONS = ["不限", "1080p", "720p", "2160p"];
-// 数据源:不提供"全部"/"不限",强制单选,保证搜索结果和RSS订阅内容一致
-const SOURCE_OPTIONS: { value: "dmhy" | "animegarden" | "nyaa"; label: string }[] = [
-  { value: "dmhy", label: "dmhy(全量历史)" },
-  { value: "animegarden", label: "AnimeGarden(近期资源)" },
-  { value: "nyaa", label: "nyaa.si(英语圈综合站)" },
-];
+// 数据源清单不再前端硬编码,改由后端 GET /resources/sources 动态下发(见 sources state),
+// 新增/停用/改地址都在设置页配置,前端只渲染 enabled 的那些。
 // 1. 新增：细化的字幕语言与文件格式选项
 const SUBTITLE_OPTIONS = ["不限", "简体", "繁体", "简繁", "简日", "繁日", "RAW", "日文/无字"];
 const FORMAT_OPTIONS = ["不限", "MKV", "MP4"];
@@ -59,19 +55,13 @@ function formatSize(bytes: number | null) {
     : `${(bytes / 1024 / 1024).toFixed(0)} MB`;
 }
 
-// 按空格切词,但双引号包起来的短语当一个词(引号本身去掉)——跟nyaa/dmhy搜索页
-// 教用户用 "Season 3" 这种带引号的精确短语去避开"3"误伤"第X集"数字的用法保持
-// 一致,朴素split(/\s+/)会把引号当普通字符切进词里,永远匹配不到任何标题。
-// 跟后端services/rss_rules.py::_split_keyword(用shlex.split)是同一个语义。
-function splitKeywordTokens(text: string): string[] {
-  const tokens: string[] = [];
-  const re = /"([^"]*)"|(\S+)/g;
-  let match: RegExpExecArray | null;
-  while ((match = re.exec(text)) !== null) {
-    const token = match[1] ?? match[2];
-    if (token) tokens.push(token);
-  }
-  return tokens;
+// 后端下发的下载源元信息(GET /resources/sources 里 enabled 的那些)
+interface SourceMeta {
+  id: string;
+  label: string;
+  supports_subject: boolean;
+  rate_limit_cooldown_ms: number | null;
+  rss_window_cap: number | null;
 }
 
 export default function DownloadPage({
@@ -83,7 +73,9 @@ export default function DownloadPage({
   const [searchBox, setSearchBox] = useState(initialKeyword ?? "");
   const [bgmId] = useState<number | null>(initialBgmId);
   const [fansubFilter, setFansubFilter] = useState("全部");
-  const [source, setSource] = useState<"dmhy" | "animegarden" | "nyaa">("dmhy");
+  // 可选数据源(后端下发,只含 enabled 的);source 是当前选中的源 id
+  const [sources, setSources] = useState<SourceMeta[]>([]);
+  const [source, setSource] = useState<string>("dmhy");
 
   // 2. 状态扩展：全面控管筛选条件
   const [quality, setQuality] = useState("不限");
@@ -102,17 +94,19 @@ export default function DownloadPage({
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [loading, setLoading] = useState(false);
-  // dmhy有防刷机制,短时间内多次搜索会被直接限流一段时间(之前吃过亏,连浏览器
+  // 有的源(dmhy)有防刷机制,短时间内多次搜索会被直接限流一段时间(之前吃过亏,连浏览器
   // 手动搜都不行)——服务端只做到"不再一次性预取多页",防不住用户自己在"检索"/
-  // "加载更多"之间快速来回点。这里提前在按钮层面禁用几秒,比等它真的限流了
-  // 再报错更稳妥,只对dmhy生效(nyaa/AnimeGarden没有测出这个限制,不用误伤)。
-  const [dmhyCoolingDown, setDmhyCoolingDown] = useState(false);
-  const dmhyCooldownTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // "加载更多"之间快速来回点。这里提前在按钮层面禁用几秒,冷却时长由源自己的
+  // rate_limit_cooldown_ms 元信息决定(后端下发),没配这个值的源(nyaa/AnimeGarden)不冷却。
+  const [coolingDown, setCoolingDown] = useState(false);
+  const cooldownTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     return () => {
-      if (dmhyCooldownTimerRef.current) clearTimeout(dmhyCooldownTimerRef.current);
+      if (cooldownTimerRef.current) clearTimeout(cooldownTimerRef.current);
     };
   }, []);
+  // 当前选中源的冷却时长(毫秒),null=不冷却
+  const currentCooldownMs = sources.find((s) => s.id === source)?.rate_limit_cooldown_ms ?? null;
   // 是否已经执行过至少一次检索,用来判断"还没搜"和"搜了但真的没有结果"
   const [hasSearched, setHasSearched] = useState(false);
   // 字幕组下拉框选项,只从"没按字幕组过滤"的查询结果里采集(见handleSearch里的
@@ -140,14 +134,15 @@ export default function DownloadPage({
     keywordOverride?: string,
     sourceOverride?: typeof source,
     append: boolean = false,
-    filterOverrides?: { fansub?: string; quality?: string; subtitle?: string; format?: string },
+    filterOverrides?: { fansub?: string; quality?: string; subtitle?: string; format?: string; release?: string },
   ) => {
     const kw = keywordOverride ?? searchBox;
     if (!kw.trim()) return;
     const src = sourceOverride ?? source;
-    // dmhy冷却中直接拒绝这次请求,不管是不是append——防的就是"检索"和"加载更多"
+    const cooldownMs = sources.find((s) => s.id === src)?.rate_limit_cooldown_ms ?? null;
+    // 冷却中直接拒绝这次请求,不管是不是append——防的就是"检索"和"加载更多"
     // 来回快速点绕开单个按钮自身的disabled保护。
-    if (src === "dmhy" && dmhyCoolingDown) return;
+    if (cooldownMs && coolingDown) return;
     const currentPage = append ? page + 1 : 1;
     if (append) {
       setLoadingMore(true);
@@ -159,10 +154,10 @@ export default function DownloadPage({
     }
     // 请求一发出去就立刻进入冷却,不等响应回来——防的是请求频率本身,不是响应结果,
     // 哪怕这次请求本身很慢,也不能让用户在等待期间再点一次触发第二个并发请求。
-    if (src === "dmhy") {
-      setDmhyCoolingDown(true);
-      if (dmhyCooldownTimerRef.current) clearTimeout(dmhyCooldownTimerRef.current);
-      dmhyCooldownTimerRef.current = setTimeout(() => setDmhyCoolingDown(false), 5000);
+    if (cooldownMs) {
+      setCoolingDown(true);
+      if (cooldownTimerRef.current) clearTimeout(cooldownTimerRef.current);
+      cooldownTimerRef.current = setTimeout(() => setCoolingDown(false), cooldownMs);
     }
     try {
       // 字幕组/画质/字幕语言/格式现在是真正发给站点服务端的查询条件,不是"拿到
@@ -173,12 +168,16 @@ export default function DownloadPage({
       const q = filterOverrides?.quality ?? quality;
       const sub = filterOverrides?.subtitle ?? subtitle;
       const fmt = filterOverrides?.format ?? format;
+      const rel = filterOverrides?.release ?? releaseType;
       const params = new URLSearchParams({ keyword: kw, source: src, page: String(currentPage) });
       if (bgmId) params.set("bgm_id", String(bgmId));
       if (fansub !== "全部") params.set("fansub_name", fansub);
       if (q !== "不限") params.set("quality", q);
       if (sub !== "不限") params.set("subtitle", sub);
       if (fmt !== "不限") params.set("format", fmt);
+      // 发布类型(单集/合集)现在也交给后端权威过滤(matches_criteria),与 RSS 订阅同一判定,
+      // 保证"看到=下到";不再靠前端本地筛。
+      if (rel !== "不限") params.set("release_type", rel);
 
       const res = await fetch(`${API_BASE}/resources/search?${params.toString()}`);
       const data = await res.json();
@@ -219,21 +218,21 @@ export default function DownloadPage({
   // 用这个刚拿到的值发起自动搜索——不能先用旧的source state搜一次再等设置回来,
   // 否则从详情页跳转这次自动搜索会抢跑,用到还没来得及更新的默认值。
   useEffect(() => {
-    fetch(`${API_BASE}/settings`)
-      .then((res) => res.json())
-      .then((data) => {
-        const validSources = ["dmhy", "animegarden", "nyaa"] as const;
-        const fetchedSource = validSources.includes(data.default_source)
-          ? (data.default_source as typeof source)
-          : "dmhy";
-        setSource(fetchedSource);
-        if (initialKeyword) {
-          handleSearch(initialKeyword, fetchedSource);
-        }
-      })
-      .catch(() => {
-        if (initialKeyword) handleSearch(initialKeyword);
-      });
+    Promise.all([
+      fetch(`${API_BASE}/resources/sources`).then((r) => r.json()).catch(() => ({ sources: [] })),
+      fetch(`${API_BASE}/settings`).then((r) => r.json()).catch(() => ({})),
+    ]).then(([srcData, settingsData]) => {
+      const enabled: SourceMeta[] = (srcData.sources ?? []).filter((s: SourceMeta & { enabled?: boolean }) => s.enabled);
+      setSources(enabled);
+      const ids = enabled.map((s) => s.id);
+      // 默认源:设置里配的 default_source 若在启用集合里就用它,否则退回第一个启用源
+      // (某个源被停用后,旧的 default_source 可能已经失效,这里兜底)。
+      const fetchedSource = ids.includes(settingsData.default_source)
+        ? settingsData.default_source
+        : (ids[0] ?? "dmhy");
+      setSource(fetchedSource);
+      if (initialKeyword) handleSearch(initialKeyword, fetchedSource);
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -257,92 +256,10 @@ export default function DownloadPage({
 
   const fansubOptions = useMemo(() => ["全部", ...fansubOptionNames], [fansubOptionNames]);
 
-  // 3. 核心重构：多维度、不区分大小写的高级本地过滤
-  const filteredResults = useMemo(() => {
-    return results.filter((item) => {
-      const titleLower = item.title.toLowerCase();
-
-      // bgmId存在时,这次请求本来就是按番剧ID匹配的(见resource_client.py::
-      // search_by_source),搜索框文字对API请求没有任何作用,同一个bgm_id下不同
-      // 批次/字幕组的标题写法可能有实质差异(比如"第三季"和数字"3"),搜索框
-      // 打的字这时候起不到筛选效果——这里额外做一层客户端过滤补上,按空格切出
-      // 每个词、都必须在标题里出现(大小写敏感,跟RSS订阅那边build_must_contain
-      // 的关键词匹配规则保持一致,保证预览看到的和订阅实际生效的范围一样)。
-      if (bgmId) {
-        // 大小写不敏感——同一部番不同批次的标题大小写写法可能不一致(比如这次
-        // 实测踩到的:某些集数标题只有全大写的"GRAND BLUE",没有搜索框里
-        // 打的"Grand Blue"这种大小写混合写法),按原样大小写敏感比对会把这些
-        // 集数误伤过滤掉。统一转小写比较,跟上面quality/format等其他过滤项的
-        // 大小写处理方式保持一致。
-        const keywordTokens = splitKeywordTokens(searchBox.trim().toLowerCase());
-        if (keywordTokens.length > 0 && !keywordTokens.every((token) => titleLower.includes(token))) {
-          return false;
-        }
-      }
-
-      // 字幕组过滤[cite: 3]
-      if (fansubFilter !== "全部" && item.fansub_name !== fansubFilter) {
-        return false;
-      }
-      // 分辨率过滤（修复大小写问题）
-      if (quality !== "不限" && !titleLower.includes(quality.toLowerCase())) {
-        return false;
-      }
-      // 文件格式过滤
-      if (format !== "不限" && !titleLower.includes(format.toLowerCase())) {
-        return false;
-      }
-
-      // 字幕语言过滤（映射常见发布命名习惯）
-      if (subtitle !== "不限") {
-        let matched = false;
-        
-        // 基础特征定义
-        const hasSimplified = ["简", "chs", "gb"].some(k => titleLower.includes(k));
-        const hasTraditional = ["繁", "cht", "big5"].some(k => titleLower.includes(k));
-        const hasJapanese = ["日", "jp", "japanese"].some(k => titleLower.includes(k));
-        const isRawKeyword = ["raw", "bilibili", "baha", "cr", "crunchyroll", "web-dl"].some(k => titleLower.includes(k));
-
-        if (subtitle === "简体") {
-          // 包含简体，但绝不能包含繁体、日文标志或RAW标志
-          matched = hasSimplified && !hasTraditional && !titleLower.includes("简日") && !isRawKeyword;
-        }
-        else if (subtitle === "繁体") {
-          // 包含繁体，但绝不能包含简体、日文标志或RAW标志
-          matched = hasTraditional && !hasSimplified && !titleLower.includes("繁日") && !isRawKeyword;
-        }
-        else if (subtitle === "简繁") {
-          // 显式包含简繁，或者同时撞了简体和繁体的关键词
-          matched = titleLower.includes("简繁") || (hasSimplified && hasTraditional);
-        }
-        else if (subtitle === "简日") {
-          // 显式包含简日，或者同时撞了简体和日语关键词（排除繁体）
-          matched = ["简日", "chs_jp", "chs&jpg", "jp_ch"].some(k => titleLower.includes(k)) || (hasSimplified && hasJapanese && !hasTraditional);
-        }
-        else if (subtitle === "繁日") {
-          // 显式包含繁日，或者同时撞了繁体和日语关键词（排除简体）
-          matched = ["繁日", "cht_jp"].some(k => titleLower.includes(k)) || (hasTraditional && hasJapanese && !hasSimplified);
-        }
-        else if (subtitle === "RAW") {
-          // 只要命中 RAW 发行特征
-          matched = isRawKeyword;
-        }
-        else if (subtitle === "日文/无字") {
-          // 包含日语特征，但必须干净地排除中文简体和繁体特征，且排除RAW
-          matched = hasJapanese && !hasSimplified && !hasTraditional && !isRawKeyword;
-        }
-        
-        if (!matched) return false;
-      }
-
-      // 发布类型过滤：单集还是全集合集（根据特征词以及是否含有连字符[01-12]判断）[cite: 5]
-      const isBatch = ["合集", "全集", "batch", "pack", "fin"].some(k => titleLower.includes(k)) || /\d+-\d+/.test(titleLower);
-      if (releaseType === "单集(追更)" && isBatch) return false;
-      if (releaseType === "合集/全集(完结)" && !isBatch) return false;
-
-      return true;
-    });
-  }, [results, fansubFilter, quality, subtitle, format, releaseType, bgmId, searchBox]);
+  // 过滤已经全部下沉到后端权威谓词 matches_criteria(见 server/sources/base.py),
+  // 搜索接口返回的就是过滤后的结果——与 RSS 订阅轮询走同一套判定,保证"看到=下到"。
+  // 前端不再本地二次过滤,直接展示后端结果(改任一筛选项时会带着新条件重新请求)。
+  const filteredResults = results;
 
   const allChecked =
     filteredResults.length > 0 &&
@@ -480,7 +397,7 @@ export default function DownloadPage({
         <select
           value={source}
           onChange={(e) => {
-            const next = e.target.value as "dmhy" | "animegarden" | "nyaa";
+            const next = e.target.value;
             setSource(next);
             // 换数据源等于换了一批完全不同的结果,之前基于旧结果选的筛选条件
             // 大概率对不上新数据源(比如字幕组名不一样),干脆一起重置
@@ -498,13 +415,13 @@ export default function DownloadPage({
             // 却是马上同步调用的——必须显式把刚重置的值传进去,不然这次请求
             // 用的还是切源之前的旧筛选值(界面显示"不限"但实际按旧值查了)。
             handleSearch(undefined, next, false, {
-              fansub: "全部", quality: "不限", subtitle: "不限", format: "不限",
+              fansub: "全部", quality: "不限", subtitle: "不限", format: "不限", release: "不限",
             });
           }}
           className={controlClass}
         >
-          {SOURCE_OPTIONS.map((s) => (
-            <option key={s.value} value={s.value}>
+          {sources.map((s) => (
+            <option key={s.id} value={s.id}>
               {s.label}
             </option>
           ))}
@@ -564,10 +481,18 @@ export default function DownloadPage({
           {FORMAT_OPTIONS.map((f) => <option key={f} value={f}>{f === "不限" ? "格式: 不限" : f}</option>)}
         </select>
 
-        {/* 发布类型:单集/合集是从标题特征(有没有"合集"/"全集"/连续集数范围这类词)
-            推断出来的,不是一个能直接拼进搜索关键词的正向词,站点搜索表达不了
-            "不包含什么",继续纯本地过滤,不发起新查询 */}
-        <select value={releaseType} onChange={(e) => setReleaseType(e.target.value)} className={controlClass}>
+        {/* 发布类型:单集/合集靠标题特征(有没有"合集"/"全集"/连续集数范围这类词)判断。
+            站点搜索表达不了"不包含什么",所以不拼进关键词;但现在由后端权威谓词
+            matches_criteria 统一判定(与 RSS 订阅同一套),所以改这个也要带条件重新请求。 */}
+        <select
+          value={releaseType}
+          onChange={(e) => {
+            const next = e.target.value;
+            setReleaseType(next);
+            handleSearch(undefined, undefined, false, { release: next });
+          }}
+          className={controlClass}
+        >
           {TYPE_OPTIONS.map((t) => <option key={t} value={t}>{t === "不限" ? "类型: 不限" : t}</option>)}
         </select>
       </div>
@@ -582,15 +507,15 @@ export default function DownloadPage({
         />
         <button
           onClick={() => handleSearch()}
-          disabled={loading || (source === "dmhy" && dmhyCoolingDown)}
+          disabled={loading || Boolean(currentCooldownMs && coolingDown)}
           className="rounded-md border border-vermillion px-4 py-2 font-mono text-xs text-vermillion transition-colors hover:bg-vermillion hover:text-ink disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-vermillion"
         >
-          {source === "dmhy" && dmhyCoolingDown && !loading ? "请稍候..." : "检索"}
+          {currentCooldownMs && coolingDown && !loading ? "请稍候..." : "检索"}
         </button>
       </div>
-      {source === "dmhy" && dmhyCoolingDown && (
+      {currentCooldownMs && coolingDown && (
         <p className="mb-2 font-mono text-[11px] text-vermillion">
-          dmhy 有防刷限流(短时间内搜太多次会被暂时拦截),已自动限制几秒钟再让你继续搜索
+          {source} 有防刷限流(短时间内搜太多次会被暂时拦截),已自动限制几秒钟再让你继续搜索
         </p>
       )}
       <p className="mb-4 font-mono text-[11px] text-muted">
@@ -667,12 +592,12 @@ export default function DownloadPage({
               <button
                 type="button"
                 onClick={() => handleSearch(undefined, undefined, true)}
-                disabled={loadingMore || (source === "dmhy" && dmhyCoolingDown)}
+                disabled={loadingMore || Boolean(currentCooldownMs && coolingDown)}
                 className="font-mono text-xs text-muted transition-colors hover:text-vermillion disabled:opacity-50"
               >
                 {loadingMore
                   ? "加载中..."
-                  : source === "dmhy" && dmhyCoolingDown
+                  : currentCooldownMs && coolingDown
                     ? "请稍候..."
                     : "加载更多"}
               </button>
@@ -703,7 +628,7 @@ export default function DownloadPage({
           )}
           {subscribe && rssWindowCap !== null && results.length > rssWindowCap && (
             <div className="rounded border border-vermillion/40 bg-ink p-3 font-mono text-[11px] text-vermillion">
-              当前关键词在{SOURCE_OPTIONS.find((s) => s.value === source)?.label ?? source}已经翻页加载到 {results.length} 条,
+              当前关键词在{sources.find((s) => s.id === source)?.label ?? source}已经翻页加载到 {results.length} 条,
               超出该数据源 RSS 只能追踪的最近 {rssWindowCap} 条——订阅只会自动下载以后新发布的资源,
               更早的历史存量不会被订阅自动补下载,需要的话请在上面的列表里手动勾选下载
             </div>
