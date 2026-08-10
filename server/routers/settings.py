@@ -3,7 +3,7 @@ import asyncio
 import time
 
 import httpx
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, BackgroundTasks, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -225,7 +225,7 @@ async def qbittorrent_status():
 
 
 @router.get("/library/repair/scan")
-async def scan_library_repair(db: Session = Depends(get_db)):
+async def scan_library_repair(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     """"修复媒体库"按钮:分两部分:
     1) 按当前改名规则重算每个已入库文件的目标路径,跟磁盘实际路径不一致的记为改名建议;
     2) RenamedFile/AnimeFolder里指向磁盘上已不存在的文件/目录的孤儿记录。
@@ -241,7 +241,7 @@ async def scan_library_repair(db: Session = Depends(get_db)):
     可能是旧版本算法写的,拿它算出来的改名建议会改错用户的文件。
     """
     library_repair.reset_season_cache(db)
-    await scan_and_update_library(db)
+    await scan_and_update_library(background_tasks, db)
     rename_mismatches = await library_repair.scan_rename_mismatches(db)
     orphans = library_repair.scan_orphaned_records(db)
     return {
@@ -259,7 +259,11 @@ class RepairApplyRequest(BaseModel):
 
 
 @router.post("/library/repair/apply")
-async def apply_library_repair(payload: RepairApplyRequest, db: Session = Depends(get_db)):
+async def apply_library_repair(
+    payload: RepairApplyRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
     """按用户勾选的分类实际执行修复。应用前重新跑一次对应的只读检查(TOCTOU防护),
     不信任前端传来的、可能已经过期的扫描结果快照。
     """
@@ -270,7 +274,7 @@ async def apply_library_repair(payload: RepairApplyRequest, db: Session = Depend
         result["renames"] = await library_repair.apply_rename_fixes(db, selected)
 
     if payload.clean_local_media:
-        result["local_media"] = await scan_and_update_library(db)
+        result["local_media"] = await scan_and_update_library(background_tasks, db)
 
     if payload.clean_renamed_files or payload.clean_anime_folders:
         result["orphans"] = library_repair.apply_orphan_cleanup(db, {
