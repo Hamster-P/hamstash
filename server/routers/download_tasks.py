@@ -1,4 +1,5 @@
 """对应前端 DownloadManagerPage(下载详情):实时展示qBittorrent里anime-hub分类种子的进度/状态,支持删除。"""
+import os
 from datetime import datetime
 
 from fastapi import APIRouter
@@ -49,6 +50,22 @@ async def list_download_tasks():
     torrents = await qbittorrent_client.get_category_torrents(CATEGORY)
     torrents.sort(key=lambda t: t.get("added_on", 0), reverse=True)
     return [_serialize(t) for t in torrents]
+
+
+@router.get("/tasks/{torrent_hash}/files")
+async def list_download_task_files(torrent_hash: str):
+    """列出某个种子内的文件明细,给下载详情页点开某行时展开——同名的分集种子靠这里
+    展开出的实际文件名(带集数)区分是哪一集。qBit文件name对多文件种子是"根目录/子路径",
+    取basename只展示文件名。"""
+    files = await qbittorrent_client.get_torrent_files(torrent_hash)
+    return [
+        {
+            "name": os.path.basename(f.get("name", "")),
+            "size": f.get("size", 0),
+            "progress": round((f.get("progress") or 0) * 100, 1),
+        }
+        for f in files
+    ]
 
 
 async def _delete_one(torrent_hash: str) -> dict:

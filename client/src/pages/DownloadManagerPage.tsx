@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 
 interface DownloadTask {
   hash: string;
@@ -8,6 +8,13 @@ interface DownloadTask {
   size: number;
   dlspeed: number;
   added_on: string | null;
+}
+
+// 点开某行时展开的该种子内文件明细(区分同名分集种子到底是哪一集)
+interface TorrentFile {
+  name: string;
+  size: number;
+  progress: number; // 0-100
 }
 
 const API_BASE = "http://127.0.0.1:8080";
@@ -47,6 +54,11 @@ export default function DownloadManagerPage() {
   const [pendingBatchDelete, setPendingBatchDelete] = useState(false);
   const [busy, setBusy] = useState(false);
 
+  // 展开某行看该种子的文件明细:仿RssPage,点行切换,展开时按hash拉一次文件列表
+  const [expandedHash, setExpandedHash] = useState<string | null>(null);
+  const [files, setFiles] = useState<TorrentFile[]>([]);
+  const [filesLoading, setFilesLoading] = useState(false);
+
   const loadTasks = async (showLoading = true) => {
     if (showLoading) setLoading(true);
     setLoadError(null);
@@ -82,6 +94,34 @@ export default function DownloadManagerPage() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // 展开某行时拉取该种子的文件明细;收起(expandedHash为null)时清空。
+  useEffect(() => {
+    if (expandedHash === null) {
+      setFiles([]);
+      return;
+    }
+    let cancelled = false;
+    setFilesLoading(true);
+    fetch(`${API_BASE}/downloads/tasks/${expandedHash}/files`)
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
+      .then((data: TorrentFile[]) => {
+        if (!cancelled) setFiles(data);
+      })
+      .catch((err) => {
+        console.error("加载种子文件明细失败", err);
+        if (!cancelled) setFiles([]);
+      })
+      .finally(() => {
+        if (!cancelled) setFilesLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [expandedHash]);
 
   const filteredTasks = useMemo(() => {
     return tasks.filter((task) => {
@@ -265,8 +305,17 @@ export default function DownloadManagerPage() {
             </thead>
             <tbody className="divide-y divide-border">
               {filteredTasks.map((task, index) => (
-                <tr key={task.hash} className="transition-colors hover:bg-surface-hover">
-                  <td className="px-3 py-2">
+                <Fragment key={task.hash}>
+                <tr
+                  onClick={() =>
+                    setExpandedHash(expandedHash === task.hash ? null : task.hash)
+                  }
+                  className={`cursor-pointer transition-colors hover:bg-surface-hover ${
+                    expandedHash === task.hash ? "bg-surface-hover" : ""
+                  }`}
+                >
+                  {/* 复选框列:阻止冒泡,勾选时不触发整行展开 */}
+                  <td className="px-3 py-2" onClick={(e) => e.stopPropagation()}>
                     <input
                       type="checkbox"
                       checked={selected.has(task.hash)}
@@ -308,7 +357,8 @@ export default function DownloadManagerPage() {
                   <td className="px-3 py-2 font-mono text-[11px] text-muted">
                     {formatDate(task.added_on)}
                   </td>
-                  <td className="px-3 py-2">
+                  {/* 操作列:阻止冒泡,删除/重试/取消不触发整行展开 */}
+                  <td className="px-3 py-2" onClick={(e) => e.stopPropagation()}>
                     {pendingDeleteHash === task.hash ? (
                       <div className="flex items-center gap-2 font-mono text-[11px]">
                         <button
@@ -348,6 +398,44 @@ export default function DownloadManagerPage() {
                     )}
                   </td>
                 </tr>
+                {/* 展开的文件明细:点击行紧跟在下方展开,同名分集种子靠这里的实际
+                    文件名(带集数)区分是哪一集 */}
+                {expandedHash === task.hash && (
+                  <tr>
+                    <td colSpan={8} className="bg-surface p-4">
+                      <div className="mb-2 font-mono text-[11px] uppercase tracking-wide text-muted">
+                        文件明细
+                      </div>
+                      {filesLoading && (
+                        <div className="font-mono text-[11px] text-muted">加载中...</div>
+                      )}
+                      {!filesLoading && files.length === 0 && (
+                        <div className="font-mono text-[11px] text-muted">
+                          没有拿到文件明细(种子元数据可能还没就绪)。
+                        </div>
+                      )}
+                      {!filesLoading && files.length > 0 && (
+                        <div className="flex flex-col gap-2">
+                          {files.map((f, i) => (
+                            <div
+                              key={i}
+                              className="flex items-center justify-between gap-3 rounded border border-border px-3 py-2 font-mono text-[11px]"
+                            >
+                              <span className="min-w-0 flex-1 truncate text-paper" title={f.name}>
+                                {f.name}
+                              </span>
+                              <span className="shrink-0 text-muted">{formatSize(f.size)}</span>
+                              <span className="w-12 shrink-0 text-right text-muted">
+                                {f.progress}%
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
               ))}
             </tbody>
           </table>

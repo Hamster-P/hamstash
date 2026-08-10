@@ -180,6 +180,13 @@ async def get_category_torrents(category: str) -> list[dict]:
     return await _fetch_torrents_info({"category": category})
 
 
+async def get_torrent_files(torrent_hash: str) -> list[dict]:
+    """列出某个种子内的文件明细(名字/大小/进度),给下载详情页点开某行展开文件列表用。"""
+    resp = await _request("get", "/api/v2/torrents/files", params={"hash": torrent_hash})
+    resp.raise_for_status()
+    return resp.json()
+
+
 async def get_torrents_by_save_path(save_path: str, category: str = "anime-hub") -> list[dict]:
     """列出当前save_path等于指定路径的全部种子(不筛选完成状态)。
 
