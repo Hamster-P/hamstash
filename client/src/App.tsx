@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Loader2 } from "lucide-react";
 import Sidebar, { type View } from "./components/Sidebar";
 import TrackingPage from "./pages/TrackingPage";
 import SearchPage from "./pages/SearchPage";
@@ -43,6 +44,8 @@ function AppContent() {
   const [detailReturnView, setDetailReturnView] = useState<View | null>(null);
   // 首次引导:没配好qBittorrent连接之前,阻断整个应用只显示引导向导。
   const [qbitSetupCompleted, setQbitSetupCompleted] = useState<boolean | null>(null);
+  // 后端(NSSM服务)冷启动比前台慢:探测重试若干次仍连不上时,追加一句更详细的说明。
+  const [backendSlow, setBackendSlow] = useState(false);
 
   const settingsRef = useRef<SettingsPageHandle>(null);
   // 真正带滚动条的元素是这个 <main>;影视库列表/详情共用它,LibraryPage 内部
@@ -52,17 +55,39 @@ function AppContent() {
   const [pendingView, setPendingView] = useState<View | null>(null);
 
   useEffect(() => {
-    fetch(`${API_BASE}/settings`)
-      .then((res) => res.json())
-      .then((data) => {
+    // 后端就绪门:前台秒开但后端服务还在冷启动时,直接fetch会网络失败。
+    // 这里带重试地探测——只有真正拿到/settings响应才据此决定进引导页还是主界面;
+    // 网络失败(后端没起)就保持qbitSetupCompleted===null的等待态并重试,绝不能
+    // 把"后端没起"误当成"没配过qb"而弹出引导页(那样用户会看到"连不上qb")。
+    let cancelled = false;
+    let attempts = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const probe = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/settings`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (cancelled) return;
         // 启动时按设置页配置的"默认首页"打开对应tab,仅在这里应用一次
         // (之后用户在侧边栏手动切换不受这个设置影响)。
         if (["tracking", "search", "library"].includes(data.default_home_view)) {
           setView(data.default_home_view as View);
         }
-        setQbitSetupCompleted(Boolean(data.qbit_setup_completed));
-      })
-      .catch(() => setQbitSetupCompleted(false));
+        setQbitSetupCompleted(Boolean(data.qbit_setup_completed)); // 就绪:退出等待态
+      } catch {
+        if (cancelled) return;
+        attempts += 1;
+        if (attempts >= 8) setBackendSlow(true); // 约8秒仍连不上,追加"启动较慢"提示
+        timer = setTimeout(probe, 1000); // 后端未就绪:1秒后重试,保持等待态
+      }
+    };
+
+    probe();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
   }, []);
 
   const goToView = (v: View) => {
@@ -147,8 +172,16 @@ function AppContent() {
 
   if (qbitSetupCompleted === null) {
     return (
-      <div className="flex h-screen w-screen items-center justify-center bg-ink font-mono text-xs text-muted">
-        加载中...
+      <div className="flex h-screen w-screen flex-col items-center justify-center gap-2 bg-ink font-mono text-xs text-muted">
+        <div className="flex items-center gap-2">
+          <Loader2 size={14} className="animate-spin" />
+          正在等待后台服务启动…
+        </div>
+        {backendSlow && (
+          <div className="px-8 text-center text-[11px] text-muted/70">
+            首次启动需初始化数据,请稍候;若长时间无响应,请检查 HamStashServer 服务是否正常
+          </div>
+        )}
       </div>
     );
   }
