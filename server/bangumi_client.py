@@ -11,6 +11,11 @@ BASE_URL = "https://api.bgm.tv"
 # 一律保留——否则社区没补产地标签的日本剧场版(如"游戏王剧场版 光之金字塔",meta_tags
 # 只有[剧场版,原创])会被误杀。
 FOREIGN_ORIGIN_TAGS = {"中国", "中国大陆", "香港", "台湾", "韩国", "美国", "欧美", "英国", "法国"}
+# Bangumi 搜索单页固定只返回约20条,且强匹配+产地黑名单过滤后可能只剩个位数。
+# search_anime 在单次请求里最多翻 SEARCH_MAX_PAGES 页、攒够 SEARCH_TARGET_RESULTS 条
+# 过滤后结果就提前返回,避免"一次只出2条"。
+SEARCH_TARGET_RESULTS = 20
+SEARCH_MAX_PAGES = 5
 HEADERS = {
     "User-Agent": "hamstash/0.1 (personal project)",
     "Accept": "application/json",
@@ -41,14 +46,9 @@ def _normalize_for_match(text: str) -> str:
     return re.sub(r"\s+", "", normalized)
 
 
-async def search_anime(keyword: str, limit: int = 100, year: int | None = None, month: int | None = None, offset: int = 0):
-    url = f"{BASE_URL}/v0/search/subjects"
-    # 基础过滤器：锁定动画类型 (2代表动画)
-    filter_options = {
-        "type": [2]
-    }
-
-    # 2. 核心修正：将年份和季度转换为官方支持的 air_date 日期区间数组
+def _build_search_filter(year: int | None, month: int | None) -> dict:
+    """构造Bangumi搜索的filter:锁定动画类型(2),并把年份/季度转成官方支持的air_date区间。"""
+    filter_options: dict = {"type": [2]}
     if year and str(year) != "不限":
         try:
             y = int(year)
@@ -70,65 +70,101 @@ async def search_anime(keyword: str, limit: int = 100, year: int | None = None, 
                 filter_options["air_date"] = [f">={y}-01-01", f"<={y}-12-31"]
         except ValueError:
             pass
+    return filter_options
 
+
+def _drop_foreign_origin(items: list[dict]) -> list[dict]:
+    """产地黑名单:只剔除meta_tags明确标了非日本产地(中国/韩国/美国...见FOREIGN_ORIGIN_TAGS)
+    的条目,无产地标签的一律保留。之前用"只留日本/WEB"的白名单有两个毛病:①社区没补产地标签
+    的日本剧场版(如光之金字塔,tags只有[剧场版,原创])被误杀;②国漫普遍也带WEB,反而从WEB放行口
+    漏进来。改黑名单同时修好这两点。这个字段搜索接口本身就带,不需要额外请求。"""
+    return [
+        item for item in items
+        if not (FOREIGN_ORIGIN_TAGS & set(item.get("meta_tags") or []))
+    ]
+
+
+def _filter_search_page(raw_list: list[dict], keyword_norm: str) -> list[dict]:
+    """对单页原始结果做"关键词强匹配 + 产地黑名单"过滤。keyword_norm为空(推荐搜索)时
+    只走产地黑名单。不在这里做"零命中兜底"——兜底由聚合层跨页判断,避免每页各自吐回原始
+    结果把噪音混进来。"""
+    if keyword_norm:
+        matched = [
+            item for item in raw_list
+            if keyword_norm in _normalize_for_match(item.get("name_cn") or "")
+            or keyword_norm in _normalize_for_match(item.get("name") or "")
+        ]
+    else:
+        matched = raw_list
+    return _drop_foreign_origin(matched)
+
+
+async def search_anime(
+    keyword: str,
+    limit: int = 100,
+    year: int | None = None,
+    month: int | None = None,
+    offset: int = 0,
+    target: int = SEARCH_TARGET_RESULTS,
+    max_pages: int = SEARCH_MAX_PAGES,
+):
+    """搜索番剧。Bangumi单页只返回约20条,强匹配+产地黑名单过滤后可能所剩无几——这里在单次
+    请求内**连续多翻几页并累加过滤后结果**,攒够target条 / 翻到头 / 达max_pages上限就返回,
+    避免"一次只出2条"。返回字段(data/total/raw_count/bangumi_total)与旧版一致,前端翻页
+    (offset += raw_count)/加载更多逻辑不用改。"""
+    url = f"{BASE_URL}/v0/search/subjects"
     payload = {
-            "keyword": keyword,
-            "sort": "rank",  # 默认按Bangumi排名排序展示,而不是它自带的相关度排序
-            "filter": filter_options
-        }
+        "keyword": keyword,
+        "sort": "rank",  # 默认按Bangumi排名排序展示,而不是它自带的相关度排序
+        "filter": _build_search_filter(year, month),
+    }
+    keyword_norm = _normalize_for_match(keyword)
 
-    # 控制返回上限数量，这里支持传入 100
-    params = {"limit": limit, "offset": offset}
+    collected: list[dict] = []   # 累加的过滤后结果
+    raw_consumed = 0             # 累计消耗的原始条数(=前端下次offset的增量)
+    page_offset = offset
+    bangumi_total: int | None = None  # Bangumi报告的真实匹配总数,取首页的
+    first_raw_page: list[dict] = []   # 首页原始结果,给"零命中兜底"用
 
     async with httpx.AsyncClient(proxy=get_proxy_url(), follow_redirects=True) as client:
-        response = await client.post(
-            url, json=payload, params=params, headers=HEADERS, timeout=10.0
-        )
-        response.raise_for_status()
+        for _ in range(max_pages):
+            response = await client.post(
+                url, json=payload, params={"limit": limit, "offset": page_offset},
+                headers=HEADERS, timeout=10.0,
+            )
+            response.raise_for_status()
+            data = response.json()
 
-        raw_data = response.json()  # 拿到 Bangumi 返回的带杂质的原始数据
+            raw_list = data.get("data")
+            if not isinstance(raw_list, list):
+                raw_list = []
+            if bangumi_total is None:
+                bangumi_total = data.get("total", 0)
+            if not first_raw_page:
+                first_raw_page = raw_list
+            if not raw_list:
+                break
 
-        # ------------------ 核心改造：后端手动清洗（模拟短语/精确匹配） ------------------
-        if "data" in raw_data and isinstance(raw_data["data"], list):
-            raw_list = raw_data["data"]
-            # Bangumi 不管传多大的 limit，单次请求实际固定只返回20条左右，
-            # 真正的匹配总数在它自己的 total 字段里（这里先存下来，
-            # 下面会用我们过滤后的数量覆盖掉 raw_data["total"]，
-            # 所以要在覆盖前保留一份，供前端判断是否还有下一页）。
-            bangumi_total = raw_data.get("total", len(raw_list))
-            keyword_norm = _normalize_for_match(keyword)
+            collected.extend(_filter_search_page(raw_list, keyword_norm))
+            raw_consumed += len(raw_list)
+            page_offset += len(raw_list)  # 按实际返回条数推进,不写死20
 
-            if keyword_norm:
-                matched = [
-                    item for item in raw_list
-                    if keyword_norm in _normalize_for_match(item.get("name_cn") or "")
-                    or keyword_norm in _normalize_for_match(item.get("name") or "")
-                ]
-                # 兜底：归一化后强匹配仍然一个都没有，但Bangumi原始结果非空 ->
-                # 大概率是格式/别名差异导致的误杀而非真的无关，这时把Bangumi自己
-                # 排序好的原始结果整个吐回去，避免“明明搜得到，却是空列表”。
-                # 正常情况下（matched非空）仍然只保留强匹配，不把分词噪音混进来。
-                filtered_list = matched if matched else raw_list
-            else:
-                filtered_list = raw_list
+            if len(collected) >= target:
+                break
+            if page_offset >= (bangumi_total or 0):
+                break
 
-            # 产地过滤用"黑名单"而非"白名单":只剔除meta_tags明确标了非日本产地
-            # (中国/韩国/美国...见FOREIGN_ORIGIN_TAGS)的条目,无产地标签的一律保留。
-            # 之前用"只留日本/WEB"的白名单有两个毛病:①社区没补产地标签的日本剧场版
-            # (如光之金字塔,tags只有[剧场版,原创])被误杀;②国漫普遍也带WEB,反而从
-            # WEB放行口漏进来。改黑名单同时修好这两点——国漫靠"中国"标签被准确剔除,
-            # 无标签的日本片得以保留。这个字段搜索接口本身就带,不需要额外请求。
-            filtered_list = [
-                item for item in filtered_list
-                if not (FOREIGN_ORIGIN_TAGS & set(item.get("meta_tags") or []))
-            ]
+    # 零命中兜底:归一化强匹配跨页仍一个都没有,但Bangumi原始结果非空 -> 大概率是格式/别名
+    # 差异导致的误杀而非真的无关,退回首页原始结果(仍套产地黑名单),避免"明明搜得到却空列表"。
+    if not collected and first_raw_page:
+        collected = _drop_foreign_origin(first_raw_page)
 
-            raw_data["data"] = filtered_list
-            raw_data["total"] = len(filtered_list)
-            raw_data["raw_count"] = len(raw_list)  # 这一页Bangumi实际返回的原始条数
-            raw_data["bangumi_total"] = bangumi_total  # Bangumi报告的真实匹配总数，供前端翻页判断
-        # -------------------------------------------------------------------------
-        return raw_data
+    return {
+        "data": collected,
+        "total": len(collected),
+        "raw_count": raw_consumed,          # 前端 nextOffset = offset + raw_count,聚合后自然跨过多页
+        "bangumi_total": bangumi_total or 0,  # 供前端判断是否还有下一页
+    }
 
 def normalize_bgm_subject(payload: dict) -> dict:
     """把Bangumi条目详情/搜索结果的原始payload，归一化成本项目统一使用的展示字段。
