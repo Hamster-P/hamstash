@@ -1,6 +1,6 @@
 // pages/LibraryPage.tsx
 import { useEffect, useLayoutEffect, useMemo, useState, useRef } from "react";
-import { Play, FolderOpen, ArrowLeft, CheckCircle2, Trash2 } from "lucide-react";
+import { Play, FolderOpen, ArrowLeft, CheckCircle2, Trash2, Loader2 } from "lucide-react";
 import { invoke } from '@tauri-apps/api/core';
 import { isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -258,6 +258,26 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
       setCoverBusy(false);
     }
   };
+
+  // 有"等待更新"封面的卡片(已匹配但cover_url还没补上)时,后台每隔几秒静默刷新一次
+  // 列表,直到全部补全或达到重试上限——封面可能本来就取不到图(Bangumi没图/联网失败),
+  // 不能无限轮询,达到上限就停手,保留"等待更新"占位。补全或没有待补时把计数归零,
+  // 让之后新匹配的番能重新开始这套等待刷新。
+  const coverRetryRef = useRef(0);
+  useEffect(() => {
+    const pending = animes.some((a) => a.bgm_id && !a.cover_url);
+    if (!pending) {
+      coverRetryRef.current = 0;
+      return;
+    }
+    if (coverRetryRef.current >= 6) return; // 约6次(~24秒)后停手
+    const timer = setTimeout(() => {
+      coverRetryRef.current += 1;
+      fetchAnimes(true);
+    }, 4000);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [animes]);
 
   // 唯一会触发完整扫盘的入口:先GET /library/scan(遍历硬盘、刷新mtime),
   // 再拉一遍列表——挂载时和"刷新 & 扫盘"按钮用这个,其余场景(比如切换排序)
@@ -844,6 +864,13 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
                         alt={anime.folder_name}
                         className="h-full w-full object-cover transition-transform group-hover:scale-105"
                       />
+                    ) : anime.bgm_id ? (
+                      // 已匹配但封面还没拉到(后台正在按策略解析/补缓存):显示"等待更新"而不是
+                      // "No Cover"——这是暂态,下次列表请求补全后就有图了。
+                      <div className="flex h-full w-full flex-col items-center justify-center gap-2 text-muted bg-surface border border-border">
+                        <Loader2 size={28} strokeWidth={1.5} className="animate-spin" />
+                        <span className="text-[10px] font-mono">等待更新</span>
+                      </div>
                     ) : (
                       <div className="flex h-full w-full flex-col items-center justify-center gap-2 text-muted bg-surface border border-border">
                         <FolderOpen size={32} strokeWidth={1.5} />
