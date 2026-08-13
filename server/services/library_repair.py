@@ -13,6 +13,7 @@
 """
 import os
 import re
+import shutil
 from datetime import datetime
 from pathlib import Path
 
@@ -51,6 +52,23 @@ def _to_db_relpath(relative_path: str) -> str:
     保证这一列不会同时出现两种分隔符(get_current_version_at_target是按精确
     字符串查这一列的,风格混了会查不到、导致版本冲突判断失效)。"""
     return relative_path.replace("/", "\\")
+
+
+def _list_all_relpaths(anime_path: Path, library_root: Path) -> list[str]:
+    """anime_path目录树下全部文件(不限扩展名)的相对路径,专门给find_sibling_subtitles
+    当候选集用——scan_local_folder_structure为了给改名建议分季度桶,只收集视频文件,
+    字幕/其他伴随文件根本不会出现在它的返回结果里;如果直接拿那份结果喂给
+    find_sibling_subtitles,永远匹配不到任何字幕(实测发现的bug:sibling_subtitles
+    在scan_rename_mismatches/scan_family_folder_merges两处一直是空列表)。
+    """
+    paths: list[str] = []
+    if not anime_path.exists():
+        return paths
+    for dirpath, _dirnames, filenames in os.walk(anime_path):
+        for fname in filenames:
+            full = os.path.join(dirpath, fname)
+            paths.append(os.path.relpath(full, str(library_root)).replace("\\", "/"))
+    return paths
 
 
 def reset_season_cache(db: Session) -> int:
@@ -201,6 +219,7 @@ async def scan_rename_mismatches(db: Session) -> list[dict]:
         structure = scan_local_folder_structure(anime_path, library_root)
         if not structure:
             continue
+        all_rel_paths = _list_all_relpaths(anime_path, library_root)
 
         season_table: dict[str, dict] | None = None
         proposed_targets_seen: dict[str, str] = {}
@@ -275,9 +294,7 @@ async def scan_rename_mismatches(db: Session) -> list[dict]:
                 else:
                     proposed_targets_seen[key] = current_rel
 
-                siblings = rename_engine.find_sibling_subtitles(
-                    current_rel, [str(e["rel_path"]) for eps in structure.values() for e in eps]
-                )
+                siblings = rename_engine.find_sibling_subtitles(current_rel, all_rel_paths)
 
                 results.append({
                     "folder_name": media.folder_name,
@@ -297,6 +314,226 @@ def _is_within(path: Path, root: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+async def scan_family_folder_merges(db: Session) -> list[dict]:
+    """
+    检测本地媒体库里,同一个Bangumi家族被拆成了多个顶层文件夹的情况——正常应该
+    共享一个"{标题} [bgm-{系列根ID}]"文件夹,但偶发原因(比如services/rss_poller.py
+    早期版本每轮轮询都重新查一次家族根节点,查询抖动时会误判出一个新的根,详见
+    该文件的历史改动)会导致同一部番拆成两个独立的LocalMedia/顶层文件夹。
+
+    对家族里每一个"副文件夹"(bgm_id != 家族根ID的那些),把它整个目录树下全部
+    视频文件都当成"分错季了",重算它们在"主文件夹"(bgm_id == 家族根ID)下应该
+    落到的路径,生成一批"跨文件夹合并"的改名建议——返回结构在scan_rename_mismatches
+    的字段基础上加了move_type/source_folder/target_folder,前端可以按move_type分组
+    展示。只读,不动文件也不写库(_resolve_season_table内部按需回填AnimeFamilyCache
+    是幂等的缓存写入,不算破坏性操作)。
+
+    家族根节点这一季本地找不到对应文件夹时,不知道该往哪合并,整组跳过——不去猜
+    "拿集数最多的那个当主文件夹"这类启发式,宁可漏掉也不误合并。
+    """
+    import bangumi_family
+
+    from services.bgm_series_cache import resolve_tv_season_ordinal_cached
+
+    library_root = get_library_root(db)
+    if not library_root.exists():
+        return []
+
+    medias = db.query(models.LocalMedia).filter(models.LocalMedia.bgm_id.isnot(None)).all()
+    if len(medias) < 2:
+        return []
+
+    # bgm_id -> 家族根bgm_id,同一次扫描内存一下,避免同一个家族的每个成员都各自
+    # 重新回溯一遍(resolve_root_subject_id本身没有持久化缓存)。
+    root_cache: dict[int, int] = {}
+
+    async def _root_of(bgm_id: int) -> int:
+        if bgm_id not in root_cache:
+            try:
+                root_cache[bgm_id] = await bangumi_family.resolve_root_subject_id(bgm_id)
+            except Exception:
+                root_cache[bgm_id] = bgm_id
+        return root_cache[bgm_id]
+
+    groups: dict[int, list[models.LocalMedia]] = {}
+    for media in medias:
+        root_id = await _root_of(media.bgm_id)
+        groups.setdefault(root_id, []).append(media)
+
+    results: list[dict] = []
+    for main_bgm_id, members in groups.items():
+        if len(members) < 2:
+            continue
+        primary = next((m for m in members if m.bgm_id == main_bgm_id), None)
+        if primary is None:
+            continue  # 家族根这一季本地没有对应文件夹,不知道该合并到哪,跳过整组
+
+        primary_match = re.match(rf"^(.*)\s\[bgm-{primary.bgm_id}\]$", primary.folder_name)
+        if not primary_match:
+            continue  # 主文件夹自己命名都不规范,不强行推算目标路径
+        anime_title = primary_match.group(1).strip()
+
+        season_table = await _resolve_season_table(db, main_bgm_id)
+
+        for secondary in members:
+            if secondary.id == primary.id:
+                continue
+
+            secondary_ordinal = await resolve_tv_season_ordinal_cached(
+                db, secondary.bgm_id, main_bgm_id
+            )
+            info = season_table.get(secondary_ordinal) if secondary_ordinal else None
+            args = {
+                "season_ordinal": secondary_ordinal,
+                "platform": info["platform"] if info else None,
+                "season_hint": info["name"] if info else None,
+                "episode_offset": info["episode_offset"] if info else 0,
+                "season_total_eps": info["eps"] if info else None,
+            }
+
+            secondary_path = library_root / secondary.folder_name
+            structure = scan_local_folder_structure(secondary_path, library_root)
+            if not structure:
+                continue
+
+            all_rel_paths = _list_all_relpaths(secondary_path, library_root)
+            proposed_targets_seen: dict[str, str] = {}
+
+            for eps in structure.values():
+                for ep in eps:
+                    current_full_path = library_root / ep["rel_path"]
+                    if current_full_path.suffix.lower() not in VIDEO_EXTENSIONS:
+                        continue
+
+                    preview = rename_engine.preview_rename_file(
+                        anime_title=anime_title,
+                        file_name=ep["filename"],
+                        torrent_title=ep["filename"],
+                        library_root=str(library_root),
+                        bgm_id=main_bgm_id,
+                        season_hint=args["season_hint"],
+                        season_ordinal=args["season_ordinal"],
+                        platform=args["platform"],
+                        episode_offset=args["episode_offset"],
+                        season_total_eps=args["season_total_eps"],
+                    )
+                    target_full_path = preview.get("target_full_path")
+                    if not target_full_path or preview.get("parsed_episode") == "??":
+                        continue
+
+                    proposed_path = Path(target_full_path)
+                    if not _is_within(proposed_path, library_root):
+                        continue
+
+                    current_rel = str(current_full_path.relative_to(library_root)).replace("\\", "/")
+                    proposed_rel = str(proposed_path.relative_to(library_root)).replace("\\", "/")
+
+                    blocked = False
+                    block_reason = None
+                    key = _normcase(proposed_path)
+                    if proposed_path.exists():
+                        blocked = True
+                        block_reason = "目标位置已存在另一个文件,为避免覆盖不自动处理"
+                    elif key in proposed_targets_seen:
+                        blocked = True
+                        block_reason = f"跟同一批次里的另一条改名建议目标冲突({proposed_targets_seen[key]})"
+                    else:
+                        proposed_targets_seen[key] = current_rel
+
+                    siblings = rename_engine.find_sibling_subtitles(current_rel, all_rel_paths)
+
+                    results.append({
+                        "folder_name": secondary.folder_name,
+                        "current_relative_path": current_rel,
+                        "proposed_relative_path": proposed_rel,
+                        "sibling_subtitles": siblings,
+                        "blocked": blocked,
+                        "block_reason": block_reason,
+                        "move_type": "cross_folder_merge",
+                        "source_folder": secondary.folder_name,
+                        "target_folder": primary.folder_name,
+                    })
+
+    return results
+
+
+async def apply_family_folder_merges(db: Session, selected_paths: set[str] | None) -> dict:
+    """
+    重新跑一次scan_family_folder_merges做TOCTOU防护,对选中且未被阻塞的条目执行
+    跨文件夹搬家,复用apply_rename_fixes同一套"改完名同步RenamedFile路径+迁移
+    PlaybackRecord"逻辑。额外多一步:某个副文件夹的文件全部搬空后,自动删掉这个
+    空文件夹和对应的LocalMedia记录——不然这类bug产生的脏文件夹/脏记录永远没有
+    入口能清理掉。
+
+    不删除AnimeFolder/AnimeCatalog——前者是下载暂存目录记录,交给现有的
+    scan_orphaned_records/apply_orphan_cleanup处理;后者只是缓存的番剧元数据,
+    留着无害,而且subscription_rule.bgm_id可能还引用着它。
+    """
+    library_root = get_library_root(db)
+    mismatches = await scan_family_folder_merges(db)
+
+    rows_by_relpath = {
+        _same_relpath(row.target_relative_path): row
+        for row in db.query(models.RenamedFile)
+        .filter(models.RenamedFile.target_relative_path.isnot(None))
+        .all()
+    }
+
+    succeeded, skipped, failed = [], [], []
+    touched_folders: set[str] = set()
+
+    for item in mismatches:
+        current_rel = item["current_relative_path"]
+        if selected_paths is not None and current_rel not in selected_paths:
+            continue
+        if item["blocked"]:
+            skipped.append({"path": current_rel, "reason": item["block_reason"]})
+            continue
+
+        current_full = library_root / current_rel
+        proposed_full = library_root / item["proposed_relative_path"]
+        try:
+            proposed_full.parent.mkdir(parents=True, exist_ok=True)
+            current_full.rename(proposed_full)
+
+            video_stem = current_full.stem
+            for sub_rel in item["sibling_subtitles"]:
+                sub_current = library_root / sub_rel
+                if not sub_current.exists():
+                    continue
+                suffix = sub_current.name[len(video_stem):]
+                sub_proposed = proposed_full.with_name(proposed_full.stem + suffix)
+                sub_current.rename(sub_proposed)
+
+            row = rows_by_relpath.get(_same_relpath(current_rel))
+            if row:
+                row.target_relative_path = _to_db_relpath(item["proposed_relative_path"])
+            _migrate_playback_record(db, current_rel, item["proposed_relative_path"])
+            db.commit()
+            succeeded.append({"from": current_rel, "to": item["proposed_relative_path"]})
+            touched_folders.add(item["source_folder"])
+        except OSError as e:
+            db.rollback()
+            failed.append({"path": current_rel, "error": str(e)})
+
+    removed_folders = []
+    for folder_name in touched_folders:
+        folder_path = library_root / folder_name
+        if not folder_path.is_dir():
+            continue
+        has_any_file = any(p.is_file() for p in folder_path.rglob("*"))
+        if has_any_file:
+            continue  # 还有文件没搬完(部分选中/部分失败),不删
+        shutil.rmtree(folder_path, ignore_errors=True)
+        media = db.query(models.LocalMedia).filter(models.LocalMedia.folder_name == folder_name).first()
+        if media:
+            db.delete(media)
+            db.commit()
+        removed_folders.append(folder_name)
+
+    return {"succeeded": succeeded, "skipped": skipped, "failed": failed, "removed_folders": removed_folders}
 
 
 def scan_orphaned_records(db: Session) -> dict:

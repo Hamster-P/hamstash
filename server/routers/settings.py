@@ -243,9 +243,11 @@ async def scan_library_repair(background_tasks: BackgroundTasks, db: Session = D
     library_repair.reset_season_cache(db)
     await scan_and_update_library(background_tasks, db)
     rename_mismatches = await library_repair.scan_rename_mismatches(db)
+    family_merges = await library_repair.scan_family_folder_merges(db)
     orphans = library_repair.scan_orphaned_records(db)
     return {
         "rename_mismatches": rename_mismatches,
+        "family_merges": family_merges,
         **orphans,
     }
 
@@ -253,6 +255,8 @@ async def scan_library_repair(background_tasks: BackgroundTasks, db: Session = D
 class RepairApplyRequest(BaseModel):
     fix_renames: bool = False
     rename_paths: list[str] | None = None  # None代表扫描结果里未被阻塞的全部改名建议
+    fix_family_merges: bool = False
+    family_merge_paths: list[str] | None = None  # None代表扫描结果里未被阻塞的全部合并建议
     clean_local_media: bool = False
     clean_renamed_files: bool = False
     clean_anime_folders: bool = False
@@ -272,6 +276,10 @@ async def apply_library_repair(
     if payload.fix_renames:
         selected = set(payload.rename_paths) if payload.rename_paths is not None else None
         result["renames"] = await library_repair.apply_rename_fixes(db, selected)
+
+    if payload.fix_family_merges:
+        selected = set(payload.family_merge_paths) if payload.family_merge_paths is not None else None
+        result["family_merges"] = await library_repair.apply_family_folder_merges(db, selected)
 
     if payload.clean_local_media:
         result["local_media"] = await scan_and_update_library(background_tasks, db)

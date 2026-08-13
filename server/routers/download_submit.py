@@ -180,6 +180,9 @@ async def execute_download(
                 )
             existing.auto_rename = payload.auto_rename
             existing.enabled = True
+            if existing.main_bgm_id is None:
+                # 迁移前创建的老订阅还没有main_bgm_id,借这次重新提交顺手回填
+                existing.main_bgm_id = main_bgm_id
             db.commit()
             db.refresh(existing)
             rule = existing
@@ -187,6 +190,7 @@ async def execute_download(
             rule = SubscriptionRule(
                 anime_title=anime_title,
                 bgm_id=payload.bgm_id,
+                main_bgm_id=main_bgm_id,
                 keyword=payload.keyword,
                 source=payload.source,
                 fansub_name=payload.fansub_name,

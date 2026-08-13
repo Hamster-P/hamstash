@@ -73,7 +73,17 @@ async def poll_subscription(db: Session, rule: SubscriptionRule, download_root: 
         return
 
     criteria = _criteria_from_rule(rule)
-    folder_title, main_bgm_id, _ = await resolve_series_identity(rule.bgm_id, rule.anime_title)
+    if rule.main_bgm_id is not None:
+        # 系列根ID在创建订阅时已经解析过(download_submit.py),固定复用,不必每轮
+        # 轮询都重新发一次Bangumi关联关系请求——那个请求没有重试,偶发失败会被
+        # bangumi_family.resolve_root_subject_id静默当成"这一季自己就是根",
+        # 建出重复文件夹且没有自愈机制。
+        folder_title, main_bgm_id = rule.anime_title, rule.main_bgm_id
+    else:
+        # 兼容迁移前创建的老订阅(该列还是NULL):现查一次,顺手回填,后续轮询不用再查
+        folder_title, main_bgm_id, _ = await resolve_series_identity(rule.bgm_id, rule.anime_title)
+        rule.main_bgm_id = main_bgm_id
+        db.commit()
     staging_folder_path = staging_folder(download_root, folder_title, main_bgm_id)
 
     for item in items:

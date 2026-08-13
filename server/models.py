@@ -27,6 +27,7 @@ class SubscriptionRule(Base):
     id = Column(Integer, primary_key=True, index=True)
     anime_title = Column(String, nullable=False)
     bgm_id = Column(Integer, nullable=True)
+    main_bgm_id = Column(Integer, nullable=True)  # 创建订阅时解析出的系列根ID,后续轮询直接复用,不重新查Bangumi关联关系
     keyword = Column(String, nullable=False)  # 完整检索关键词,后续轮询用它去搜新种子
     source = Column(String, nullable=False, default="dmhy")  # 这条订阅的RSS来自dmhy、animegarden还是nyaa
     fansub_name = Column(String, nullable=True)  # 为空代表不限字幕组

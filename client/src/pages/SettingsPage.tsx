@@ -1135,6 +1135,16 @@ interface RenameMismatch {
   block_reason: string | null;
 }
 
+interface FamilyMerge {
+  folder_name: string;
+  current_relative_path: string;
+  proposed_relative_path: string;
+  blocked: boolean;
+  block_reason: string | null;
+  source_folder: string;
+  target_folder: string;
+}
+
 interface OrphanedRenamedFile {
   id: number;
   torrent_hash: string;
@@ -1148,6 +1158,7 @@ interface OrphanedAnimeFolder {
 
 interface RepairScanReport {
   rename_mismatches: RenameMismatch[];
+  family_merges: FamilyMerge[];
   orphaned_renamed_files: OrphanedRenamedFile[];
   orphaned_anime_folders: OrphanedAnimeFolder[];
 }
@@ -1157,6 +1168,12 @@ interface RepairApplyResult {
     succeeded: { from: string; to: string }[];
     skipped: { path: string; reason: string | null }[];
     failed: { path: string; error: string }[];
+  };
+  family_merges?: {
+    succeeded: { from: string; to: string }[];
+    skipped: { path: string; reason: string | null }[];
+    failed: { path: string; error: string }[];
+    removed_folders: string[];
   };
   local_media?: { added: string[]; current_total: number };
   orphans?: { removed_renamed_files: number; removed_anime_folders: number };
@@ -1171,6 +1188,7 @@ function LibraryRepairSection() {
 
   // 改名建议里未被阻塞的条目,默认全选;用户可以取消勾选个别项
   const [selectedRenames, setSelectedRenames] = useState<Set<string>>(new Set());
+  const [selectedFamilyMerges, setSelectedFamilyMerges] = useState<Set<string>>(new Set());
   const [cleanLocalMedia, setCleanLocalMedia] = useState(true);
   const [cleanRenamedFiles, setCleanRenamedFiles] = useState(true);
   const [cleanAnimeFolders, setCleanAnimeFolders] = useState(true);
@@ -1194,6 +1212,13 @@ function LibraryRepairSection() {
             .map((m) => m.current_relative_path),
         ),
       );
+      setSelectedFamilyMerges(
+        new Set(
+          data.family_merges
+            .filter((m) => !m.blocked)
+            .map((m) => m.current_relative_path),
+        ),
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "扫描失败,请检查后端连接");
       console.error(err);
@@ -1211,13 +1236,27 @@ function LibraryRepairSection() {
     });
   };
 
+  const toggleFamilyMerge = (path: string) => {
+    setSelectedFamilyMerges((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  };
+
   const renameItems = report?.rename_mismatches ?? [];
+  const familyMergeItems = report?.family_merges ?? [];
   const hasOrphans =
     (report?.orphaned_renamed_files.length ?? 0) > 0 ||
     (report?.orphaned_anime_folders.length ?? 0) > 0;
   const canApply =
     report !== null &&
-    (selectedRenames.size > 0 || cleanLocalMedia || cleanRenamedFiles || cleanAnimeFolders);
+    (selectedRenames.size > 0 ||
+      selectedFamilyMerges.size > 0 ||
+      cleanLocalMedia ||
+      cleanRenamedFiles ||
+      cleanAnimeFolders);
 
   const handleApply = async () => {
     if (!report) return;
@@ -1231,6 +1270,8 @@ function LibraryRepairSection() {
         body: JSON.stringify({
           fix_renames: selectedRenames.size > 0,
           rename_paths: Array.from(selectedRenames),
+          fix_family_merges: selectedFamilyMerges.size > 0,
+          family_merge_paths: Array.from(selectedFamilyMerges),
           clean_local_media: cleanLocalMedia,
           clean_renamed_files: cleanRenamedFiles,
           clean_anime_folders: cleanAnimeFolders,
@@ -1288,8 +1329,52 @@ function LibraryRepairSection() {
 
       {report && (
         <div className="mt-3 space-y-3 rounded border border-border bg-ink p-3">
-          {renameItems.length === 0 && !hasOrphans && (
+          {renameItems.length === 0 && familyMergeItems.length === 0 && !hasOrphans && (
             <p className="font-mono text-[11px] text-muted">没有发现需要修复的问题</p>
+          )}
+
+          {familyMergeItems.length > 0 && (
+            <div>
+              <div className="mb-1.5 font-mono text-[11px] text-paper">
+                重复文件夹合并({familyMergeItems.length})
+              </div>
+              <p className="mb-1.5 font-mono text-[11px] text-muted">
+                以下文件所在的文件夹跟另一个文件夹属于同一部番,建议合并到主文件夹;
+                合并后如果原文件夹被搬空,会自动删除该文件夹。
+              </p>
+              <div className="max-h-56 space-y-1 overflow-y-auto">
+                {familyMergeItems.map((m) => (
+                  <label
+                    key={m.current_relative_path}
+                    className={`flex items-start gap-2 font-mono text-[11px] leading-snug ${
+                      m.blocked ? "text-muted/60" : "text-muted"
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      className="mt-0.5 accent-vermillion"
+                      disabled={m.blocked}
+                      checked={selectedFamilyMerges.has(m.current_relative_path)}
+                      onChange={() => toggleFamilyMerge(m.current_relative_path)}
+                    />
+                    <span className="min-w-0 break-all">
+                      <span className="text-paper">
+                        {m.source_folder} → {m.target_folder}
+                      </span>
+                      <br />
+                      {m.current_relative_path}
+                      <br />→ {m.proposed_relative_path}
+                      {m.blocked && (
+                        <>
+                          <br />
+                          <span className="text-vermillion">未处理: {m.block_reason}</span>
+                        </>
+                      )}
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </div>
           )}
 
           {renameItems.length > 0 && (
@@ -1375,6 +1460,19 @@ function LibraryRepairSection() {
               改名: 成功{applyResult.renames.succeeded.length} / 跳过
               {applyResult.renames.skipped.length} / 失败{applyResult.renames.failed.length}
               {applyResult.renames.failed.map((f) => (
+                <div key={f.path} className="mt-1 break-all text-vermillion">
+                  {f.path}: {f.error}
+                </div>
+              ))}
+            </div>
+          )}
+          {applyResult.family_merges && (
+            <div>
+              合并: 成功{applyResult.family_merges.succeeded.length} / 跳过
+              {applyResult.family_merges.skipped.length} / 失败
+              {applyResult.family_merges.failed.length} / 已删除空文件夹
+              {applyResult.family_merges.removed_folders.length}
+              {applyResult.family_merges.failed.map((f) => (
                 <div key={f.path} className="mt-1 break-all text-vermillion">
                   {f.path}: {f.error}
                 </div>
