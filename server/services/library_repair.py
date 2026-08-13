@@ -11,6 +11,7 @@
   的整理输入来重算——改用磁盘上当前的文件名反向重算"如果现在整理应该长什么样",
   这样也顺带覆盖了用户手动拖进库、从未走过整理流程的文件。
 """
+import asyncio
 import os
 import re
 import shutil
@@ -346,15 +347,38 @@ async def scan_family_folder_merges(db: Session) -> list[dict]:
         return []
 
     # bgm_id -> 家族根bgm_id,同一次扫描内存一下,避免同一个家族的每个成员都各自
-    # 重新回溯一遍(resolve_root_subject_id本身没有持久化缓存)。
+    # 重新回溯一遍。
     root_cache: dict[int, int] = {}
+
+    async def _resolve_root_with_retry(bgm_id: int) -> int:
+        """resolve_root_subject_id本身是单次网络请求、没有重试,失败/抖动时会
+        静默把当前bgm_id自己当成根节点——这里只在调用它的这一个点上加一层薄薄的
+        重试(最多试2次),不改动这个函数本身,也不影响它在RSS轮询那边的调用方式
+        (那边已经通过缓存main_bgm_id解决了同一个问题)。
+        """
+        for attempt in range(2):
+            try:
+                return await bangumi_family.resolve_root_subject_id(bgm_id)
+            except Exception:
+                if attempt == 0:
+                    await asyncio.sleep(1.5)
+        return bgm_id
 
     async def _root_of(bgm_id: int) -> int:
         if bgm_id not in root_cache:
-            try:
-                root_cache[bgm_id] = await bangumi_family.resolve_root_subject_id(bgm_id)
-            except Exception:
-                root_cache[bgm_id] = bgm_id
+            # 优先查AnimeFamilyCache——这张表大概率已经被同一次"修复媒体库"扫描
+            # 里更早跑过的scan_rename_mismatches(内部的_resolve_season_table)
+            # 顺带填好了,直接用现成答案,零网络请求,不会被偶发的网络抖动带偏;
+            # 只有真的没缓存过(这部番从没走过下载/改名流程)才现查。
+            cached = (
+                db.query(models.AnimeFamilyCache)
+                .filter(models.AnimeFamilyCache.bgm_id == bgm_id)
+                .first()
+            )
+            if cached:
+                root_cache[bgm_id] = cached.source_bgm_id
+            else:
+                root_cache[bgm_id] = await _resolve_root_with_retry(bgm_id)
         return root_cache[bgm_id]
 
     groups: dict[int, list[models.LocalMedia]] = {}

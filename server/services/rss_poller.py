@@ -114,7 +114,7 @@ async def poll_subscription(db: Session, rule: SubscriptionRule, download_root: 
         folder_title, main_bgm_id = rule.anime_title, rule.main_bgm_id
     else:
         # 兼容迁移前创建的老订阅(该列还是NULL):现查一次,顺手回填,后续轮询不用再查
-        folder_title, main_bgm_id, _ = await resolve_series_identity(rule.bgm_id, rule.anime_title)
+        folder_title, main_bgm_id, _ = await resolve_series_identity(db, rule.bgm_id, rule.anime_title)
         rule.main_bgm_id = main_bgm_id
         db.commit()
     staging_folder_path = staging_folder(download_root, folder_title, main_bgm_id)

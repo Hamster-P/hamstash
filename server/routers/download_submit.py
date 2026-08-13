@@ -134,7 +134,7 @@ async def execute_download(
       推送给qBittorrent,并在 download_task 表里留档。
     """
     anime_title, main_bgm_id, season_title = await resolve_series_identity(
-        payload.bgm_id, payload.anime_title
+        db, payload.bgm_id, payload.anime_title
     )
 
     subscription_id = None
