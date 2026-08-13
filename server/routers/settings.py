@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 import config_store
+import models
 import qbittorrent_client
 from database import get_db
 from routers.library import scan_and_update_library
@@ -56,6 +57,10 @@ def get_settings(db: Session = Depends(get_db)):
         "proxy_url": get_setting(db, "proxy_url", config_store.DEFAULTS["proxy_url"]),
         # 下载源覆盖配置的原始 JSON 字符串;设置页拿它 + GET /resources/sources 的默认值渲染编辑器
         "download_sources": get_setting(db, "download_sources", config_store.DEFAULTS["download_sources"]),
+        # 媒体库默认封面策略: latest_tv / first_season / matched
+        "library_cover_strategy": get_setting(
+            db, "library_cover_strategy", config_store.DEFAULTS["library_cover_strategy"]
+        ),
         # 只读:实际生效的代理地址(手填留空时是探测到的系统代理)。跟proxy_url分开返回,
         # 不能把探测值回填进设置页输入框——那样用户一点保存就把探测结果固化成手动配置了。
         # 客户端Rust侧创建内嵌webview时读的是这个值(见src-tauri/src/lib.rs)。
@@ -87,6 +92,9 @@ def get_settings(db: Session = Depends(get_db)):
 @router.put("/settings")
 def update_settings(payload: SettingsUpdate, db: Session = Depends(get_db)):
     old_library_root = get_setting(db, "library_root", config_store.DEFAULTS["library_root"])
+    old_cover_strategy = get_setting(
+        db, "library_cover_strategy", config_store.DEFAULTS["library_cover_strategy"]
+    )
 
     values = {
         "download_root": payload.download_root,
@@ -101,11 +109,20 @@ def update_settings(payload: SettingsUpdate, db: Session = Depends(get_db)):
         # 必须放进这个 values dict:write_ini 会用它整段重写 INI 的 [settings] 段,
         # 漏掉的话每次保存都会把下载源覆盖配置从 INI 抹掉(SQLite 副本还在,但两边会不一致)。
         "download_sources": payload.download_sources,
+        "library_cover_strategy": payload.library_cover_strategy,
     }
     for key, value in values.items():
         upsert_setting(db, key, value)
     config_store.write_ini(values)  # 双写本地INI,避免数据库丢失/迁移时设定跟着丢
     set_proxy_url_cache(payload.proxy_url)  # 同步内存缓存,不重启也能立刻用上新代理设置
+
+    # 默认封面策略变了:清掉所有"非用户手动选图"条目的cover_bgm_id,让它们下次列表请求
+    # 按新策略惰性重解析(手动选过的cover_is_custom=True不动,尊重用户选择)。
+    if payload.library_cover_strategy != old_cover_strategy:
+        db.query(models.LocalMedia).filter(
+            models.LocalMedia.cover_is_custom == False  # noqa: E712
+        ).update({models.LocalMedia.cover_bgm_id: None}, synchronize_session=False)
+        db.commit()
 
     # 库目录变了:数据库要挪到新目录下,但这是进程启动时才做的引导逻辑(见database.py),
     # 不在这里做运行中途的热搬运,提示前端需要重启应用才会真正生效。

@@ -1,10 +1,12 @@
 import { useState, useEffect, useLayoutEffect, useRef } from "react";
-import { Search as SearchIcon } from "lucide-react";
+import { Search as SearchIcon, ArrowLeft } from "lucide-react";
 import BangumiResultsList, { type BangumiSubject } from "../components/BangumiResultsList";
 
 interface SearchPageProps {
   onSelectAnime: (bgmId: number) => void;
   manualMatchFolder?: string | null;
+  // 手动匹配模式下点"返回":取消绑定、退回影视库
+  onCancelManualMatch?: () => void;
 }
 
 const API_BASE = "http://127.0.0.1:8080";
@@ -58,7 +60,7 @@ const QUARTER_OPTIONS = [
   { label: "10月秋季番", value: "10" },
 ];
 
-export default function SearchPage({ onSelectAnime, manualMatchFolder }: SearchPageProps) {
+export default function SearchPage({ onSelectAnime, manualMatchFolder, onCancelManualMatch }: SearchPageProps) {
   // 1. 初始化时整体恢复上一次的搜索会话(关键词/筛选/结果/翻页状态),
   // 没有缓存就是全新状态,等用户自己点检索,不自动搜索
   const [initialSession] = useState(loadSearchSession);
@@ -169,8 +171,19 @@ export default function SearchPage({ onSelectAnime, manualMatchFolder }: SearchP
       </div>
 
       {manualMatchFolder && (
-        <div className="rounded border border-vermillion/50 bg-vermillion/10 px-3 py-2 font-mono text-xs text-vermillion">
-          正在为文件夹「{manualMatchFolder}」选择匹配的番剧
+        <div className="flex items-center justify-between gap-3 rounded border border-vermillion/50 bg-vermillion/10 px-3 py-2 font-mono text-xs text-vermillion">
+          <span className="min-w-0 truncate">
+            正在为文件夹「{manualMatchFolder}」选择匹配的番剧
+          </span>
+          {onCancelManualMatch && (
+            <button
+              onClick={onCancelManualMatch}
+              className="flex shrink-0 items-center gap-1 rounded border border-vermillion/60 px-2 py-1 text-vermillion transition-colors hover:bg-vermillion hover:text-ink"
+            >
+              <ArrowLeft size={12} />
+              返回影视库
+            </button>
+          )}
         </div>
       )}
 

@@ -98,6 +98,7 @@ interface SavedSnapshot {
   rssPollMinutes: number;
   defaultSource: string;
   defaultHomeView: DefaultHomeView;
+  coverStrategy: string;
   proxyUrl: string;
   sourcesJson: string; // serializeSources 的结果,做 dirty 比较
 }
@@ -115,6 +116,8 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
   // 下载源配置(启用开关 + URL 覆盖),从 GET /resources/sources 加载
   const [sourceConfigs, setSourceConfigs] = useState<SourceConfig[]>([]);
   const [defaultHomeView, setDefaultHomeView] = useState<DefaultHomeView>("tracking");
+  // 媒体库默认封面策略: latest_tv / first_season / matched
+  const [coverStrategy, setCoverStrategy] = useState<string>("latest_tv");
   const [proxyUrl, setProxyUrl] = useState("");
   const [pollMinutes, setPollMinutes] = useState(5);
   const [rssPollMinutes, setRssPollMinutes] = useState(30);
@@ -170,6 +173,11 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
           )
             ? data.default_home_view
             : "tracking",
+          coverStrategy: (["latest_tv", "first_season", "matched"] as const).includes(
+            data.library_cover_strategy,
+          )
+            ? data.library_cover_strategy
+            : "latest_tv",
           proxyUrl: data.proxy_url ?? "",
           sourcesJson,
         };
@@ -181,6 +189,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
         setRssPollMinutes(next.rssPollMinutes);
         setDefaultSource(next.defaultSource);
         setDefaultHomeView(next.defaultHomeView);
+        setCoverStrategy(next.coverStrategy);
         setProxyUrl(next.proxyUrl);
         setSavedSnapshot(next);
       })
@@ -199,6 +208,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
       rssPollMinutes !== savedSnapshot.rssPollMinutes ||
       defaultSource !== savedSnapshot.defaultSource ||
       defaultHomeView !== savedSnapshot.defaultHomeView ||
+      coverStrategy !== savedSnapshot.coverStrategy ||
       proxyUrl !== savedSnapshot.proxyUrl ||
       serializeSources(sourceConfigs) !== savedSnapshot.sourcesJson);
 
@@ -271,6 +281,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
           rss_poll_interval_seconds: clampPollMinutes(rssPollMinutes) * 60,
           default_source: defaultSource,
           default_home_view: defaultHomeView,
+          library_cover_strategy: coverStrategy,
           proxy_url: proxyUrl.trim(),
           download_sources: serializeSources(sourceConfigs),
         }),
@@ -294,6 +305,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
         rssPollMinutes,
         defaultSource,
         defaultHomeView,
+        coverStrategy,
         proxyUrl: proxyUrl.trim(),
         sourcesJson: serializeSources(sourceConfigs),
       });
@@ -399,6 +411,23 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
           <option value="tracking">追更页面</option>
           <option value="search">搜索页面</option>
           <option value="library">媒体库页面</option>
+        </select>
+      </div>
+
+      {/* 媒体库默认封面:未手动选图的番按此策略自动选封面 */}
+      <div className="mb-6 rounded-md border border-border bg-surface p-4">
+        <div className="mb-1 text-sm">媒体库默认封面</div>
+        <p className="mb-3 font-mono text-[11px] text-muted">
+          未手动指定封面的番剧,按此策略从系列家族里自动选图(手动选过的不受影响)。无 TV 季的纯剧场版一律用匹配条目本身的图。
+        </p>
+        <select
+          value={coverStrategy}
+          onChange={(e) => setCoverStrategy(e.target.value)}
+          className="rounded border border-border bg-ink px-2 py-1.5 font-mono text-xs text-paper outline-none focus:border-vermillion"
+        >
+          <option value="latest_tv">最新一季(TV)的封面</option>
+          <option value="first_season">第一季的封面</option>
+          <option value="matched">保持匹配条目本身的封面</option>
         </select>
       </div>
 

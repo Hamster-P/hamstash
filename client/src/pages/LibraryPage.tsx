@@ -20,6 +20,13 @@ interface LibraryAnime {
 
 type SortMode = "default" | "recent_watched" | "recent_updated";
 
+// "选择图片"弹窗里的一个家族封面候选
+interface CoverCandidate {
+  bgm_id: number;
+  title: string;
+  cover_url: string;
+}
+
 interface Episode {
   filename: string;
   rel_path: string;
@@ -124,6 +131,13 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
   const [relatedAnime, setRelatedAnime] = useState<BangumiSubject[]>([]);
   const [relatedLoading, setRelatedLoading] = useState(false);
   const [relatedError, setRelatedError] = useState<string | null>(null);
+
+  // "选择图片"弹窗:从家族全部作品里挑一张作为该番封面。coverPickerFolder非空=弹窗打开。
+  const [coverPickerFolder, setCoverPickerFolder] = useState<string | null>(null);
+  const [coverCandidates, setCoverCandidates] = useState<CoverCandidate[]>([]);
+  const [coverLoading, setCoverLoading] = useState(false);
+  const [coverBusy, setCoverBusy] = useState(false);
+
   const isPlayingRef = useRef(false); // 新增：播放锁
   // 进详情视图那一刻网格的滚动位置,返回列表时恢复。列表/详情共用 <main> 这一个滚动条,
   // 内部切换不卸载组件,所以用 ref 存即可,不需要 sessionStorage。
@@ -202,6 +216,47 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
       .catch(() => {
         if (!silent) setLoading(false);
       });
+  };
+
+  // 打开"选择图片"弹窗:拉该番所在家族的封面候选(后端缓存优先,缺失才远程补)。
+  const openCoverPicker = (folderName: string, bgmId: number) => {
+    setCoverPickerFolder(folderName);
+    setCoverCandidates([]);
+    setCoverLoading(true);
+    fetch(`${API_BASE}/library/cover-candidates/${bgmId}`)
+      .then((res) => res.json())
+      .then((data) => setCoverCandidates(data?.data ?? []))
+      .catch(() => setCoverCandidates([]))
+      .finally(() => setCoverLoading(false));
+  };
+
+  const closeCoverPicker = () => {
+    setCoverPickerFolder(null);
+    setCoverCandidates([]);
+  };
+
+  // 选中某张家族封面 → 标记为该番自定义封面;或"恢复默认"(bgmId=null)清掉自定义。
+  const applyCover = async (bgmId: number | null) => {
+    if (!coverPickerFolder) return;
+    setCoverBusy(true);
+    try {
+      const url = `${API_BASE}/library/${encodeURIComponent(coverPickerFolder)}/cover`;
+      const res =
+        bgmId === null
+          ? await fetch(url, { method: "DELETE" })
+          : await fetch(url, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ bgm_id: bgmId }),
+            });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      closeCoverPicker();
+      fetchAnimes(true); // 静默刷新,封面立即更新
+    } catch (err) {
+      console.error("设置封面失败", err);
+    } finally {
+      setCoverBusy(false);
+    }
   };
 
   // 唯一会触发完整扫盘的入口:先GET /library/scan(遍历硬盘、刷新mtime),
@@ -797,6 +852,18 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
                     )}
                     {(matchMode || !anime.bgm_id) && (
                       <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-ink/60">
+                        {/* 手动选封面:仅管理模式 + 已匹配bgm_id(有家族可取图)时显示,放在重新匹配上方 */}
+                        {matchMode && anime.bgm_id && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openCoverPicker(anime.folder_name, anime.bgm_id!);
+                            }}
+                            className="rounded border border-border bg-surface/90 px-2 py-1 font-mono text-[10px] text-paper transition-colors hover:border-vermillion hover:text-vermillion"
+                          >
+                            选择图片
+                          </button>
+                        )}
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
@@ -854,6 +921,68 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
               )}
             </div>
           )}
+        </div>
+      )}
+
+      {/* "选择图片"弹窗:家族全部作品封面网格,点一张即设为该番封面 */}
+      {coverPickerFolder !== null && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-ink/70 p-6"
+          onClick={closeCoverPicker}
+        >
+          <div
+            className="flex max-h-[80vh] w-full max-w-3xl flex-col rounded-md border border-border bg-surface p-5"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-3 flex items-center justify-between">
+              <div className="text-sm">选择媒体库封面</div>
+              <div className="flex items-center gap-2 font-mono text-[11px]">
+                <button
+                  onClick={() => applyCover(null)}
+                  disabled={coverBusy}
+                  className="rounded border border-border px-2 py-1 text-muted transition-colors hover:border-vermillion hover:text-vermillion disabled:opacity-40"
+                >
+                  恢复默认
+                </button>
+                <button
+                  onClick={closeCoverPicker}
+                  className="rounded border border-border px-2 py-1 text-muted transition-colors hover:text-paper"
+                >
+                  关闭
+                </button>
+              </div>
+            </div>
+            <p className="mb-3 font-mono text-[11px] text-muted">
+              从该系列家族的全部作品里挑一张作为封面;“恢复默认”按设置里的默认封面策略自动选择。
+            </p>
+            {coverLoading ? (
+              <div className="py-10 text-center font-mono text-xs text-muted">正在加载家族封面...</div>
+            ) : coverCandidates.length === 0 ? (
+              <div className="py-10 text-center font-mono text-xs text-muted">没有可选的家族封面。</div>
+            ) : (
+              <div className="grid grid-cols-[repeat(auto-fill,minmax(120px,1fr))] gap-3 overflow-y-auto">
+                {coverCandidates.map((c) => (
+                  <button
+                    key={c.bgm_id}
+                    onClick={() => applyCover(c.bgm_id)}
+                    disabled={coverBusy}
+                    className="group flex flex-col gap-1 text-left disabled:opacity-50"
+                  >
+                    <div className="relative aspect-[2/3] overflow-hidden rounded border border-border bg-ink transition-colors group-hover:border-vermillion">
+                      <img
+                        src={proxiedImageUrl(c.cover_url)}
+                        alt={c.title}
+                        className="h-full w-full object-cover"
+                      />
+                    </div>
+                    <div className="line-clamp-2 font-mono text-[10px] leading-snug text-muted group-hover:text-vermillion">
+                      {c.title}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>

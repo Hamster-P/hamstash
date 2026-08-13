@@ -121,6 +121,11 @@ class LocalMedia(Base):
     id = Column(Integer, primary_key=True, index=True)
     folder_name = Column(String, unique=True, nullable=False, index=True)  # 比如 "葬送的芙莉莲"
     bgm_id = Column(Integer, ForeignKey("anime_catalog.bgm_id"), nullable=True)  # 关联已有的动漫元数据
+    # 作为这部番封面用的家族成员bgm_id:NULL=尚未按默认策略解析,回退到上面的bgm_id自身的图。
+    # 手动"选择图片"或后台默认策略(最新TV季/第一季)都写这一列。
+    cover_bgm_id = Column(Integer, nullable=True)
+    # 用户是否手动选过封面:True时不被默认策略自动覆盖(策略变更只清cover_is_custom=False的行)。
+    cover_is_custom = Column(Boolean, default=False, nullable=False)
     last_scanned_at = Column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())
     latest_activity_at = Column(DateTime, nullable=True)  # 文件夹自身+各Season子目录mtime的最大值,供列表页"最新更新"排序用
 

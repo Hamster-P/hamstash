@@ -187,6 +187,14 @@ function AppContent() {
     setView("search");
   };
 
+  // 手动绑定模式下用户改主意了:取消绑定、退回影视库,不做任何匹配。
+  const handleCancelManualMatch = () => {
+    setManualMatchFolder(null);
+    setSelectedBgmId(null);
+    setDetailReturnView(null);
+    setView("library");
+  };
+
   // 在详情页确认匹配后,把 bgm_id 绑定到该文件夹并回到媒体库
   const handleConfirmMatch = async (bgmId: number) => {
     if (!manualMatchFolder) return;
@@ -248,6 +256,7 @@ function AppContent() {
               <SearchPage
                 onSelectAnime={handleSelectAnime}
                 manualMatchFolder={manualMatchFolder}
+                onCancelManualMatch={handleCancelManualMatch}
               />
             )}
             {view === "download" && (

@@ -17,7 +17,8 @@ import rename_engine
 import config_store
 from database import SessionLocal, get_db
 from services.common import get_setting, upsert_setting
-from bangumi_client import get_subject_detail, normalize_bgm_subject
+from services import bgm_series_cache
+from bangumi_client import get_subject_detail, normalize_bgm_subject, get_subject_details_batch
 from datetime import datetime
 
 router = APIRouter(tags=["影视库"])
@@ -251,6 +252,93 @@ async def _update_anime_details_from_bgm_task(bgm_id: int) -> None:
         db.close()
 
 
+async def _family_root_and_members(db: Session, bgm_id: int, title: str) -> tuple[int, list[models.AnimeFamilyCache]]:
+    """缓存优先地拿到bgm_id所在家族的根id + 该家族全部成员行(AnimeFamilyCache)。
+    命中缓存零网络;只有这个bgm_id从没被算过家族时,才用resolve_series_identity
+    (它本身也是缓存优先,仅全新条目联网)填充一次。不走resolve_related_family_ids_cached
+    ——那个每次都会带一轮联网的"有没有新成员"核实,这里不需要、也不想给远程加负担。"""
+    cached = (
+        db.query(models.AnimeFamilyCache)
+        .filter(models.AnimeFamilyCache.bgm_id == bgm_id)
+        .first()
+    )
+    if cached is None:
+        # 没算过家族:填充一次(缓存优先,仅全新条目联网),再重查。
+        await bgm_series_cache.resolve_series_identity(db, bgm_id, title)
+        cached = (
+            db.query(models.AnimeFamilyCache)
+            .filter(models.AnimeFamilyCache.bgm_id == bgm_id)
+            .first()
+        )
+    if cached is None:
+        return bgm_id, []  # 家族解析彻底失败(网络问题):当作只有自己
+    root = cached.source_bgm_id
+    members = (
+        db.query(models.AnimeFamilyCache)
+        .filter(models.AnimeFamilyCache.source_bgm_id == root)
+        .all()
+    )
+    return root, members
+
+
+def _pick_cover_bgm_id_by_strategy(bgm_id: int, members: list[models.AnimeFamilyCache], strategy: str) -> int:
+    """按策略从家族成员里挑作为封面的bgm_id。只在platform=="TV"且有season_ordinal的
+    成员里选(跟build_season_episode_table同一套"真季"过滤);无TV季(纯剧场版家族)
+    则回退用绑定条目bgm_id本身。latest_tv取最大season_ordinal、first_season取最小,
+    并列按(date,bgm_id)确定性排序。"""
+    tv_seasons = [m for m in members if m.platform == "TV" and m.season_ordinal]
+    if not tv_seasons:
+        return bgm_id
+    # 先按(date,bgm_id)排,保证同一season_ordinal下取的代表成员确定;再按ordinal选头/尾。
+    tv_seasons.sort(key=lambda m: (m.season_ordinal, m.date or "", m.bgm_id))
+    chosen = tv_seasons[-1] if strategy == "latest_tv" else tv_seasons[0]
+    return chosen.bgm_id
+
+
+async def _resolve_cover_bgm_id_task(folder_name: str) -> None:
+    """后台任务:按默认封面策略,给某个库条目解析出该用哪个家族成员的图,写进
+    LocalMedia.cover_bgm_id。独立session(仿_update_anime_details_from_bgm_task),
+    不阻塞列表响应。手动选过图(cover_is_custom)/无bgm_id/策略=matched 都直接跳过。"""
+    db = SessionLocal()
+    try:
+        media = (
+            db.query(models.LocalMedia)
+            .filter(models.LocalMedia.folder_name == folder_name)
+            .first()
+        )
+        if not media or not media.bgm_id or media.cover_is_custom or media.cover_bgm_id is not None:
+            return
+        strategy = get_setting(
+            db, "library_cover_strategy", config_store.DEFAULTS["library_cover_strategy"]
+        )
+        if strategy == "matched":
+            return
+
+        _root, members = await _family_root_and_members(db, media.bgm_id, folder_name)
+        target = _pick_cover_bgm_id_by_strategy(media.bgm_id, members, strategy)
+
+        # 并发/重复触发下media可能已被别的任务改动,重取最新再写,避免覆盖用户刚做的手动选择。
+        media = (
+            db.query(models.LocalMedia)
+            .filter(models.LocalMedia.folder_name == folder_name)
+            .first()
+        )
+        if not media or media.cover_is_custom or media.cover_bgm_id is not None:
+            return
+        media.cover_bgm_id = target
+        db.commit()
+
+        # 仅当目标封面还没缓存时才补一次,让下次列表能取到cover_url(缓存优先)。
+        if target != media.bgm_id:
+            exists = db.query(models.AnimeCatalog).filter(models.AnimeCatalog.bgm_id == target).first()
+            if not exists or not exists.cover_url:
+                await update_anime_details_from_bgm(db, target)
+    except Exception as e:
+        print(f"[COVER] 解析默认封面失败 folder={folder_name}: {e}")
+    finally:
+        db.close()
+
+
 class MatchRequest(BaseModel):
     folder_name: str
     bgm_id: int
@@ -274,6 +362,91 @@ async def match_anime(req: MatchRequest, db: Session = Depends(get_db)):
 
     await update_anime_details_from_bgm(db, req.bgm_id)
     return {"status": "success", "folder_name": req.folder_name, "bgm_id": req.bgm_id}
+
+
+@router.get("/library/cover-candidates/{bgm_id}")
+async def list_cover_candidates(bgm_id: int, db: Session = Depends(get_db)):
+    """"选择图片"弹窗的数据源:返回bgm_id所在家族全部成员的封面候选[{bgm_id,title,cover_url}]。
+    缓存优先——成员名/封面URL先取本地AnimeCatalog,只有本地没有(或cover_url为空)的成员
+    才去网络补一次并落库,重复打开零网络;封面字节再经/media/image-proxy磁盘缓存。"""
+    _root, members = await _family_root_and_members(db, bgm_id, "")
+    family_ids = [m.bgm_id for m in members] or [bgm_id]
+
+    catalogs = {
+        c.bgm_id: c
+        for c in db.query(models.AnimeCatalog).filter(models.AnimeCatalog.bgm_id.in_(family_ids)).all()
+    }
+    missing = [fid for fid in family_ids if fid not in catalogs or not catalogs[fid].cover_url]
+    if missing:
+        details = await get_subject_details_batch(missing)
+        for fid, detail in details.items():
+            if not detail:
+                continue
+            info = normalize_bgm_subject(detail)
+            row = catalogs.get(fid)
+            if row:
+                row.title = info["title"]
+                row.title_original = info["title_original"]
+                row.summary = info["summary"]
+                row.cover_url = info["cover_url"]
+                row.air_date = info["air_date"]
+                row.total_episodes = info["total_eps"]
+                row.total_eps = info["total_eps"]
+            else:
+                row = models.AnimeCatalog(
+                    bgm_id=fid,
+                    title=info["title"],
+                    title_original=info["title_original"],
+                    summary=info["summary"],
+                    cover_url=info["cover_url"],
+                    air_date=info["air_date"],
+                    total_episodes=info["total_eps"],
+                    total_eps=info["total_eps"],
+                )
+                db.add(row)
+                catalogs[fid] = row
+        db.commit()
+
+    # 只返回有封面的成员;按bgm_id降序(通常越新的作品id越大),跟补番一览的排序习惯一致。
+    candidates = [
+        {"bgm_id": fid, "title": catalogs[fid].title, "cover_url": catalogs[fid].cover_url}
+        for fid in family_ids
+        if fid in catalogs and catalogs[fid].cover_url
+    ]
+    candidates.sort(key=lambda c: c["bgm_id"], reverse=True)
+    return {"data": candidates}
+
+
+class CoverSelectRequest(BaseModel):
+    bgm_id: int
+
+
+@router.post("/library/{folder_name}/cover")
+async def set_library_cover(folder_name: str, req: CoverSelectRequest, db: Session = Depends(get_db)):
+    """手动选定该库条目的封面为家族里某个成员的图,标记为自定义(不再被默认策略覆盖)。"""
+    media = db.query(models.LocalMedia).filter(models.LocalMedia.folder_name == folder_name).first()
+    if not media:
+        raise HTTPException(status_code=404, detail="媒体库条目不存在")
+    media.cover_bgm_id = req.bgm_id
+    media.cover_is_custom = True
+    db.commit()
+    # 确保所选封面已缓存,列表立即能取到cover_url。
+    exists = db.query(models.AnimeCatalog).filter(models.AnimeCatalog.bgm_id == req.bgm_id).first()
+    if not exists or not exists.cover_url:
+        await update_anime_details_from_bgm(db, req.bgm_id)
+    return {"folder_name": folder_name, "cover_bgm_id": req.bgm_id}
+
+
+@router.delete("/library/{folder_name}/cover")
+def reset_library_cover(folder_name: str, db: Session = Depends(get_db)):
+    """恢复默认封面:清掉手动选择,下次列表请求按默认策略重新解析cover_bgm_id。"""
+    media = db.query(models.LocalMedia).filter(models.LocalMedia.folder_name == folder_name).first()
+    if not media:
+        raise HTTPException(status_code=404, detail="媒体库条目不存在")
+    media.cover_is_custom = False
+    media.cover_bgm_id = None
+    db.commit()
+    return {"folder_name": folder_name, "cover_bgm_id": None}
 
 
 @router.get("/library/scan")
@@ -360,6 +533,9 @@ async def list_library_animes(background_tasks: BackgroundTasks, db: Session = D
     的模式本地排序即可,不用为了换排序方式重新请求)。
     """
     local_medias = db.query(models.LocalMedia).all()
+    cover_strategy = get_setting(
+        db, "library_cover_strategy", config_store.DEFAULTS["library_cover_strategy"]
+    )
 
     # 每个文件夹最近一次观看时间,直接从PlaybackRecord表聚合,不碰硬盘
     last_watched_map = dict(
@@ -377,12 +553,12 @@ async def list_library_animes(background_tasks: BackgroundTasks, db: Session = D
         total_episodes = 0  # 默认总集数
 
         if media.bgm_id:
-            # 优先从本地数据库里的 AnimeCatalog 查详情缓存
+            # 标题/简介/集数仍取绑定bgm_id的AnimeCatalog;封面另按cover_bgm_id(手动选图或
+            # 默认策略解析出的家族成员)取——cover_bgm_id为空时回退到绑定bgm_id自身的图。
             catalog = db.query(models.AnimeCatalog).filter(models.AnimeCatalog.bgm_id == media.bgm_id).first()
             if catalog:
                 # 统一融合成一个标准数据，直接使用 Bangumi 的中文名替换原本地物理文件夹名
                 display_title = catalog.title or display_title
-                cover_url = catalog.cover_url
                 summary = catalog.summary or "暂无简介"
                 # 尝试从数据库对象中取 total_episodes，如果没这列，它在更新后会被赋值
                 total_episodes = getattr(catalog, "total_episodes", 0) or 0
@@ -390,6 +566,26 @@ async def list_library_animes(background_tasks: BackgroundTasks, db: Session = D
                 # 若本地暂无缓存，扔进后台任务补一次更新，不阻塞这次列表响应——
                 # 这次请求先用兜底文案返回，下一次任意一次列表请求就能看到补全结果。
                 background_tasks.add_task(_update_anime_details_from_bgm_task, media.bgm_id)
+
+            # 封面取值:cover_bgm_id优先,回退绑定bgm_id;对应AnimeCatalog缺失就后台补。
+            cover_bid = media.cover_bgm_id or media.bgm_id
+            cover_catalog = (
+                catalog if cover_bid == media.bgm_id
+                else db.query(models.AnimeCatalog).filter(models.AnimeCatalog.bgm_id == cover_bid).first()
+            )
+            if cover_catalog:
+                cover_url = cover_catalog.cover_url
+            else:
+                background_tasks.add_task(_update_anime_details_from_bgm_task, cover_bid)
+
+            # 惰性触发默认封面策略:未手动选图、还没解析过cover_bgm_id、且策略非matched时,
+            # 后台按策略(最新TV季/第一季)解析出该用哪个家族成员的图,下次列表即生效。
+            if (
+                media.cover_bgm_id is None
+                and not media.cover_is_custom
+                and cover_strategy != "matched"
+            ):
+                background_tasks.add_task(_resolve_cover_bgm_id_task, media.folder_name)
 
         response_data.append({
             "id": media.id,

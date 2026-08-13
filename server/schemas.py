@@ -81,6 +81,8 @@ class SettingsUpdate(BaseModel):
     proxy_url: str = ""  # 访问外部动漫资源站时用的代理地址,留空=直连
     # 下载源覆盖配置(JSON 字符串,见 config_store.DEFAULTS['download_sources']),留空=全用默认
     download_sources: str = ""
+    # 媒体库默认封面策略: latest_tv / first_season / matched(见 config_store.DEFAULTS)
+    library_cover_strategy: str = "latest_tv"
 
     @field_validator("proxy_url")
     @classmethod
