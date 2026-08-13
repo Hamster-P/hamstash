@@ -46,6 +46,12 @@ function AppContent() {
   const [qbitSetupCompleted, setQbitSetupCompleted] = useState<boolean | null>(null);
   // 后端(NSSM服务)冷启动比前台慢:探测重试若干次仍连不上时,追加一句更详细的说明。
   const [backendSlow, setBackendSlow] = useState(false);
+  // library_root这一刻是否可达(每10秒轮询/health/library-root,见App底部的effect)。
+  // null=还没拿到第一次探测结果,不展示提醒条,避免刚启动那一瞬间闪一下"无法访问"。
+  const [libraryRootStatus, setLibraryRootStatus] = useState<{
+    accessible: boolean;
+    path: string;
+  } | null>(null);
 
   const settingsRef = useRef<SettingsPageHandle>(null);
   // 真正带滚动条的元素是这个 <main>;影视库列表/详情共用它,LibraryPage 内部
@@ -87,6 +93,31 @@ function AppContent() {
     return () => {
       cancelled = true;
       if (timer) clearTimeout(timer);
+    };
+  }, []);
+
+  useEffect(() => {
+    // library_root健康提醒:每10秒问一次后端"当前配置的媒体库路径是否可达"。
+    // 后端没起来时fetch会失败,直接忽略、等下一轮——不影响上面那个"后端冷启动"
+    // 探测,两者互相独立。
+    let cancelled = false;
+
+    const poll = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/health/library-root`);
+        if (!res.ok) return;
+        const data = (await res.json()) as { accessible: boolean; path: string };
+        if (!cancelled) setLibraryRootStatus(data);
+      } catch {
+        // 后端还没起来/网络请求失败:保持上一次已知状态,不误报
+      }
+    };
+
+    poll();
+    const interval = setInterval(poll, 10000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
     };
   }, []);
 
@@ -191,7 +222,13 @@ function AppContent() {
   }
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden">
+    <div className="flex h-screen w-screen flex-col overflow-hidden">
+      {libraryRootStatus !== null && !libraryRootStatus.accessible && (
+        <div className="flex-shrink-0 border-b border-vermillion bg-vermillion/10 px-4 py-1.5 text-center font-mono text-[11px] text-vermillion">
+          当前媒体库路径 {libraryRootStatus.path} 无法访问,请检查网络连接是否正常、磁盘/共享是否已挂载
+        </div>
+      )}
+      <div className="flex min-h-0 flex-1 overflow-hidden">
       <Sidebar active={view} onChange={handleViewChange} />
       <main ref={mainScrollRef} className="flex-1 overflow-y-auto">
         {selectedBgmId !== null ? (
@@ -244,6 +281,7 @@ function AppContent() {
           </>
         )}
       </main>
+      </div>
 
       {pendingView !== null && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/60">

@@ -12,7 +12,7 @@ import qbittorrent_client
 from database import get_db
 from routers.library import scan_and_update_library
 from schemas import ProxyTestRequest, SettingsUpdate
-from services import library_repair
+from services import library_health, library_repair
 from services.common import get_setting, upsert_setting
 from services.proxy import get_proxy_url, get_system_proxy, set_proxy_url_cache
 
@@ -222,6 +222,16 @@ async def qbittorrent_status():
     """健康检查:确认后端能不能正常登录qBittorrent。"""
     ok = await qbittorrent_client.test_connection()
     return {"connected": ok}
+
+
+@router.get("/health/library-root")
+async def library_root_health():
+    """健康检查:library_root这一刻是否可达——直接读services/library_health.py
+    维护的内存状态(每10秒探测一次),不查数据库,因为数据库本身可能就存在
+    library_root下面,连不上时没法通过它反过来判断。前端据此展示/收起一条
+    "当前媒体库路径无法访问"的提醒条。
+    """
+    return library_health.get_status()
 
 
 @router.get("/library/repair/scan")
