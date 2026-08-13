@@ -44,6 +44,24 @@ async def http_get_bytes(url: str) -> bytes:
     return resp.content
 
 
+async def probe_source_reachable(adapter: "SourceAdapter", *, timeout: float = 8.0) -> bool:
+    """轮询前的源级可达性预检:经当前代理探一下该源主 URL(adapter.proxy_probe()['url'],
+    取自 URL_FIELDS[0])能否连上。只关心传输层能否到达——拿到任何 HTTP 响应(含 4xx/5xx)
+    即算连通(链路是通的,跟 settings.py::_probe 同款判定);只有连接/代理/超时类错误才算
+    不可达。给 RSS/整理轮询"不可达就整源/整轮跳过"用,避免逐条订阅各撞一次超时。"""
+    url = (adapter.proxy_probe() or {}).get("url")
+    if not url:
+        return True  # 没有可探 URL 就不拦,交给原有逐条逻辑
+    try:
+        async with httpx.AsyncClient(
+            headers=HEADERS, timeout=timeout, proxy=get_proxy_url(), follow_redirects=True
+        ) as client:
+            await client.head(url)  # 不 raise_for_status:拿到任何响应即视为连通
+        return True
+    except Exception:
+        return False
+
+
 # ---------------------------------------------------------------------------
 # 统一结果模型
 # ---------------------------------------------------------------------------

@@ -53,6 +53,11 @@ export default function RssPage() {
   const [matchedLoading, setMatchedLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
+  // 上次 RSS 轮询的前置障碍消息(代理/qB 不可达),空=正常。只在进入页面时读一次(见下方
+  // 挂载 effect),不做定时刷新;"更新所有RSS源"按钮会重查并刷新它。
+  const [statusMessage, setStatusMessage] = useState("");
+  const [refreshingAll, setRefreshingAll] = useState(false);
+
   const loadSubs = async () => {
     setLoading(true);
     setLoadError(null);
@@ -69,9 +74,38 @@ export default function RssPage() {
     }
   };
 
+  // 读取上次 RSS 轮询的障碍消息(只读后端全局变量,不发网络探测)。
+  const loadStatus = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/rss-engine/status`);
+      if (!res.ok) return;
+      const data = (await res.json()) as { message: string };
+      setStatusMessage(data.message ?? "");
+    } catch {
+      // 后端没起/请求失败:保持上次已知消息,不误报
+    }
+  };
+
   useEffect(() => {
     loadSubs();
+    // 只在挂载(进入/重新进入本页)时刷新一次状态消息,不做定时轮询。
+    loadStatus();
   }, []);
+
+  // "更新所有RSS源":后端同步重查代理/qB(立即更新红字),无障碍则后台重跑一轮抓取。
+  const handleRefreshAll = async () => {
+    setRefreshingAll(true);
+    try {
+      const res = await fetch(`${API_BASE}/rss-engine/refresh-all`, { method: "POST" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = (await res.json()) as { message: string };
+      setStatusMessage(data.message ?? "");
+    } catch (err) {
+      console.error("更新所有RSS源失败", err);
+    } finally {
+      setRefreshingAll(false);
+    }
+  };
 
   // 选中某条订阅时加载它的命中记录——每次切换选中项都重新拉一次最新列表。
   const loadMatchedItems = async (id: number) => {
@@ -158,12 +192,27 @@ export default function RssPage() {
 
   return (
     <div className="p-8">
-      <div className="mb-6">
-        <h1 className="font-display text-2xl tracking-tight">RSS订阅一览</h1>
-        <p className="mt-1 font-mono text-[11px] text-muted">
-          后台每隔一段时间自动轮询抓取匹配的新种子;开关只控制是否参与轮询,删除前会先要求二次确认
-        </p>
+      <div className="mb-6 flex items-start justify-between gap-4">
+        <div>
+          <h1 className="font-display text-2xl tracking-tight">RSS订阅一览</h1>
+          <p className="mt-1 font-mono text-[11px] text-muted">
+            后台每隔一段时间自动轮询抓取匹配的新种子;开关只控制是否参与轮询,删除前会先要求二次确认
+          </p>
+        </div>
+        <button
+          onClick={handleRefreshAll}
+          disabled={refreshingAll}
+          className="shrink-0 rounded-md border border-border px-3 py-1.5 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion disabled:opacity-40"
+        >
+          {refreshingAll ? "更新中..." : "更新所有RSS源"}
+        </button>
       </div>
+
+      {statusMessage && (
+        <div className="mb-4 rounded-md border border-vermillion/40 bg-surface p-3 font-mono text-xs text-vermillion">
+          {statusMessage}
+        </div>
+      )}
 
       {loadError && (
         <div className="mb-4 rounded-md border border-vermillion/40 bg-surface p-3 font-mono text-xs text-vermillion">

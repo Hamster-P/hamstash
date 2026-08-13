@@ -6,17 +6,42 @@
 实际的抓取/匹配/下载全部由services/rss_poller.py的后台轮询循环(或这里的
 "立即更新"接口)负责,详见该文件顶部的说明。
 """
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 import config_store
 from database import get_db
 from models import RssMatchedItem, SubscriptionRule
 from schemas import RssMatchedItemResponse, RssSubscriptionResponse, RssToggleRequest
+from services import rss_poller
 from services.common import get_setting
 from services.rss_poller import poll_subscription
 
 router = APIRouter(prefix="/rss-engine", tags=["RSS订阅"])
+
+
+@router.get("/status")
+def rss_status():
+    """RSS 页顶部红字状态:返回上次 RSS 轮询遇到的前置障碍(代理/qBittorrent 不可达),
+    空字符串=正常。只读后台全局变量、不发任何网络请求——RssPage 进入时读一次即可。"""
+    return {"message": rss_poller.get_last_poll_status()}
+
+
+@router.post("/refresh-all")
+async def refresh_all_sources(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """"更新所有 RSS 源"按钮:同步重查代理/qBittorrent 可达性(立即更新红字),
+    若无障碍则在后台真正重跑一轮全部启用订阅的抓取。返回最新的状态消息(空=已恢复正常)。"""
+    sources = [
+        row[0]
+        for row in db.query(SubscriptionRule.source)
+        .filter(SubscriptionRule.enabled == True)  # noqa: E712
+        .distinct()
+        .all()
+    ]
+    qb_ok, unreachable = await rss_poller.check_prerequisites(sources)
+    if qb_ok and not unreachable:
+        background_tasks.add_task(rss_poller._poll_all_subscriptions)
+    return {"message": rss_poller.get_last_poll_status()}
 
 
 @router.get("/subscriptions", response_model=list[RssSubscriptionResponse])

@@ -53,6 +53,12 @@ async def organize_loop() -> None:
 
 
 async def _organize_completed_torrents() -> None:
+    # 预检:整理第一步就要连本地 qBittorrent(下面 get_completed_torrents),qB 没起时
+    # 直接给出明确提示并跳过本轮,而不是让它在下面抛出隐晦的 "All connection attempts failed"。
+    # qB 连接不走代理,这里探不通就是 qB 本身没启动/端口不对,与代理无关。
+    if not await qbittorrent_client.test_connection():
+        print("[ORGANIZE] qBittorrent 未连接,跳过本轮整理")
+        return
     db = SessionLocal()
     try:
         torrents = await qbittorrent_client.get_completed_torrents("anime-hub", ORGANIZE_TAG)

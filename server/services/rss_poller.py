@@ -27,11 +27,44 @@ import config_store
 import qbittorrent_client
 from database import SessionLocal
 from models import RssMatchedItem, SubscriptionRule
-from sources.base import SearchCriteria, matches_criteria
+from sources.base import SearchCriteria, matches_criteria, probe_source_reachable
 from sources.registry import get_source, has_source
 from services.bgm_series_cache import resolve_series_identity
 from services.common import get_setting
 from services.staging import staging_folder, upsert_anime_folder
+
+
+# 记录"上次 RSS 轮询"遇到的前置障碍(代理/qB 不可达),给 RSS 页顶部红字用。
+# 空字符串=正常;进程重启即清空(天然对应"还没轮询过,无上次结果")。
+_last_poll_status: str = ""
+
+
+def get_last_poll_status() -> str:
+    """读取上次 RSS 轮询的障碍消息(空=正常)。供 GET /rss-engine/status 直接返回。"""
+    return _last_poll_status
+
+
+async def check_prerequisites(sources: list[str]) -> tuple[bool, set[str]]:
+    """轮询前置检查:并发探 qBittorrent + 传入的各源可达性,顺便更新全局状态消息 _last_poll_status。
+    返回 (qb_ok, 不可达源集合)。sources 传"有启用订阅"的去重 source 列表——没有订阅就只探 qB。"""
+    known = [s for s in sources if has_source(s)]
+    results = await asyncio.gather(
+        qbittorrent_client.test_connection(),
+        *[probe_source_reachable(get_source(s)) for s in known],
+    )
+    qb_ok = bool(results[0])
+    unreachable = {s for s, ok in zip(known, results[1:]) if not ok}
+
+    parts = []
+    if not qb_ok:
+        parts.append("上次 RSS 轮询时 qBittorrent 无法访问,已跳过")
+    if unreachable:
+        parts.append(
+            f"上次 RSS 轮询无法访问代理(数据源 {', '.join(sorted(unreachable))} 连不上),已跳过"
+        )
+    global _last_poll_status
+    _last_poll_status = "；".join(parts)  # 无障碍则为空
+    return qb_ok, unreachable
 
 
 def _criteria_from_rule(rule: SubscriptionRule) -> SearchCriteria:
@@ -132,22 +165,46 @@ async def _poll_all_subscriptions() -> None:
     db = SessionLocal()
     try:
         download_root = get_setting(db, "download_root", config_store.DEFAULTS["download_root"])
-        rule_ids = [
-            r.id for r in db.query(SubscriptionRule).filter(SubscriptionRule.enabled == True).all()  # noqa: E712
+        # 一并取 source:预检要按源判可达性、整源跳过不可达的订阅。
+        rule_rows = [
+            (r.id, r.source)
+            for r in db.query(SubscriptionRule).filter(SubscriptionRule.enabled == True).all()  # noqa: E712
         ]
     finally:
         db.close()
+
+    if not rule_rows:
+        # 没有启用订阅:也把状态归零(避免上次的障碍消息一直挂着),然后直接结束。
+        await check_prerequisites([])
+        return
+
+    # 轮询前置预检:探 qB + 各源可达性,顺便更新 RSS 页红字用的全局状态。
+    distinct_sources = sorted({src for _rid, src in rule_rows})
+    qb_ok, unreachable = await check_prerequisites(distinct_sources)
+    if not qb_ok:
+        # qB 连不上时命中的种子也没法下载,整轮跳过(状态已由 check_prerequisites 置好)。
+        print("[RSS引擎] qBittorrent 无法访问,本轮 RSS 轮询整体跳过")
+        return
+    if unreachable:
+        skipped = sum(1 for _rid, src in rule_rows if src in unreachable)
+        print(
+            f"[RSS引擎] 源 {', '.join(sorted(unreachable))} 预检不可达(代理未开/被墙?),"
+            f"本轮跳过其 {skipped} 条订阅"
+        )
+
+    # 只轮询源可达的订阅;不可达源整源跳过、不动其 last_polled_at(真正的"未尝试")。
+    to_poll = [rid for rid, src in rule_rows if src not in unreachable]
 
     # 订阅之间统一加10秒间隔:轮询是顺序执行的,不加间隔的话订阅数量一多,
     # 同一个源(尤其是dmhy)会在很短时间内被连续密集请求,是之前被限流的风险点之一
     # (见config_store.py里rss_poll_interval_seconds默认30分钟的注释)。最后一条
     # 订阅后不用再等,不然只是白白拖长这一轮轮询的收尾时间。
-    for idx, rule_id in enumerate(rule_ids):
+    for idx, rule_id in enumerate(to_poll):
         try:
             await poll_subscription_task(rule_id, download_root)
         except Exception as e:
             print(f"[RSS引擎] 轮询订阅失败 subscription={rule_id}: {e}")
-        if idx < len(rule_ids) - 1:
+        if idx < len(to_poll) - 1:
             await asyncio.sleep(10)
 
 
