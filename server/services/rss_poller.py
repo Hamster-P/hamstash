@@ -128,6 +128,29 @@ async def poll_subscription(db: Session, rule: SubscriptionRule, download_root: 
         if already or not matches_criteria(item, criteria):
             continue
 
+        # 标题去重:guid/磁力链接不能覆盖"同一集内容被不同上游站点各自收录一次"
+        # 这种情况(典型如AnimeGarden这类聚合源,同一份资源换个provider/providerId
+        # 就是不同guid、换个上游打包就是不同磁力链接)——如果这条item的标题跟
+        # 已经成功推送下载过的另一条完全一致,判定为重复收录,不再重复下载,只记一条
+        # skipped_duplicate(这样下一轮轮询按guid判重时不会再重新判一次标题)。
+        duplicate_title = (
+            db.query(RssMatchedItem)
+            .filter(
+                RssMatchedItem.subscription_id == rule.id,
+                RssMatchedItem.title == item.title,
+                RssMatchedItem.download_status == "added",
+            )
+            .first()
+        )
+        if duplicate_title:
+            db.add(RssMatchedItem(
+                subscription_id=rule.id, guid=item.guid, info_hash=item.info_hash,
+                title=item.title, magnet=item.magnet, download_status="skipped_duplicate",
+                error="标题与已下载资源完全一致,判定为同一集内容的重复收录,未重复下载",
+            ))
+            db.commit()
+            continue
+
         try:
             upsert_anime_folder(
                 db, staging_folder_path, folder_title, main_bgm_id, rule.bgm_id, rule.auto_rename

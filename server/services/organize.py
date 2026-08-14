@@ -375,6 +375,24 @@ async def _maybe_cleanup_staging_folder(staging_folder_path: str) -> None:
         print(f"[ORGANIZE] 删除空暂存目录失败: {staging_folder_path}: {e}")
 
 
+async def _wait_for_location_change(
+    torrent_hash: str, expected_location: str, attempts: int = 5, delay: float = 1.0
+) -> bool:
+    """setLocation对qBittorrent来说是异步操作(尤其涉及大文件/跨盘搬家时),API调用
+    本身返回成功不代表文件已经落地新位置——这里轮询确认save_path真的变成了目标
+    位置,确认不了就不能继续往下走改名/打标签,否则会出现"标了完成、文件其实还在
+    老地方"这种永久卡住的假阳性(实测案例:『你们先走我断后』S01E06,种子被
+    renameFile改好名、打上hub-organized标签,但save_path始终还是暂存目录)。
+    """
+    target = os.path.normcase(os.path.normpath(expected_location))
+    for _ in range(attempts):
+        torrents = await qbittorrent_client.get_torrents_by_hashes([torrent_hash])
+        if torrents and os.path.normcase(os.path.normpath(torrents[0].get("save_path", ""))) == target:
+            return True
+        await asyncio.sleep(delay)
+    return False
+
+
 async def _organize_single_torrent(db: Session, torrent: dict) -> None:
     torrent_hash = torrent["hash"]
     staging_folder_path = torrent.get("save_path", "")
@@ -394,6 +412,9 @@ async def _organize_single_torrent(db: Session, torrent: dict) -> None:
             await qbittorrent_client.set_torrent_location(torrent_hash, target_root)
         except Exception as e:
             print(f"[ORGANIZE] 搬家失败(未改名模式) hash={torrent_hash}: {e}")
+            return
+        if not await _wait_for_location_change(torrent_hash, target_root):
+            print(f"[ORGANIZE] 搬家请求已发出但轮询确认位置未生效(未改名模式),留到下一轮重试: hash={torrent_hash}")
             return
         await qbittorrent_client.add_torrent_tags(torrent_hash, ORGANIZE_TAG)
         await _maybe_cleanup_staging_folder(staging_folder_path)
@@ -417,6 +438,11 @@ async def _organize_single_torrent(db: Session, torrent: dict) -> None:
     except Exception as e:
         print(f"[ORGANIZE] 搬家失败 hash={torrent_hash}: {e}")
         return
+
+    if not await _wait_for_location_change(torrent_hash, target_root):
+        print(f"[ORGANIZE] 搬家请求已发出但轮询确认位置未生效,本轮不继续处理,留到下一轮重试: hash={torrent_hash}")
+        return  # 不改名、不打标签——种子这一轮既没有hub-organized标签也没有RenamedFile
+                # 记录,下一次organize_loop轮询会重新捞到它再试一次,不会永久卡死
 
     # 集数偏移量、季度提示文本、季度序号,对这个种子内所有文件都一样,算一次复用即可,
     # 不用每个文件都重新查一遍Bangumi。

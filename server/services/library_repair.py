@@ -7,9 +7,13 @@
 - RenamedFile.target_relative_path / LocalMedia.folder_name 本身就是相对library_root
   存储的,library_root换目录后不需要迁移这两张表,只需要用当前的library_root重新
   跑一遍下面的检查即可自然覆盖。
-- 已整理完的文件,原始下载信息(种子标题/原始文件名)大多没有持久化,不能"回放"当初
-  的整理输入来重算——改用磁盘上当前的文件名反向重算"如果现在整理应该长什么样",
-  这样也顺带覆盖了用户手动拖进库、从未走过整理流程的文件。
+- 已整理完的文件,重算时优先用RenamedFile.original_path(种子内部的原始文件名,
+  下载时首次改名就是拿它算出当前结果的)当输入,不信任"重新解析磁盘上已经是
+  本程序自己产出的文件名"——后者对番名本身带书名号/方括号一类标点的番剧不安全,
+  重新解析可能把标题自己的一截文字误判成字幕组,形成"结果反过来喂给自己"的
+  有损自循环(实测案例:『你们先走我断后』这部番)。没有RenamedFile记录的文件
+  (用户手动拖进库、从未走过整理流程)不在本程序的管理范围内,直接跳过、不参与
+  重算,不去猜它该叫什么名字。
 """
 import asyncio
 import os
@@ -70,6 +74,26 @@ def _list_all_relpaths(anime_path: Path, library_root: Path) -> list[str]:
             full = os.path.join(dirpath, fname)
             paths.append(os.path.relpath(full, str(library_root)).replace("\\", "/"))
     return paths
+
+
+def _source_file_name_lookup(db: Session) -> dict[str, str]:
+    """target_relative_path(归一化)-> 原始种子内文件名(basename)。
+
+    整理成功(status="done")的文件都有RenamedFile记录,original_path就是当初
+    下载完成时真正用来算出改名结果的原始输入——重算时应该用它,不要重新解析
+    磁盘上已经是本程序自己产出的文件名(见模块顶部说明,那样对番名本身带书名号/
+    方括号一类标点的番剧不安全)。没有RenamedFile记录的文件不会出现在这份表里,
+    调用方应该直接跳过,不去猜它该叫什么名字。
+    """
+    lookup: dict[str, str] = {}
+    for row in (
+        db.query(models.RenamedFile)
+        .filter(models.RenamedFile.target_relative_path.isnot(None), models.RenamedFile.status == "done")
+        .all()
+    ):
+        basename = row.original_path.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+        lookup[_same_relpath(row.target_relative_path)] = basename
+    return lookup
 
 
 def reset_season_cache(db: Session) -> int:
@@ -203,6 +227,7 @@ async def scan_rename_mismatches(db: Session) -> list[dict]:
 
     results: list[dict] = []
     medias = db.query(models.LocalMedia).filter(models.LocalMedia.bgm_id.isnot(None)).all()
+    source_lookup = _source_file_name_lookup(db)
 
     for media in medias:
         # 只有物理文件夹名严格符合当前"{标题} [bgm-{id}]"命名约定时才参与重算——
@@ -257,10 +282,17 @@ async def scan_rename_mismatches(db: Session) -> list[dict]:
                 if current_full_path.suffix.lower() not in VIDEO_EXTENSIONS:
                     continue
 
+                current_rel = str(current_full_path.relative_to(library_root)).replace("\\", "/")
+                source_file_name = source_lookup.get(_same_relpath(current_rel))
+                if source_file_name is None:
+                    # 没有RenamedFile记录(用户手动拖进库、从未走过整理流程)——
+                    # 没有权威的原始输入可用,不猜它该叫什么名字,直接跳过。
+                    continue
+
                 preview = rename_engine.preview_rename_file(
                     anime_title=anime_title,
-                    file_name=ep["filename"],
-                    torrent_title=ep["filename"],
+                    file_name=source_file_name,
+                    torrent_title=source_file_name,
                     library_root=str(library_root),
                     bgm_id=media.bgm_id,
                     season_hint=args["season_hint"],
@@ -277,7 +309,6 @@ async def scan_rename_mismatches(db: Session) -> list[dict]:
                 if _normcase(current_full_path) == _normcase(proposed_path):
                     continue
 
-                current_rel = str(current_full_path.relative_to(library_root)).replace("\\", "/")
                 proposed_rel = str(proposed_path.relative_to(library_root)).replace("\\", "/") \
                     if _is_within(proposed_path, library_root) else None
                 if proposed_rel is None:
@@ -345,6 +376,8 @@ async def scan_family_folder_merges(db: Session) -> list[dict]:
     medias = db.query(models.LocalMedia).filter(models.LocalMedia.bgm_id.isnot(None)).all()
     if len(medias) < 2:
         return []
+
+    source_lookup = _source_file_name_lookup(db)
 
     # bgm_id -> 家族根bgm_id,同一次扫描内存一下,避免同一个家族的每个成员都各自
     # 重新回溯一遍。
@@ -431,10 +464,17 @@ async def scan_family_folder_merges(db: Session) -> list[dict]:
                     if current_full_path.suffix.lower() not in VIDEO_EXTENSIONS:
                         continue
 
+                    current_rel = str(current_full_path.relative_to(library_root)).replace("\\", "/")
+                    source_file_name = source_lookup.get(_same_relpath(current_rel))
+                    if source_file_name is None:
+                        # 没有RenamedFile记录(用户手动拖进库、从未走过整理流程)——
+                        # 没有权威的原始输入可用,不猜它该叫什么名字,直接跳过。
+                        continue
+
                     preview = rename_engine.preview_rename_file(
                         anime_title=anime_title,
-                        file_name=ep["filename"],
-                        torrent_title=ep["filename"],
+                        file_name=source_file_name,
+                        torrent_title=source_file_name,
                         library_root=str(library_root),
                         bgm_id=main_bgm_id,
                         season_hint=args["season_hint"],
@@ -451,7 +491,6 @@ async def scan_family_folder_merges(db: Session) -> list[dict]:
                     if not _is_within(proposed_path, library_root):
                         continue
 
-                    current_rel = str(current_full_path.relative_to(library_root)).replace("\\", "/")
                     proposed_rel = str(proposed_path.relative_to(library_root)).replace("\\", "/")
 
                     blocked = False
