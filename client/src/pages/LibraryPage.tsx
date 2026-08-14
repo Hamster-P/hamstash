@@ -1356,7 +1356,7 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
               <div className="font-mono text-xs text-muted">正在加载...</div>
             ) : movieGroups.length === 0 ? (
               <div className="py-16 text-center font-mono text-xs text-muted">
-                还没有独立展示的剧场版/OVA。下载剧场版会自动加入;也可在某部番的详情页「管理」里,把某一集设为独立剧场版/OVA。
+                还没有独立展示的剧场版/OVA。下载剧场版会自动加入;也可在某部番的详情页里,把某一集设为独立剧场版/OVA。
               </div>
             ) : filteredGroups.length === 0 ? (
               <div className="py-16 text-center font-mono text-xs text-muted">
