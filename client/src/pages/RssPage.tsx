@@ -191,8 +191,10 @@ export default function RssPage() {
   const selected = subs.find((s) => s.id === selectedId) ?? null;
 
   return (
-    <div className="p-8">
-      <div className="mb-6 flex items-start justify-between gap-4">
+    <div>
+      {/* 冻结顶部:标题 + "更新所有RSS源",滚动列表时始终可见 */}
+      <div className="sticky top-0 z-10 bg-ink px-8 pb-4 pt-8">
+      <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="font-display text-2xl tracking-tight">RSS订阅一览</h1>
           <p className="mt-1 font-mono text-[11px] text-muted">
@@ -207,7 +209,10 @@ export default function RssPage() {
           {refreshingAll ? "更新中..." : "更新所有RSS源"}
         </button>
       </div>
+      </div>
+      {/* /冻结顶部 */}
 
+      <div className="px-8 pb-8">
       {statusMessage && (
         <div className="mb-4 rounded-md border border-vermillion/40 bg-surface p-3 font-mono text-xs text-vermillion">
           {statusMessage}
@@ -409,6 +414,7 @@ export default function RssPage() {
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 }

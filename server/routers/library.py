@@ -449,6 +449,133 @@ def reset_library_cover(folder_name: str, db: Session = Depends(get_db)):
     return {"folder_name": folder_name, "cover_bgm_id": None}
 
 
+# ----- 剧场版模式:独立剧场版/OVA 登记表(StandaloneMedia)的增删查 -----
+
+def _norm_rel(path: str) -> str:
+    """rel_path 归一化成正斜杠,与 scan_local_folder_structure 的 to_rel 同格式。
+    自动加时来源是 RenamedFile.target_relative_path(反斜杠),必须转,否则和磁盘/系列分集对不上。"""
+    return (path or "").replace("\\", "/")
+
+
+class StandaloneAddRequest(BaseModel):
+    library_folder: str
+    rel_path: str
+    filename: str
+    bgm_id: int
+    media_type: str | None = None  # "movie" / "ova"
+
+
+class StandaloneRegroupRequest(BaseModel):
+    ids: list[int]
+    bgm_id: int
+
+
+@router.get("/library/standalone")
+async def list_standalone_media(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """剧场版模式的数据源:读 StandaloneMedia,每行补上封面/标题/简介(AnimeCatalog,缓存优先)、
+    观看态(PlaybackRecord 按 library_folder+filename)、以及 rel_path 是否还在磁盘(missing)。
+    返回扁平行,前端按 bgm_id 分组成卡。"""
+    rows = db.query(models.StandaloneMedia).order_by(models.StandaloneMedia.created_at.desc()).all()
+    if not rows:
+        return []
+
+    library_root = get_library_root(db)
+
+    bgm_ids = {r.bgm_id for r in rows}
+    catalogs = {
+        c.bgm_id: c
+        for c in db.query(models.AnimeCatalog).filter(models.AnimeCatalog.bgm_id.in_(bgm_ids)).all()
+    }
+    # 观看态:按 (folder_name, filename) 聚合最近一次观看时间
+    watched_rows = (
+        db.query(models.PlaybackRecord.folder_name, models.PlaybackRecord.filename,
+                 func.max(models.PlaybackRecord.watched_at))
+        .filter(models.PlaybackRecord.folder_name.in_({r.library_folder for r in rows}))
+        .group_by(models.PlaybackRecord.folder_name, models.PlaybackRecord.filename)
+        .all()
+    )
+    watched_map = {(f, n): w for f, n, w in watched_rows}
+
+    result = []
+    for r in rows:
+        catalog = catalogs.get(r.bgm_id)
+        if not catalog:
+            # 封面/标题/简介还没缓存:后台补一次,这次先用兜底,下次列表就有了。
+            background_tasks.add_task(_update_anime_details_from_bgm_task, r.bgm_id)
+        watched_at = watched_map.get((r.library_folder, r.filename))
+        result.append({
+            "id": r.id,
+            "library_folder": r.library_folder,
+            "rel_path": r.rel_path,
+            "filename": r.filename,
+            "bgm_id": r.bgm_id,
+            "media_type": r.media_type,
+            "title": (catalog.title if catalog else None),
+            "cover_url": (catalog.cover_url if catalog else None),
+            "summary": (catalog.summary if catalog else None),
+            "is_watched": watched_at is not None,
+            "watched_at": watched_at.strftime("%Y-%m-%d %H:%M:%S") if watched_at else None,
+            "missing": not (library_root / r.rel_path).exists(),
+        })
+    return result
+
+
+@router.post("/library/standalone")
+async def add_standalone_media(req: StandaloneAddRequest, db: Session = Depends(get_db)):
+    """手动/自动追加一部独立剧场版/OVA(按 rel_path upsert)。确保所选条目的 AnimeCatalog 已缓存,
+    列表立即能取到封面/标题/简介。"""
+    rel = _norm_rel(req.rel_path)
+    row = db.query(models.StandaloneMedia).filter(models.StandaloneMedia.rel_path == rel).first()
+    if row:
+        row.library_folder = req.library_folder
+        row.filename = req.filename
+        row.bgm_id = req.bgm_id
+        row.media_type = req.media_type
+    else:
+        row = models.StandaloneMedia(
+            library_folder=req.library_folder,
+            rel_path=rel,
+            filename=req.filename,
+            bgm_id=req.bgm_id,
+            media_type=req.media_type,
+            source="manual",
+        )
+        db.add(row)
+    db.commit()
+
+    exists = db.query(models.AnimeCatalog).filter(models.AnimeCatalog.bgm_id == req.bgm_id).first()
+    if not exists or not exists.cover_url:
+        await update_anime_details_from_bgm(db, req.bgm_id)
+    db.refresh(row)
+    return {"id": row.id, "rel_path": row.rel_path, "bgm_id": row.bgm_id}
+
+
+@router.delete("/library/standalone/{item_id}")
+def remove_standalone_media(item_id: int, db: Session = Depends(get_db)):
+    """仅移出剧场版列表:只删登记行,不动磁盘文件。"""
+    row = db.query(models.StandaloneMedia).filter(models.StandaloneMedia.id == item_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    db.delete(row)
+    db.commit()
+    return {"status": "success", "id": item_id}
+
+
+@router.put("/library/standalone/regroup")
+async def regroup_standalone_media(req: StandaloneRegroupRequest, db: Session = Depends(get_db)):
+    """重选条目:把这张卡下各行的 bgm_id 改成新条目(换封面/标题/简介),用于自动分配选错时手动纠正。"""
+    if not req.ids:
+        return {"status": "success", "updated": 0}
+    db.query(models.StandaloneMedia).filter(
+        models.StandaloneMedia.id.in_(req.ids)
+    ).update({models.StandaloneMedia.bgm_id: req.bgm_id}, synchronize_session=False)
+    db.commit()
+    exists = db.query(models.AnimeCatalog).filter(models.AnimeCatalog.bgm_id == req.bgm_id).first()
+    if not exists or not exists.cover_url:
+        await update_anime_details_from_bgm(db, req.bgm_id)
+    return {"status": "success", "updated": len(req.ids), "bgm_id": req.bgm_id}
+
+
 @router.get("/library/scan")
 async def scan_and_update_library(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     """
@@ -692,6 +819,11 @@ def delete_anime(folder_name: str, db: Session = Depends(get_db)):
             # 不然下次扫描会因为记录已经没了而把这部番当成"新文件夹"重新入库。
             raise HTTPException(status_code=500, detail=f"删除文件夹失败: {e}")
 
+    # 级联:清掉这部番登记在"剧场版模式"里的独立卡,避免留下指向已删文件夹的悬挂行。
+    db.query(models.StandaloneMedia).filter(
+        models.StandaloneMedia.library_folder == folder_name
+    ).delete(synchronize_session=False)
+
     db.delete(media)
     db.commit()
     return {"status": "success", "folder_name": folder_name}
@@ -725,4 +857,10 @@ def delete_episode(req: EpisodeDeleteRequest, db: Session = Depends(get_db)):
                 print(f"[LIBRARY] 删除字幕文件失败,不影响视频删除: {sibling}: {e}")
 
     target_path.unlink()
+
+    # 级联:文件删了,清掉它在"剧场版模式"里的独立卡(rel_path 归一化后比对)。
+    db.query(models.StandaloneMedia).filter(
+        models.StandaloneMedia.rel_path == _norm_rel(req.rel_path)
+    ).delete(synchronize_session=False)
+    db.commit()
     return {"status": "success", "rel_path": req.rel_path}

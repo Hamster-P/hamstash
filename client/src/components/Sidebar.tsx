@@ -2,6 +2,7 @@ import {
   Calendar,
   Search,
   LibraryBig,
+  Film,
   DownloadCloud,
   Rss,
   Settings,
@@ -12,6 +13,7 @@ export type View =
   | "tracking"
   | "search"
   | "library"
+  | "movieLibrary"
   | "download"
   | "downloadManager"
   | "rss"
@@ -28,6 +30,7 @@ const items: { key: View; label: string; icon: LucideIcon }[] = [
   { key: "downloadManager", label: "下载", icon: DownloadCloud },
   { key: "rss", label: "RSS", icon: Rss },
   { key: "library", label: "影视库", icon: LibraryBig },
+  { key: "movieLibrary", label: "剧场版", icon: Film },
   { key: "settings", label: "设置", icon: Settings },
 ];
 

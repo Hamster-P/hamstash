@@ -7,8 +7,10 @@ organize.py/subscription.py都要用，放在一起管理。
 """
 from sqlalchemy.orm import Session
 
+import os
+
 import rename_engine
-from models import AnimeFolder, RenamedFile
+from models import AnimeFolder, RenamedFile, StandaloneMedia
 
 RSS_FOLDER = "anime-hub"  # 我们在qBittorrent的RSS订阅目录树里统一挂在这个文件夹下
 ORGANIZE_TAG = "hub-organized"  # 打上这个标签代表后台整理任务已经处理过这个种子
@@ -92,6 +94,38 @@ def upsert_renamed_file(
             release_version=release_version,
         )
         db.add(row)
+    db.commit()
+
+
+def upsert_standalone_media(
+    db: Session,
+    library_folder: str,
+    target_relative_path: str,
+    bgm_id: int | None,
+    media_type: str,
+) -> None:
+    """整理时识别到剧场版/OVA 文件,把它登记进"剧场版模式"列表(按 rel_path upsert)。
+    rel_path 统一存正斜杠(target_relative_path 是反斜杠),与影视库扫盘/播放路径对齐。
+    bgm_id 取下载时选的条目(folder.season_bgm_id);为空则跳过(没有可展示的封面来源)。"""
+    if not bgm_id or not target_relative_path:
+        return
+    rel_path = target_relative_path.replace("\\", "/")
+    row = db.query(StandaloneMedia).filter(StandaloneMedia.rel_path == rel_path).first()
+    if row:
+        row.library_folder = library_folder
+        row.filename = os.path.basename(rel_path)
+        row.bgm_id = bgm_id
+        row.media_type = media_type
+        row.source = "download"
+    else:
+        db.add(StandaloneMedia(
+            library_folder=library_folder,
+            rel_path=rel_path,
+            filename=os.path.basename(rel_path),
+            bgm_id=bgm_id,
+            media_type=media_type,
+            source="download",
+        ))
     db.commit()
 
 

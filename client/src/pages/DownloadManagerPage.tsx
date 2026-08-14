@@ -212,7 +212,9 @@ export default function DownloadManagerPage() {
   };
 
   return (
-    <div className="p-8">
+    <div>
+      {/* 冻结顶部:标题 + 筛选/批量操作,滚动列表时始终可见 */}
+      <div className="sticky top-0 z-10 bg-ink px-8 pb-4 pt-8">
       <div className="mb-6 flex items-center justify-between">
         <div>
           <h1 className="font-display text-2xl tracking-tight">下载详情</h1>
@@ -278,7 +280,10 @@ export default function DownloadManagerPage() {
           </div>
         )}
       </div>
+      </div>
+      {/* /冻结顶部 */}
 
+      <div className="px-8 pb-8">
       {loadError && (
         <div className="mb-4 rounded-md border border-vermillion/40 bg-surface p-3 font-mono text-xs text-vermillion">
           {loadError}
@@ -465,6 +470,7 @@ export default function DownloadManagerPage() {
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 }

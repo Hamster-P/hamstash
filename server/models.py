@@ -189,6 +189,29 @@ class RssMatchedItem(Base):
     matched_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class StandaloneMedia(Base):
+    """要在影视库"剧场版模式"里单独成卡展示的剧场版/OVA 文件登记表。
+    表驱动、逐文件一行——不扫盘、不从路径自动判断谁是剧场版。两条写入路径:
+    1) 用户在系列详情分集里手动追加(source="manual");
+    2) 下载整理时识别到 movie/OVA 的文件自动追加(source="download",bgm_id 取下载时选的条目)。
+    展示时前端按 bgm_id 分组成卡(一部剧场版1集/OVA多集),点进迷你详情列各集。
+
+    rel_path 一律存正斜杠、与 routers/library.py::scan_local_folder_structure 的 to_rel 同格式
+    (自动加时 RenamedFile.target_relative_path 是反斜杠,写表前要转正斜杠),否则卡片会跟
+    磁盘/系列分集对不上、一直 missing。
+    """
+    __tablename__ = "standalone_media"
+
+    id = Column(Integer, primary_key=True, index=True)
+    library_folder = Column(String, nullable=False, index=True)  # 文件所属库文件夹名(LocalMedia.folder_name)
+    rel_path = Column(String, unique=True, nullable=False, index=True)  # 相对library_root的正斜杠路径,去重键
+    filename = Column(String, nullable=False)
+    bgm_id = Column(Integer, nullable=False, index=True)  # 作为封面/标题/简介的剧场版/OVA条目,也是分组键
+    media_type = Column(String, nullable=True)  # "movie" / "ova"
+    source = Column(String, nullable=False, default="manual")  # "manual" / "download"
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class AnimeOriginCache(Base):
     """
     bgm_id -> 是否日本产地的持久化缓存,产地数据来自Bangumi条目的meta_tags字段

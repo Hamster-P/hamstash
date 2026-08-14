@@ -20,7 +20,12 @@ from database import SessionLocal
 from models import AnimeFolder, RenamedFile
 from services.bgm_series_cache import build_season_episode_table, resolve_tv_season_ordinal_cached
 from services.common import get_setting
-from services.staging import ORGANIZE_TAG, get_current_version_at_target, upsert_renamed_file
+from services.staging import (
+    ORGANIZE_TAG,
+    get_current_version_at_target,
+    upsert_renamed_file,
+    upsert_standalone_media,
+)
 
 
 async def organize_loop() -> None:
@@ -248,11 +253,13 @@ def _resolve_version_conflict(
 
 
 async def _apply_organize_plan(
-    db: Session, torrent_hash: str, all_paths: list[str], plans: list[dict]
+    db: Session, torrent_hash: str, all_paths: list[str], plans: list[dict],
+    library_folder: str = "", source_bgm_id: int | None = None,
 ) -> None:
     """执行_preview_files_for_organize算好的改名预览:逐个处理版本冲突判定、
     实际调用qBittorrent renameFile/deleteTorrent、字幕跟随改名,并把每个文件的
-    结果写回RenamedFile表。"""
+    结果写回RenamedFile表。library_folder/source_bgm_id 用于把剧场版/OVA 文件登记进
+    "剧场版模式"列表(source_bgm_id=下载时选的条目 folder.season_bgm_id)。"""
     for item in plans:
         video_path = item["video_path"]
         preview = item["preview"]
@@ -326,6 +333,12 @@ async def _apply_organize_plan(
                 db, torrent_hash, video_path, status="done",
                 target=preview["target_relative_path"], release_version=this_version,
             )
+            # 剧场版/OVA:登记进"剧场版模式"列表,封面用下载时选的条目 id。
+            if preview.get("media_type") in ("movie", "ova"):
+                upsert_standalone_media(
+                    db, library_folder, preview["target_relative_path"],
+                    source_bgm_id, preview["media_type"],
+                )
         except Exception as e:
             upsert_renamed_file(
                 db, torrent_hash, video_path, status="failed",
@@ -412,7 +425,11 @@ async def _organize_single_torrent(db: Session, torrent: dict) -> None:
     plans = _preview_files_for_organize(
         db, folder, context["library_root"], season_context, torrent, video_paths
     )
-    await _apply_organize_plan(db, torrent_hash, all_paths, plans)
+    # 库文件夹名 = 目标根目录的最后一段(剧场版/OVA 登记进"剧场版模式"时要用)。
+    library_folder = os.path.basename(target_root.replace("\\", "/").rstrip("/"))
+    await _apply_organize_plan(
+        db, torrent_hash, all_paths, plans, library_folder, folder.season_bgm_id
+    )
 
     # 不管有没有文件失败,都打标签结束这一轮——失败文件的状态已经记进RenamedFile表,
     # 不会无限重试刷日志;后续要重跑,可以手动清掉这个标签(或者以后加个"重试"按钮)。

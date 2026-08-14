@@ -27,6 +27,29 @@ interface CoverCandidate {
   cover_url: string;
 }
 
+// 常规 TV 季桶(Season 01/02...):这些是正片,不给"添加到剧场版模式"按钮。
+// Season 00 / 剧场版 / OVA / Other / Specials/Others 都不算常规季 → 显示按钮。
+function isRegularSeasonBucket(name: string): boolean {
+  const m = /^season\s*(\d+)$/i.exec(name.trim());
+  return m ? parseInt(m[1], 10) >= 1 : false;
+}
+
+// 剧场版模式:一行独立剧场版/OVA(逐文件),前端按 bgm_id 分组成卡
+interface StandaloneItem {
+  id: number;
+  library_folder: string;
+  rel_path: string;
+  filename: string;
+  bgm_id: number;
+  media_type: string | null;
+  title: string | null;
+  cover_url: string | null;
+  summary: string | null;
+  is_watched: boolean;
+  watched_at: string | null;
+  missing: boolean;
+}
+
 interface Episode {
   filename: string;
   rel_path: string;
@@ -51,6 +74,18 @@ interface LibraryPageProps {
   onManualMatch?: (folderName: string) => void;
   // 带滚动条的 <main>(见 App.tsx),用来在列表↔详情内部切换时保存/恢复网格滚动位置
   scrollContainerRef?: React.RefObject<HTMLElement | null>;
+  // true=这是独立的"剧场版"页面(侧边栏单独入口):只显示剧场版模式,不扫盘、无系列网格
+  movieOnly?: boolean;
+}
+
+// 从整理后的文件名里提取标题部分作为默认检索词:去扩展名 + 去 [字幕组]/【】/() 标签 + 折叠空白。
+// 例:"名侦探柯南 独眼的残像 [SBSUB][1080P].mp4" -> "名侦探柯南 独眼的残像"
+function cleanTitleFromFilename(filename: string): string {
+  return filename
+    .replace(/\.[^.]+$/, "")
+    .replace(/[[【(（][^\]】)）]*[\]】)）]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 const API_BASE = "http://127.0.0.1:8080";
@@ -106,7 +141,7 @@ function parseLibraryPath(
   return { folderName: parts[0], filename: parts[parts.length - 1] };
 }
 
-export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContainerRef }: LibraryPageProps) {
+export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContainerRef, movieOnly = false }: LibraryPageProps) {
   const [animes, setAnimes] = useState<LibraryAnime[]>([]);
   const [selectedAnime, setSelectedAnime] = useState<LibraryAnime | null>(null);
   const [detail, setDetail] = useState<AnimeDetail | null>(null);
@@ -138,6 +173,23 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
   const [coverLoading, setCoverLoading] = useState(false);
   const [coverBusy, setCoverBusy] = useState(false);
 
+  // 剧场版模式独立成 movieOnly 页面(见 movieOnly prop),不再用 viewMode toggle。
+  const [standalones, setStandalones] = useState<StandaloneItem[]>([]);
+  const [standaloneLoading, setStandaloneLoading] = useState(false);
+  const [movieManage, setMovieManage] = useState(false); // 剧场版模式管理态
+  const [activeBgm, setActiveBgm] = useState<number | null>(null); // hover 聚焦条目(只驱动上方 hero)
+  const [expandedBgm, setExpandedBgm] = useState<number | null>(null); // 点击展开的条目(驱动多条明细行);hover 到别的卡自动收起
+  const [movieWatchFilter, setMovieWatchFilter] = useState<"all" | "unwatched" | "watched">("all");
+  const [pendingMovieDelete, setPendingMovieDelete] = useState<string | null>(null); // 删文件二次确认(rel_path)
+  const [movieBusy, setMovieBusy] = useState(false);
+  // 选条目弹窗(手动追加 / 重选条目共用):复用 BangumiResultsList
+  const [pickerMode, setPickerMode] = useState<"add" | "regroup" | null>(null);
+  const [pickerAddCtx, setPickerAddCtx] = useState<{ library_folder: string; rel_path: string; filename: string } | null>(null);
+  const [pickerRegroupIds, setPickerRegroupIds] = useState<number[]>([]);
+  const [pickerKeyword, setPickerKeyword] = useState("");
+  const [pickerResults, setPickerResults] = useState<BangumiSubject[]>([]);
+  const [pickerLoading, setPickerLoading] = useState(false);
+
   const isPlayingRef = useRef(false); // 新增：播放锁
   // 进详情视图那一刻网格的滚动位置,返回列表时恢复。列表/详情共用 <main> 这一个滚动条,
   // 内部切换不卸载组件,所以用 ref 存即可,不需要 sessionStorage。
@@ -158,7 +210,9 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
   // 进页面不再阻塞等扫盘(scandir/stat 在网络共享媒体库下会卡)——先 fetchAnimes 从 DB
   // 直接把列表渲染出来,扫盘丢后台跑,跑完再静默(silent,不闪"正在加载")刷新一次。
   useEffect(() => {
-    fetchSettings();
+    fetchSettings(); // 播放路径要用,两种页面都要
+    // 剧场版页(movieOnly):不扫盘、不拉系列列表(那些由上面的 movieOnly effect 拉 standalone)。
+    if (movieOnly) return;
     fetchAnimes();
     fetch(`${API_BASE}/library/scan`)
       .then(() => fetchAnimes(true))
@@ -169,6 +223,7 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
         if (data?.mode) setSort(data.mode as SortMode);
       })
       .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // 从后端或本地获取设置
@@ -279,6 +334,209 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [animes]);
 
+  // ---- 剧场版模式 ----
+  const fetchStandalones = (silent = false) => {
+    if (!silent) setStandaloneLoading(true);
+    fetch(`${API_BASE}/library/standalone`)
+      .then((res) => res.json())
+      .then((data) => setStandalones(Array.isArray(data) ? data : []))
+      .catch(() => setStandalones([]))
+      .finally(() => { if (!silent) setStandaloneLoading(false); });
+  };
+
+  // 剧场版页(movieOnly)挂载时拉一次列表
+  useEffect(() => {
+    if (movieOnly) fetchStandalones();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [movieOnly]);
+
+  // 进某部番详情时,静默拉一次 standalone 列表——好让分集里"添加到剧场版模式"按钮
+  // 知道哪些集已经加过(显示"已添加到剧场版")。
+  useEffect(() => {
+    if (selectedAnime) fetchStandalones(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedAnime]);
+
+  // 已加入剧场版模式的文件 rel_path 集合(给分集按钮判断状态用)
+  const addedRelPaths = useMemo(() => new Set(standalones.map((s) => s.rel_path)), [standalones]);
+
+  // 按 bgm_id 分组成卡:一部剧场版/OVA 一张卡(可含多集)
+  const movieGroups = useMemo(() => {
+    const m = new Map<number, StandaloneItem[]>();
+    for (const s of standalones) {
+      const arr = m.get(s.bgm_id) ?? [];
+      arr.push(s);
+      m.set(s.bgm_id, arr);
+    }
+    return Array.from(m.entries()).map(([bgm_id, items]) => ({ bgm_id, items }));
+  }, [standalones]);
+
+  // 观看态筛选:整组各集都看过才算"已看"
+  const filteredGroups = useMemo(() => {
+    if (movieWatchFilter === "all") return movieGroups;
+    return movieGroups.filter((g) => {
+      const allWatched = g.items.every((i) => i.is_watched);
+      return movieWatchFilter === "watched" ? allWatched : !allWatched;
+    });
+  }, [movieGroups, movieWatchFilter]);
+
+  // 当前聚焦条目下的各集(hero/明细行据此显示)
+  const activeItems = useMemo(
+    () => (activeBgm === null ? [] : standalones.filter((s) => s.bgm_id === activeBgm)),
+    [activeBgm, standalones],
+  );
+  const activeHead = activeItems[0];
+  // 点击展开的那部的各集(多条明细行)
+  const expandedItems = useMemo(
+    () => (expandedBgm === null ? [] : standalones.filter((s) => s.bgm_id === expandedBgm)),
+    [expandedBgm, standalones],
+  );
+
+  // 默认/纠偏聚焦:activeBgm 为空或已不在当前筛选结果里 → 落到第一张;carouselStart 越界归零;
+  // 展开的条目若已不在筛选结果里 → 收起明细行。
+  useEffect(() => {
+    if (!movieOnly) return;
+    if (!filteredGroups.some((g) => g.bgm_id === activeBgm)) {
+      setActiveBgm(filteredGroups[0]?.bgm_id ?? null);
+    }
+    if (expandedBgm !== null && !filteredGroups.some((g) => g.bgm_id === expandedBgm)) {
+      setExpandedBgm(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filteredGroups, movieOnly]);
+
+  // 播放一个独立剧场版/OVA 文件(单文件,不做整季连播)
+  const handlePlayStandalone = async (item: StandaloneItem) => {
+    if (isPlayingRef.current) return;
+    isPlayingRef.current = true;
+    try {
+      markWatched(item.library_folder, item.filename);
+      const cleanRoot = settings.library_root.replace(/[/\\]$/, "");
+      const localVideoPath = `${cleanRoot}\\${item.rel_path.replace(/\//g, "\\")}`;
+      if (await isTauri()) {
+        if (settings.player_mode === "builtin") {
+          await invoke("open_builtin_player", { videoPaths: [localVideoPath] }).catch((err: any) =>
+            console.error("拉起内置播放器失败:", err));
+        } else {
+          await invoke("open_external_player", {
+            videoPath: localVideoPath, playerPath: settings.potplayer_path,
+          }).catch((err: any) => console.error("唤起播放器失败:", err));
+        }
+      } else {
+        console.log("[开发调试] 模拟播放剧场版:", localVideoPath);
+      }
+      // 乐观更新本地已看态
+      setStandalones((prev) =>
+        prev.map((s) => (s.rel_path === item.rel_path ? { ...s, is_watched: true } : s)),
+      );
+    } finally {
+      setTimeout(() => { isPlayingRef.current = false; }, 1000);
+    }
+  };
+
+  // 删文件(复用删集接口,后端级联清表行);删完刷新列表
+  const handleDeleteStandaloneFile = async (item: StandaloneItem) => {
+    setMovieBusy(true);
+    try {
+      const res = await fetch(`${API_BASE}/library/episode/delete`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rel_path: item.rel_path }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setStandalones((prev) => prev.filter((s) => s.rel_path !== item.rel_path));
+    } catch (err) {
+      console.error("删除剧场版文件失败", err);
+    } finally {
+      setMovieBusy(false);
+      setPendingMovieDelete(null);
+    }
+  };
+
+  // 仅移出列表(保留文件)
+  const handleRemoveStandalone = async (item: StandaloneItem) => {
+    setMovieBusy(true);
+    try {
+      const res = await fetch(`${API_BASE}/library/standalone/${item.id}`, { method: "DELETE" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setStandalones((prev) => prev.filter((s) => s.id !== item.id));
+    } catch (err) {
+      console.error("移出剧场版列表失败", err);
+    } finally {
+      setMovieBusy(false);
+    }
+  };
+
+  // hover 卡:只更新上方 hero;若之前展开的是别的卡,自动收起明细行
+  const handleMovieCardHover = (bgm: number) => {
+    setActiveBgm(bgm);
+    setExpandedBgm((cur) => (cur !== null && cur !== bgm ? null : cur));
+  };
+
+  // 点卡:管理态点=展开明细(删/移出);非管理态,单文件直接播、多文件点击才展开明细行
+  const handleMovieCardClick = (g: { bgm_id: number; items: StandaloneItem[] }) => {
+    if (movieManage) { setExpandedBgm(g.bgm_id); return; }
+    if (g.items.length === 1) handlePlayStandalone(g.items[0]);
+    else setExpandedBgm(g.bgm_id);
+  };
+
+  // ---- 选条目弹窗(手动追加 / 重选条目共用) ----
+  const openPickerForAdd = (ep: Episode) => {
+    if (!selectedAnime) return;
+    setPickerMode("add");
+    setPickerAddCtx({ library_folder: selectedAnime.folder_name, rel_path: ep.rel_path, filename: ep.filename });
+    // 默认检索词用这一行文件名的标题部分(去字幕组/画质标签),而非根目录名,降低选错概率
+    setPickerKeyword(cleanTitleFromFilename(ep.filename));
+    setPickerResults([]);
+  };
+  const openPickerForRegroup = (items: StandaloneItem[]) => {
+    setPickerMode("regroup");
+    setPickerRegroupIds(items.map((i) => i.id));
+    setPickerKeyword(items[0]?.title ?? "");
+    setPickerResults([]);
+  };
+  const closePicker = () => {
+    setPickerMode(null);
+    setPickerAddCtx(null);
+    setPickerRegroupIds([]);
+    setPickerResults([]);
+    setPickerKeyword("");
+  };
+  const runPickerSearch = () => {
+    const kw = pickerKeyword.trim();
+    if (!kw) return;
+    setPickerLoading(true);
+    fetch(`${API_BASE}/bangumi/search?keyword=${encodeURIComponent(kw)}`)
+      .then((res) => res.json())
+      .then((data) => setPickerResults(data?.data ?? []))
+      .catch(() => setPickerResults([]))
+      .finally(() => setPickerLoading(false));
+  };
+  const pickerSelect = async (bgmId: number) => {
+    setMovieBusy(true);
+    try {
+      if (pickerMode === "add" && pickerAddCtx) {
+        const res = await fetch(`${API_BASE}/library/standalone`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...pickerAddCtx, bgm_id: bgmId, media_type: null }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      } else if (pickerMode === "regroup") {
+        const res = await fetch(`${API_BASE}/library/standalone/regroup`, {
+          method: "PUT", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ids: pickerRegroupIds, bgm_id: bgmId }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      }
+      closePicker();
+      // 刷新 standalone 列表:剧场版模式网格更新,同时分集里的"添加"按钮翻成"已添加"。
+      fetchStandalones(true);
+    } catch (err) {
+      console.error("设置独立剧场版/OVA 失败", err);
+    } finally {
+      setMovieBusy(false);
+    }
+  };
+
   // 唯一会触发完整扫盘的入口:先GET /library/scan(遍历硬盘、刷新mtime),
   // 再拉一遍列表——挂载时和"刷新 & 扫盘"按钮用这个,其余场景(比如切换排序)
   // 不需要重新问硬盘要一遍数据。
@@ -379,6 +637,9 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
         throw new Error(body?.detail ?? `HTTP ${res.status}`);
       }
       setPendingDeleteEpisode(null);
+      // 后端删文件时已级联删掉剧场版表里该 rel_path 的行(见 /library/episode/delete),
+      // 这里同步本地 standalones,让"已添加到剧场版"状态即时更新。
+      setStandalones((prev) => prev.filter((s) => s.rel_path !== ep.rel_path));
       setDetail((prev) => {
         if (!prev) return prev;
         const newSeasons: Record<string, Episode[]> = {};
@@ -762,17 +1023,36 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
                               </button>
                             )
                           ) : (
-                            <button
-                              onClick={() => handlePlay(ep)}
-                              className={`flex w-28 shrink-0 items-center justify-center gap-1.5 rounded-md border px-3 py-1.5 font-mono text-xs transition-colors ${
-                                ep.is_watched
-                                  ? "border-border bg-surface text-muted hover:border-vermillion hover:text-vermillion"
-                                  : "border-vermillion bg-vermillion text-ink hover:bg-vermillion/90"
-                              }`}
-                            >
-                              <Play size={14} fill="currentColor" />
-                              {ep.is_watched ? "再次播放" : "播放"}
-                            </button>
+                            <div className="flex shrink-0 items-center gap-2 font-mono text-xs">
+                              {/* 非常规季桶(剧场版/OVA/Season 00/Other/Specials)默认就显示"添加到剧场版模式";
+                                  已加过的显示"已添加到剧场版"(不可再点)。常规 Season 01+ 不显示。 */}
+                              {!isRegularSeasonBucket(seasonName) && (
+                                addedRelPaths.has(ep.rel_path) ? (
+                                  <span className="rounded-md border border-border px-3 py-1.5 text-muted/70">
+                                    已添加到剧场版
+                                  </span>
+                                ) : (
+                                  <button
+                                    onClick={() => openPickerForAdd(ep)}
+                                    title="把这一集作为独立剧场版/OVA 加入剧场版模式"
+                                    className="rounded-md border border-border px-3 py-1.5 text-muted transition-colors hover:border-vermillion hover:text-vermillion"
+                                  >
+                                    添加到剧场版模式
+                                  </button>
+                                )
+                              )}
+                              <button
+                                onClick={() => handlePlay(ep)}
+                                className={`flex w-28 items-center justify-center gap-1.5 rounded-md border px-3 py-1.5 transition-colors ${
+                                  ep.is_watched
+                                    ? "border-border bg-surface text-muted hover:border-vermillion hover:text-vermillion"
+                                    : "border-vermillion bg-vermillion text-ink hover:bg-vermillion/90"
+                                }`}
+                              >
+                                <Play size={14} fill="currentColor" />
+                                {ep.is_watched ? "再次播放" : "播放"}
+                              </button>
+                            </div>
                           )}
                         </div>
                       ))}
@@ -789,55 +1069,99 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
         </div>
       ) : (
         /* 列表视图 */
-        <div className="p-8">
+        <div>
+          {/* 冻结顶部:标题+控件(剧场版再含 hero+明细行),照追更页做法始终贴顶不滚 */}
+          <div className="sticky top-0 z-20 bg-ink px-8 pb-4 pt-8">
           <div className="flex justify-between items-center mb-6">
             <div>
-              <h1 className="font-display text-2xl tracking-tight">影视库</h1>
-              <p className="font-mono text-xs text-muted mt-1">
-                关联目录：{settings.library_root} | 发现 {animes.length} 部动画
-              </p>
+              <h1 className="font-display text-2xl tracking-tight">{movieOnly ? "剧场版" : "影视库"}</h1>
+              {!movieOnly && (
+                <p className="font-mono text-xs text-muted mt-1">
+                  关联目录：{settings.library_root} | 发现 {animes.length} 部动画
+                </p>
+              )}
             </div>
             <div className="flex items-center gap-2">
-              <div className="flex overflow-hidden rounded-md border border-border font-mono text-xs">
-                {(
-                  [
-                    { value: "default", label: "默认" },
-                    { value: "recent_watched", label: "最近观看" },
-                    { value: "recent_updated", label: "最新更新" },
-                  ] as { value: SortMode; label: string }[]
-                ).map((opt) => (
+              {/* 影视库页:排序 / 刷新扫盘 / 管理。剧场版页:表驱动、不扫盘,只有管理。 */}
+              {!movieOnly ? (
+                <>
+                  <div className="flex overflow-hidden rounded-md border border-border font-mono text-xs">
+                    {(
+                      [
+                        { value: "default", label: "默认" },
+                        { value: "recent_watched", label: "最近观看" },
+                        { value: "recent_updated", label: "最新更新" },
+                      ] as { value: SortMode; label: string }[]
+                    ).map((opt) => (
+                      <button
+                        key={opt.value}
+                        onClick={() => handleSortChange(opt.value)}
+                        className={`px-3 py-1.5 transition-colors ${
+                          sort === opt.value
+                            ? "bg-vermillion text-ink"
+                            : "bg-surface text-muted hover:bg-surface-hover hover:text-paper"
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
                   <button
-                    key={opt.value}
-                    onClick={() => handleSortChange(opt.value)}
-                    className={`px-3 py-1.5 transition-colors ${
-                      sort === opt.value
-                        ? "bg-vermillion text-ink"
-                        : "bg-surface text-muted hover:bg-surface-hover hover:text-paper"
+                    onClick={() => scanAndFetchAnimes()}
+                    className="rounded-md border border-border px-3 py-1.5 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion"
+                  >
+                    刷新 & 扫盘
+                  </button>
+                  <button
+                    onClick={() => {
+                      setMatchMode((v) => !v);
+                      setPendingDeleteFolder(null);
+                    }}
+                    className={`rounded-md border px-3 py-1.5 font-mono text-xs transition-colors ${
+                      matchMode
+                        ? "border-vermillion bg-vermillion text-ink"
+                        : "border-border text-muted hover:border-vermillion hover:text-vermillion"
                     }`}
                   >
-                    {opt.label}
+                    {matchMode ? "结束管理" : "管理"}
                   </button>
-                ))}
-              </div>
-              <button
-                onClick={() => scanAndFetchAnimes()}
-                className="rounded-md border border-border px-3 py-1.5 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion"
-              >
-                刷新 & 扫盘
-              </button>
-              <button
-                onClick={() => {
-                  setMatchMode((v) => !v);
-                  setPendingDeleteFolder(null);
-                }}
-                className={`rounded-md border px-3 py-1.5 font-mono text-xs transition-colors ${
-                  matchMode
-                    ? "border-vermillion bg-vermillion text-ink"
-                    : "border-border text-muted hover:border-vermillion hover:text-vermillion"
-                }`}
-              >
-                {matchMode ? "结束管理" : "管理"}
-              </button>
+                </>
+              ) : (
+                <>
+                  {/* 观看态筛选:全部 / 未看 / 已看 */}
+                  <div className="flex overflow-hidden rounded-md border border-border font-mono text-xs">
+                    {(
+                      [
+                        { value: "all", label: "全部" },
+                        { value: "unwatched", label: "未看" },
+                        { value: "watched", label: "已看" },
+                      ] as { value: "all" | "unwatched" | "watched"; label: string }[]
+                    ).map((opt) => (
+                      <button
+                        key={opt.value}
+                        onClick={() => setMovieWatchFilter(opt.value)}
+                        className={`px-3 py-1.5 transition-colors ${
+                          movieWatchFilter === opt.value
+                            ? "bg-vermillion text-ink"
+                            : "bg-surface text-muted hover:bg-surface-hover hover:text-paper"
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                  <button
+                    onClick={() => { setMovieManage((v) => !v); setPendingMovieDelete(null); }}
+                    className={`rounded-md border px-3 py-1.5 font-mono text-xs transition-colors ${
+                      movieManage
+                        ? "border-vermillion bg-vermillion text-ink"
+                        : "border-border text-muted hover:border-vermillion hover:text-vermillion"
+                    }`}
+                  >
+                    {movieManage ? "结束管理" : "管理"}
+                  </button>
+                </>
+              )}
             </div>
           </div>
 
@@ -847,7 +1171,84 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
             </div>
           )}
 
-          {loading ? (
+          {/* 剧场版 hero + 明细行:放进冻结顶部,滚动卡片网格时保持不动 */}
+          {movieOnly && activeHead && (
+            <div className="flex gap-6 rounded-md border border-border bg-surface p-5">
+              <div className="h-56 w-40 shrink-0 overflow-hidden rounded-md bg-ink shadow-lg">
+                {activeHead.cover_url ? (
+                  <img src={proxiedImageUrl(activeHead.cover_url)} alt={activeHead.title ?? ""} className="h-full w-full object-cover" />
+                ) : (
+                  <div className="flex h-full w-full flex-col items-center justify-center gap-2 text-muted">
+                    <Loader2 size={24} strokeWidth={1.5} className="animate-spin" />
+                    <span className="text-[10px] font-mono">等待更新</span>
+                  </div>
+                )}
+              </div>
+              <div className="flex min-w-0 flex-1 flex-col">
+                <h1 className="mb-2 text-2xl font-bold">{activeHead.title || activeHead.filename}</h1>
+                <p className="flex-1 overflow-hidden font-mono text-xs leading-relaxed text-muted line-clamp-[9]">
+                  {activeHead.summary || "暂无简介"}
+                </p>
+                {movieManage && (
+                  <div className="mt-3 flex items-center gap-2 font-mono text-xs">
+                    <button
+                      onClick={() => openPickerForRegroup(activeItems)}
+                      className="rounded-md border border-border px-3 py-1.5 text-muted transition-colors hover:border-vermillion hover:text-vermillion"
+                    >
+                      重选条目
+                    </button>
+                    <button
+                      disabled={movieBusy}
+                      onClick={() => activeItems.forEach((it) => handleRemoveStandalone(it))}
+                      className="rounded-md border border-vermillion px-3 py-1.5 text-vermillion transition-colors hover:bg-vermillion hover:text-ink disabled:opacity-40"
+                    >
+                      移出列表
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+          {movieOnly && expandedBgm !== null && expandedItems.length > 0 && (
+            <div className="mt-4 flex flex-col gap-1.5 rounded-md border border-border bg-surface p-3">
+              {expandedItems.map((item) => (
+                <div key={item.id} className="flex items-center justify-between gap-3 rounded px-2 py-1.5 hover:bg-paper/5">
+                  <div className="flex min-w-0 items-center gap-2">
+                    {item.is_watched && <CheckCircle2 size={14} className="shrink-0 text-green-500/80" />}
+                    <span className={`min-w-0 truncate font-mono text-xs ${item.is_watched ? "text-muted line-through" : "text-paper"} ${item.missing ? "opacity-50" : ""}`} title={item.rel_path}>
+                      {item.filename}{item.missing ? "(文件缺失)" : ""}
+                    </span>
+                  </div>
+                  {movieManage ? (
+                    pendingMovieDelete === item.rel_path ? (
+                      <div className="flex shrink-0 items-center gap-1.5 font-mono text-xs">
+                        <button disabled={movieBusy} onClick={() => handleDeleteStandaloneFile(item)} className="rounded border border-vermillion bg-vermillion px-2 py-1 text-ink hover:bg-vermillion/90 disabled:opacity-40">确定删</button>
+                        <button onClick={() => setPendingMovieDelete(null)} className="rounded border border-border bg-surface px-2 py-1 text-muted hover:text-paper">取消</button>
+                      </div>
+                    ) : (
+                      <div className="flex shrink-0 items-center gap-2 font-mono text-xs">
+                        <button onClick={() => setPendingMovieDelete(item.rel_path)} className="rounded-md border border-vermillion bg-vermillion px-3 py-1 text-ink hover:bg-vermillion/90">删除文件</button>
+                        <button disabled={movieBusy} onClick={() => handleRemoveStandalone(item)} className="rounded-md border border-border px-3 py-1 text-muted hover:border-vermillion hover:text-vermillion disabled:opacity-40">仅移出</button>
+                      </div>
+                    )
+                  ) : (
+                    <button
+                      disabled={item.missing}
+                      onClick={() => handlePlayStandalone(item)}
+                      className={`flex w-24 shrink-0 items-center justify-center gap-1.5 rounded-md border px-3 py-1 font-mono text-xs transition-colors disabled:opacity-40 ${item.is_watched ? "border-border bg-surface text-muted hover:border-vermillion hover:text-vermillion" : "border-vermillion bg-vermillion text-ink hover:bg-vermillion/90"}`}
+                    >
+                      <Play size={13} fill="currentColor" />{item.is_watched ? "再看" : "播放"}
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+          </div>
+          {/* /冻结顶部 */}
+
+          <div className="px-8 pb-8">
+          {!movieOnly && (loading ? (
             <div className="font-mono text-xs text-muted">正在加载...</div>
           ) : (
             <div className="grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-4">
@@ -947,7 +1348,99 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
                 </div>
               )}
             </div>
+          ))}
+
+          {/* 剧场版页:顶部 hero + 明细行 + 底部无限轮播 */}
+          {movieOnly && (
+            standaloneLoading ? (
+              <div className="font-mono text-xs text-muted">正在加载...</div>
+            ) : movieGroups.length === 0 ? (
+              <div className="py-16 text-center font-mono text-xs text-muted">
+                还没有独立展示的剧场版/OVA。下载剧场版会自动加入;也可在某部番的详情页「管理」里,把某一集设为独立剧场版/OVA。
+              </div>
+            ) : filteredGroups.length === 0 ? (
+              <div className="py-16 text-center font-mono text-xs text-muted">
+                当前筛选下没有内容。
+              </div>
+            ) : (
+              <div>
+                {/* 底部卡片:纵向网格(和番剧模式一致,向下滚动),点击直接播放/展开。hero/明细行已移到冻结顶部 */}
+                <div className="grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-4">
+                  {filteredGroups.map((g) => {
+                    const head = g.items[0];
+                    const allWatched = g.items.every((it) => it.is_watched);
+                    const isActive = g.bgm_id === activeBgm;
+                    return (
+                      <div
+                        key={g.bgm_id}
+                        onMouseEnter={() => handleMovieCardHover(g.bgm_id)}
+                        onClick={() => handleMovieCardClick(g)}
+                        className="group cursor-pointer"
+                      >
+                        <div className={`relative aspect-[2/3] overflow-hidden rounded-md bg-surface shadow-md ring-2 transition-all ${isActive ? "ring-vermillion" : "ring-transparent"}`}>
+                          {head.cover_url ? (
+                            <img src={proxiedImageUrl(head.cover_url)} alt={head.title ?? head.filename}
+                              className="h-full w-full object-cover transition-transform group-hover:scale-105" />
+                          ) : (
+                            <div className="flex h-full w-full flex-col items-center justify-center gap-1 text-muted bg-surface border border-border">
+                              <Loader2 size={22} strokeWidth={1.5} className="animate-spin" />
+                              <span className="text-[10px] font-mono">等待更新</span>
+                            </div>
+                          )}
+                          {/* hover 时浮现播放三角:用主色 vermillion(与各处播放按钮一致),
+                              不用 text-paper——那个在浅色模式会翻成深色,三角发黑难看 */}
+                          <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-ink/25 opacity-0 transition-opacity group-hover:opacity-100">
+                            <Play size={40} fill="currentColor" className="text-vermillion drop-shadow-lg" />
+                          </div>
+                        </div>
+                        <div className={`mt-2 line-clamp-2 text-sm font-medium leading-snug transition-colors ${isActive ? "text-vermillion" : "group-hover:text-vermillion"}`}>
+                          {head.title || head.filename}
+                          {allWatched && (
+                            <span className="ml-1 inline-flex items-center align-middle text-green-500/80" title="已播放">
+                              <CheckCircle2 size={13} />
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )
           )}
+          </div>
+          {/* /内容区 */}
+        </div>
+      )}
+
+      {/* 选条目弹窗(手动追加 / 重选条目共用):复用 BangumiResultsList */}
+      {pickerMode !== null && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/70 p-6" onClick={closePicker}>
+          <div className="flex max-h-[80vh] w-full max-w-2xl flex-col rounded-md border border-border bg-surface p-5" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-2 flex items-center justify-between">
+              <div className="text-sm">{pickerMode === "add" ? "设为独立剧场版/OVA — 选择条目" : "重选条目"}</div>
+              <button onClick={closePicker} className="rounded border border-border px-2 py-1 font-mono text-[11px] text-muted hover:text-paper">关闭</button>
+            </div>
+            <div className="mb-3 flex items-center gap-2">
+              <input
+                value={pickerKeyword}
+                onChange={(e) => setPickerKeyword(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && runPickerSearch()}
+                placeholder="搜索剧场版/OVA 名称"
+                className="flex-1 rounded border border-border bg-ink px-3 py-1.5 text-sm text-paper outline-none placeholder:text-muted/60 focus:border-vermillion"
+              />
+              <button onClick={runPickerSearch} disabled={pickerLoading} className="rounded-md border border-vermillion px-4 py-1.5 font-mono text-xs text-vermillion transition-colors hover:bg-vermillion hover:text-ink disabled:opacity-40">
+                {pickerLoading ? "检索中..." : "检索"}
+              </button>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              {pickerResults.length === 0 ? (
+                <div className="py-10 text-center font-mono text-xs text-muted">输入名称检索,选中一部作为该{pickerMode === "add" ? "文件" : "卡片"}的条目。</div>
+              ) : (
+                <BangumiResultsList results={pickerResults} onSelect={(bgmId) => pickerSelect(bgmId)} emptyText="" />
+              )}
+            </div>
+          </div>
         </div>
       )}
 

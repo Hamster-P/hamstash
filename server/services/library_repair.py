@@ -535,6 +535,18 @@ async def apply_family_folder_merges(db: Session, selected_paths: set[str] | Non
             if row:
                 row.target_relative_path = _to_db_relpath(item["proposed_relative_path"])
             _migrate_playback_record(db, current_rel, item["proposed_relative_path"])
+            # 同步"剧场版模式"登记表的路径:改名后旧 rel_path 会失效,这里跟着更新
+            # (本模块相对路径都是正斜杠,与 StandaloneMedia.rel_path 同格式)。
+            new_rel = item["proposed_relative_path"].replace("\\", "/")
+            db.query(models.StandaloneMedia).filter(
+                models.StandaloneMedia.rel_path == current_rel.replace("\\", "/")
+            ).update(
+                {
+                    models.StandaloneMedia.rel_path: new_rel,
+                    models.StandaloneMedia.filename: os.path.basename(new_rel),
+                },
+                synchronize_session=False,
+            )
             db.commit()
             succeeded.append({"from": current_rel, "to": item["proposed_relative_path"]})
             touched_folders.add(item["source_folder"])
@@ -690,6 +702,18 @@ async def apply_rename_fixes(db: Session, selected_paths: set[str] | None) -> di
             if row:
                 row.target_relative_path = _to_db_relpath(item["proposed_relative_path"])
             _migrate_playback_record(db, current_rel, item["proposed_relative_path"])
+            # 同步"剧场版模式"登记表的路径:改名后旧 rel_path 会失效,这里跟着更新
+            # (本模块相对路径都是正斜杠,与 StandaloneMedia.rel_path 同格式)。
+            new_rel = item["proposed_relative_path"].replace("\\", "/")
+            db.query(models.StandaloneMedia).filter(
+                models.StandaloneMedia.rel_path == current_rel.replace("\\", "/")
+            ).update(
+                {
+                    models.StandaloneMedia.rel_path: new_rel,
+                    models.StandaloneMedia.filename: os.path.basename(new_rel),
+                },
+                synchronize_session=False,
+            )
             db.commit()
             succeeded.append({"from": current_rel, "to": item["proposed_relative_path"]})
         except OSError as e:

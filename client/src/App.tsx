@@ -280,6 +280,13 @@ function AppContent() {
                 scrollContainerRef={mainScrollRef}
               />
             )}
+            {view === "movieLibrary" && (
+              <LibraryPage
+                movieOnly
+                onSelectAnime={handleSelectAnime}
+                scrollContainerRef={mainScrollRef}
+              />
+            )}
             {view === "rss" && <RssPage />}
             {view === "settings" && (
               <SettingsPage
