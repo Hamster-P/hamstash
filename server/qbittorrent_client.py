@@ -166,12 +166,18 @@ async def _fetch_torrents_info(params: dict) -> list[dict]:
     return resp.json()
 
 
-async def get_completed_torrents(category: str, exclude_tag: str) -> list[dict]:
-    """列出某分类下已完成、且还没打上exclude_tag标签的种子。"""
+async def get_completed_torrents(category: str, *exclude_tags: str) -> list[dict]:
+    """列出某分类下已完成、且没有打上任何一个exclude_tags标签的种子。
+
+    可以传多个标签:除了"已整理完成"(hub-organized),"反查不到是哪部番"
+    (hub-unknown)这类已经有明确终态、重试也不会有不同结果的种子同样要排除掉,
+    否则它们每一轮都会被重新捞出来白跑一遍。
+    """
     torrents = await _fetch_torrents_info({"category": category, "filter": "completed"})
+    excluded = {t for t in exclude_tags if t}
     return [
         t for t in torrents
-        if exclude_tag not in [tag.strip() for tag in (t.get("tags") or "").split(",")]
+        if not excluded & {tag.strip() for tag in (t.get("tags") or "").split(",")}
     ]
 
 

@@ -14,6 +14,10 @@ from models import AnimeFolder, RenamedFile, StandaloneMedia
 
 RSS_FOLDER = "anime-hub"  # 我们在qBittorrent的RSS订阅目录树里统一挂在这个文件夹下
 ORGANIZE_TAG = "hub-organized"  # 打上这个标签代表后台整理任务已经处理过这个种子
+# 反查不到AnimeFolder记录("这个种子到底是哪部番"无从得知)的种子打这个标签。
+# 必须和ORGANIZE_TAG一起进get_completed_torrents的排除名单——否则这类种子每一轮
+# 都会被重新捞出来、重新打一次同样的标签,既刷日志又白发qB请求。
+UNKNOWN_TAG = "hub-unknown"
 
 
 def staging_folder(download_root: str, anime_title: str, main_bgm_id: int | None) -> str:
@@ -155,3 +159,46 @@ def get_current_version_at_target(db: Session, target_relative_path: str):
         .count()
     )
     return row.release_version, row.torrent_hash, done_count
+
+
+def has_done_record_at_target(db: Session, torrent_hash: str, target_relative_path: str) -> bool:
+    """这个种子在这个目标位置上是不是已经有done记录了。
+
+    按(torrent_hash, original_path)判重会在"文件已经被我们自己改过名"之后失效:
+    qBittorrent返回的是改名后的新路径,而done记录里存的是改名前的原始路径,
+    对不上就会被当成新文件重新处理一遍。目标位置是改名前后都不变的稳定身份,
+    拿它再判一次,避免重复处理自己的产物。
+    """
+    if not target_relative_path:
+        return False
+    return (
+        db.query(RenamedFile)
+        .filter(
+            RenamedFile.torrent_hash == torrent_hash,
+            RenamedFile.target_relative_path == target_relative_path,
+            RenamedFile.status == "done",
+        )
+        .first()
+    ) is not None
+
+
+def find_recorded_version_at_target(db: Session, torrent_hash: str, target_relative_path: str) -> int:
+    """查这个种子在某个目标位置上已经记过的最高版本号(不限status,查不到返回0)。
+
+    专门给"文件已经在目标位置上、但这一轮是重新解析出来的"场景兜底:改名后的
+    文件名只保留字幕组和分辨率,不保留v2这类版本标记,重新解析必然退化成v1。
+    上一轮改名前写的renaming占位记录里存着真实版本号,这里把它取回来,
+    避免磁盘上是v2、数据库却记成v1。
+    """
+    if not target_relative_path:
+        return 0
+    row = (
+        db.query(RenamedFile)
+        .filter(
+            RenamedFile.torrent_hash == torrent_hash,
+            RenamedFile.target_relative_path == target_relative_path,
+        )
+        .order_by(RenamedFile.release_version.desc())
+        .first()
+    )
+    return row.release_version if row and row.release_version else 0
