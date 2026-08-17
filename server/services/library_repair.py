@@ -182,18 +182,62 @@ def _parse_season_bucket(bucket_name: str) -> str | None:
 
 def _non_season_args(platform: str | None = None) -> dict:
     """非"Season NN"桶的重算参数:这些桶装的都是剧场版/OVA/花絮/够不上真季的旁支,
-    本来就不套SxxExx编号,所以没有季度序号、也不需要集数偏移换算。"""
+    本来就不套SxxExx编号,所以没有季度序号、也不需要集数偏移换算。
+
+    注意这里不含season_hint——剧场版/OVA/Season 00桶的文件名是拿"这一部作品自己的
+    标题"拼的(见rename_engine.preview_rename_file),那是按文件解析的,不是按桶
+    一次算完的,调用方要对每个文件单独调_resolve_work_title()求值。
+    """
     return {
         "season_ordinal": None,
         "platform": platform,
-        "season_hint": None,
         "episode_offset": 0,
         "season_total_eps": None,
     }
 
 
+# 文件名要靠"这一部作品自己的标题"来拼的桶(见rename_engine.preview_rename_file
+# 的movie/ova/Season 00分支)。这些桶少了season_hint就会塌缩成家族标题,必须
+# 逐文件解析出真实作品名,解析不出来就不该提改名建议。
+_WORK_TITLE_BUCKETS = {"剧场版", "劇場版", "OVA", "Season 00"}
+
+
+def _resolve_work_title(db: Session, current_relative_path: str) -> str | None:
+    """反查某个已落地文件"这一部作品自己的标题",拿不到返回None。
+
+    剧场版/OVA的文件名是`{作品自己的标题}{字幕组分辨率后缀}`,不含集数也不含
+    家族标题——重算时如果不把这个标题喂回去,preview_rename_file会回退成家族
+    共用的anime_title,把副标题抹掉(实测:『机动战士高达 闪光的哈萨维』被提议
+    改成『机动战士高达』,而原始种子名里只有罗马音Mobile_Suit_Gundam_Hathaway,
+    改完再也还原不回来)。
+
+    用StandaloneMedia.rel_path当锚点,而不是拿原始种子名去跟家族成员名做子串
+    匹配(organize.py::_resolve_standalone_bgm_id那套):实测两个真实样本的原始名
+    里压根没有中文标题(一个只有罗马音,一个只有[M28]这种编号),子串匹配必然落空。
+    StandaloneMedia这张表是整理时按文件登记的,而且apply_rename_fixes/
+    apply_family_merge改完名都会同步它的rel_path,是长期可靠的键。
+
+    全程只查本地表,不发网络请求——作品名在AnimeFamilyCache里已经缓存好了。
+    """
+    row = (
+        db.query(models.StandaloneMedia)
+        .filter(models.StandaloneMedia.rel_path == _same_relpath(current_relative_path))
+        .first()
+    )
+    if not row or not row.bgm_id:
+        return None
+    cached = (
+        db.query(models.AnimeFamilyCache)
+        .filter(models.AnimeFamilyCache.bgm_id == row.bgm_id)
+        .first()
+    )
+    name = (cached.name or "").strip() if cached else ""
+    return name or None
+
+
 def _bucket_recompute_args(bucket_name: str) -> dict | None:
-    """按扫盘桶名决定重算preview_rename_file要用的season_ordinal/platform/season_hint。
+    """按扫盘桶名决定重算preview_rename_file要用的season_ordinal/platform等参数
+    (不含season_hint,那个要逐文件解析,见_non_season_args/_resolve_work_title)。
     返回None代表这个桶不参与重算(未识别的兜底桶)。只处理不需要season_ordinal存在性
     校验的桶(剧场版/OVA/Other/Season 00);"Season NN"(NN!="00")桶由调用方
     (scan_rename_mismatches)单独处理,不走这个函数。
@@ -268,14 +312,15 @@ async def scan_rename_mismatches(db: Session) -> list[dict]:
                 args = {
                     "season_ordinal": effective,
                     "platform": info["platform"],
-                    "season_hint": info["name"],
                     "episode_offset": info["episode_offset"],
                     "season_total_eps": info["eps"],
                 }
+                bucket_season_hint = info["name"]
             else:
                 args = _bucket_recompute_args(bucket_name)
                 if args is None:
                     continue
+                bucket_season_hint = None  # 逐文件解析,见下面_resolve_work_title
 
             for ep in episodes:
                 current_full_path = library_root / ep["rel_path"]
@@ -289,13 +334,22 @@ async def scan_rename_mismatches(db: Session) -> list[dict]:
                     # 没有权威的原始输入可用,不猜它该叫什么名字,直接跳过。
                     continue
 
+                season_hint = bucket_season_hint
+                if bucket_name in _WORK_TITLE_BUCKETS:
+                    # 这些桶的文件名靠"这一部作品自己的标题"拼,不是靠家族标题。
+                    # 解析不出来就跳过这个文件——回退成anime_title会把副标题抹掉,
+                    # 是不可逆的错误改名,宁可少提一条建议。
+                    season_hint = _resolve_work_title(db, current_rel)
+                    if season_hint is None:
+                        continue
+
                 preview = rename_engine.preview_rename_file(
                     anime_title=anime_title,
                     file_name=source_file_name,
                     torrent_title=source_file_name,
                     library_root=str(library_root),
                     bgm_id=media.bgm_id,
-                    season_hint=args["season_hint"],
+                    season_hint=season_hint,
                     season_ordinal=args["season_ordinal"],
                     platform=args["platform"],
                     episode_offset=args["episode_offset"],
@@ -458,7 +512,7 @@ async def scan_family_folder_merges(db: Session) -> list[dict]:
             all_rel_paths = _list_all_relpaths(secondary_path, library_root)
             proposed_targets_seen: dict[str, str] = {}
 
-            for eps in structure.values():
+            for bucket_name, eps in structure.items():
                 for ep in eps:
                     current_full_path = library_root / ep["rel_path"]
                     if current_full_path.suffix.lower() not in VIDEO_EXTENSIONS:
@@ -471,13 +525,24 @@ async def scan_family_folder_merges(db: Session) -> list[dict]:
                         # 没有权威的原始输入可用,不猜它该叫什么名字,直接跳过。
                         continue
 
+                    # 剧场版/OVA条目拿不到season_ordinal(它们本来就不是TV季),
+                    # info必然是None,season_hint会塌缩成家族标题、抹掉副标题——
+                    # 跟scan_rename_mismatches里同一个坑,同样按文件解析真实作品名,
+                    # 解析不出来就跳过,不提这条建议。只对真正靠作品标题拼文件名的
+                    # 桶设这道门槛,TV正片桶不受影响(它们用SxxExx编号,不看season_hint)。
+                    season_hint = args["season_hint"]
+                    if bucket_name in _WORK_TITLE_BUCKETS:
+                        season_hint = _resolve_work_title(db, current_rel)
+                        if season_hint is None:
+                            continue
+
                     preview = rename_engine.preview_rename_file(
                         anime_title=anime_title,
                         file_name=source_file_name,
                         torrent_title=source_file_name,
                         library_root=str(library_root),
                         bgm_id=main_bgm_id,
-                        season_hint=args["season_hint"],
+                        season_hint=season_hint,
                         season_ordinal=args["season_ordinal"],
                         platform=args["platform"],
                         episode_offset=args["episode_offset"],

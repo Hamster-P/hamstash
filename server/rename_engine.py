@@ -277,6 +277,11 @@ def preview_rename_file(
                合集场景下这层信息比种子整体标题更可靠。
     torrent_title: 种子整体标题,用于兜底提供季度/字幕组/分辨率这类"整个种子共享"的信息
                    (很多合集内部文件名只是"01.mkv"这种,季度/字幕组信息只在种子标题里出现一次)。
+    season_hint: 这一部作品**自己的**标题(不是家族共用标题)。对剧场版/OVA/Season 00
+                   这三类内容是**必需参数**:它们的文件名主干就是这个标题,缺了只能退回
+                   anime_title,会抹掉副标题并让同家族的多部作品撞成同一个文件名。
+                   拿不到真实作品名的调用方应该放弃改名,不要传None硬算——可以看
+                   返回值里的work_title_from_hint自查。
     season_ordinal: 调用方(organize.py)用bangumi_client.resolve_tv_season_ordinal()
                    算出来的"这是系列里第几个真正的TV季"("01"/"02"/...),不看种子标题文本,
                    只信Bangumi关联图谱本身——有值时直接采用,不再走下面的文本正则猜测。
@@ -344,6 +349,15 @@ def preview_rename_file(
     # 又不是OVA/剧场版,不能硬撞Season 01,也不该混进OVA文件夹。
     folder_bucket = resolve_folder_bucket(media_type, bgm_id, season_ordinal)
 
+    # 下面movie/ova/Season 00三个分支都拿"这一部作品自己的标题"当文件名主干,
+    # season_hint缺席时只能退回家族共用的anime_title——那会把副标题整段抹掉
+    # (『机动战士高达 闪光的哈萨维』→『机动战士高达』),而且同一家族的多部作品
+    # 会全部撞成同一个文件名。所以对这三个分支来说season_hint是必需参数,不是
+    # 可选提示。返回值里的work_title_from_hint就是给调用方自查用的:为False说明
+    # 这个文件名是拿家族标题猜的、不可信,重算类的调用方(services/library_repair.py)
+    # 应该放弃这条建议而不是照着改名。
+    work_title_from_hint = bool(season_hint)
+
     if media_type == "movie":
         folder_path = f"{anime_root}\\{folder_bucket}"
         # 用"这一部作品自己的标题"而不是家族共用的anime_title——同一个系列可能
@@ -402,6 +416,7 @@ def preview_rename_file(
     return {
         "original_file_name": file_name,
         "media_type": media_type,
+        "work_title_from_hint": work_title_from_hint,
         "parsed_episode": episode_str,
         "release_version": _extract_release_version(parsed, file_name),
         "anime_root": anime_root,
