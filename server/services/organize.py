@@ -318,18 +318,42 @@ def _resolve_standalone_bgm_id(
     不是这一部剧场版自己的(实测案例:哆啦A梦剧场版被自动登记后显示的是TV正片
     的封面)。
 
-    优先从AnimeFamilyCache里按platform筛出这部番家族下的剧场版/OVA成员——
-    resolve_tv_season_ordinal_cached在这之前已经把整个家族缓存写好了,这里
-    基本不需要额外发网络请求。只有一个候选时直接用;多个候选时拿原始文件名
-    (种子内部的真实文件名,通常带着这一部作品自己的标题)反过来做子串匹配,
-    确定是家族里的哪一部。一个候选都匹配不上(或者压根没有main_bgm_id可查)
-    就退回season_bgm_id——好歹还有个"同系列"的封面兜底,比完全没有强,用户也可以
-    在剧场版模式页面里手动"重新分组"纠正。
+    但"不能直接信"不等于"永远不信":如果season_bgm_id本身就是一个跟这次media_type
+    对得上的独立条目(剧场版文件配剧场版条目/OVA文件配OVA条目),那它就是用户下载
+    时亲手选的这一部,是最强的信号,直接采信、不再猜。文件名那边(season_hint)本来
+    就一直在用它,这样卡片分组和文件名保证走同一个答案,不会各说各话——
+    实测案例:『机动战士高达 闪光的哈萨维 喀耳刻的魔女』下载时选的就是喀耳刻的
+    魔女(243430),文件名也确实是对的,却因为下面的子串匹配猜成了『闪光的哈萨维』
+    (243429),在剧场版页面上跟前作并成了同一张卡。
+    上面docstring担心的RSS场景不受影响:那时season_bgm_id是TV正片条目,platform
+    对不上,这一层不会命中,照常往下走猜测。
+
+    season_bgm_id指望不上时(典型就是RSS追更),再从AnimeFamilyCache里按platform
+    筛出这部番家族下的剧场版/OVA成员——resolve_tv_season_ordinal_cached在这之前
+    已经把整个家族缓存写好了,这里基本不需要额外发网络请求。只有一个候选时直接用;
+    多个候选时拿原始文件名(种子内部的真实文件名,通常带着这一部作品自己的标题)
+    反过来做子串匹配,确定是家族里的哪一部。一个候选都匹配不上(或者压根没有
+    main_bgm_id可查)就退回season_bgm_id——好歹还有个"同系列"的封面兜底,比完全
+    没有强,用户也可以在剧场版模式页面里手动"重新分组"纠正。
     """
+    platform = "剧场版" if media_type == "movie" else "OVA"
+
+    if main_bgm_id and season_bgm_id:
+        picked = (
+            db.query(AnimeFamilyCache)
+            .filter(
+                AnimeFamilyCache.source_bgm_id == main_bgm_id,
+                AnimeFamilyCache.bgm_id == season_bgm_id,
+                AnimeFamilyCache.platform == platform,
+            )
+            .first()
+        )
+        if picked:
+            return season_bgm_id
+
     if not main_bgm_id:
         return season_bgm_id
 
-    platform = "剧场版" if media_type == "movie" else "OVA"
     candidates = (
         db.query(AnimeFamilyCache)
         .filter(AnimeFamilyCache.source_bgm_id == main_bgm_id, AnimeFamilyCache.platform == platform)
@@ -340,11 +364,17 @@ def _resolve_standalone_bgm_id(
     if len(candidates) == 1:
         return candidates[0].bgm_id
 
+    # 命中的候选里取标题最长的那个,而不是第一个命中的。系列剧场版的标题天然
+    # 前缀嵌套(『闪光的哈萨维』/『闪光的哈萨维 喀耳刻的魔女』/『闪光的哈萨维 第3部』),
+    # 一个带完整副标题的文件名会同时包含前作的短标题,"第一个命中就返回"必然被
+    # 笼统的那个抢走;标题越长越具体,取最长的才是真正对应的那一部。
     lowered = original_file_name.lower()
-    for c in candidates:
-        name = (c.name or "").strip()
-        if name and name.lower() in lowered:
-            return c.bgm_id
+    matched = [
+        c for c in candidates
+        if (c.name or "").strip() and (c.name or "").strip().lower() in lowered
+    ]
+    if matched:
+        return max(matched, key=lambda c: len((c.name or "").strip())).bgm_id
 
     return season_bgm_id
 
