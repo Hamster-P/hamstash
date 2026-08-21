@@ -20,7 +20,14 @@ logger = logging.getLogger(__name__)
 
 
 def upgrade_db() -> None:
-    """应用启动时调用,保证数据库结构与 models.py 一致。"""
+    """应用启动时调用,保证数据库结构与 models.py 一致。
+
+    末尾还会做一次"缓存内容跟不跟得上当前这个build"的检查:季度解析算法改过之后,
+    已经缓存的家族不会自己重算,新算法对老用户完全不生效
+    (详见 services/bgm_series_cache.SEASON_ALGO_VERSION)。schema 和缓存内容
+    都属于"让数据库跟上当前build"这件事,放在一起,也一起获得 main.py 那边的
+    try/except 和 library_root_health_loop 的重试。
+    """
     Base.metadata.create_all(bind=engine)
 
     inspector = inspect(engine)
@@ -44,6 +51,45 @@ def upgrade_db() -> None:
                             f'WHERE "{column.name}" IS NULL'
                         )
                     )
+
+    _refresh_stale_caches()
+
+
+def _refresh_stale_caches() -> None:
+    """建表补列之后,再让内容层面也跟上当前build:季度解析算法版本变了就清空
+    家族缓存(只清纯缓存,不碰用户数据,详见reset_cache_if_algo_changed)。
+
+    延迟import:db_migrate建表这一步必须先跑完,services那边import的模块链更长,
+    放模块顶会让"建表"依赖上一堆跟建表无关的东西。
+    """
+    from database import SessionLocal
+    from services.bgm_series_cache import reset_cache_if_algo_changed
+
+    db = SessionLocal()
+    try:
+        if reset_cache_if_algo_changed(db):
+            _mark_family_cache_needs_rewarm()
+    finally:
+        db.close()
+
+
+# 家族缓存刚被清空过的标记,由main.py的lifespan读一次:清空之后媒体库详情页拿不到
+# 作品名目录的桶名(会暂时折叠进Specials/Others),起个后台任务把库里已绑定的番
+# 重新预热一遍,用户不用为此手动跑一次"修复媒体库"。
+_family_cache_needs_rewarm = False
+
+
+def _mark_family_cache_needs_rewarm() -> None:
+    global _family_cache_needs_rewarm
+    _family_cache_needs_rewarm = True
+
+
+def consume_family_cache_rewarm_flag() -> bool:
+    """读取并清掉标记(只会被消费一次)。"""
+    global _family_cache_needs_rewarm
+    flag = _family_cache_needs_rewarm
+    _family_cache_needs_rewarm = False
+    return flag
 
 
 def _build_add_column_sql(table_name: str, column) -> tuple[str, bool]:

@@ -207,9 +207,11 @@ async def resolve_family_season_map(main_bgm_id: int | None) -> dict[int, dict]:
        总集数未知的番,Bangumi的eps字段固定是0(真实数据里柯南eps=0,
        total_episodes=1339),只看eps会把正片本身都判定成集数不够,
        跟AnimeCatalog里其他地方的集数取值顺序(total_episodes优先)保持一致。
-    3. 排除"有《不同演绎》关系指向某个剧场版条目"的TV条目——这类是"剧场版剪成
-       TV集数重新播出"(比如鬼灭之刃的"无限列车篇TV重制版"),官方季度编号里
-       它跟后一部正篇合算一季,不单独占号,否则会导致它之后所有季度错位一位。
+    3. 一组《不同演绎》关系里,**首播更晚的那个是重制/剪辑版,不占季号**——比如
+       鬼灭之刃"无限列车篇TV版"(2021-10)是2020-10那部剧场版的重播剪辑,高达SEED
+       "HD重制版"(2012)是2002年原版的重制。反过来,先出的原版永远保留资格:机动战士
+       Z高达(1985)不会被它2005年才上映的剧场版剪辑版挤掉。判据是日期先后而不是
+       对方的platform,详见下面这段判断处的注释。
     4. 只有通过"前传/续集/主线故事"连进家族的节点才有资格竞选季度序号,根节点
        天然有资格;通过"总集篇/全集/不同演绎/番外篇"连进来的节点只是留在同一个
        家族/文件夹里,不参与编号。"番外篇"字面意思就是"不算在主线编号里"——柯南
@@ -336,15 +338,33 @@ async def resolve_family_season_map(main_bgm_id: int | None) -> dict[int, dict]:
         eps = detail.get("total_episodes") or detail.get("eps") or 0
         if eps < eps_threshold:
             continue
-        # "不同演绎"排除规则不适用于家族根节点自己:这条规则的本意是排除"剧场版
-        # 剪成TV重播的短小重制版"(鬼灭之刃的例子,那个TV版只有7集),但根节点往往是
-        # 连载多年的正片本身,它跟自己衍生出的某一部剧场版之间完全可能也被Bangumi
-        # 标了"不同演绎"关系(实测航海王:975正片<->2000号剧场版《乔巴身世之谜》
-        # 就是这种情况)——这时候不该反过来把正片自己排除掉,该被排除的是真正
-        # "内容对应、体量相近"的重制版,不是主线正片。
+        # "不同演绎"排除规则:一组"不同演绎"关系里,**出得晚的那个是重制/剪辑版,
+        # 不占季号;出得早的是原版,保留**。判据是首播日期的先后,不是对方的platform。
+        #
+        # 之前这里写的是"只要有《不同演绎》指向某个剧场版条目就排除",实测误伤了两类:
+        # 1. 机动战士Z高达(9622, 1985年首播的50集正片)的三部「不同演绎」剧场版是
+        #    2005-2006年**后出的**剪辑版,方向跟规则本意刚好相反,结果把正片自己
+        #    排除了,ZZ 顶替拿走 Season 02,而 Z高达 掉进 Season 00(播放器当特典)。
+        # 2. 高达SEED家族的"HD重制版"跟原版之间是 TV↔TV 的「不同演绎」,旧判据只看
+        #    platform=="剧场版"根本命中不了,于是两部重制版白占了 Season 03/04。
+        #
+        # 换成看先后之后,原本要挡的目标依然挡得住:鬼灭之刃「无限列车篇」TV版
+        # (7集, 2021-10)是 2020-10 那部剧场版的重播剪辑,出得更晚,照样被排除。
+        # 航海王那个反例(975正片 <-> 2000号剧场版《乔巴身世之谜》)也自然成立——
+        # 正片1999年比剧场版早,不会再被自己的衍生剧场版排除掉;下面那道
+        # bid != main_bgm_id 的护栏保留,家族根节点永远有资格。
         if bid != main_bgm_id:
-            rendition_targets = different_rendition.get(bid, set())
-            if any((details.get(t) or {}).get("platform") == "剧场版" for t in rendition_targets):
+            my_date = detail.get("date") or ""
+            is_later_rendition = False
+            for t in different_rendition.get(bid, set()):
+                target = details.get(t) or {}
+                target_date = target.get("date") or ""
+                if not my_date or not target_date:
+                    continue  # 缺日期无法判先后,不做排除(宁可多留一个候选)
+                if my_date > target_date and target.get("platform") in ("剧场版", "TV"):
+                    is_later_rendition = True
+                    break
+            if is_later_rendition:
                 continue
         candidates.append((bid, detail.get("date") or ""))
 
@@ -354,17 +374,43 @@ async def resolve_family_season_map(main_bgm_id: int | None) -> dict[int, dict]:
     # "後編"/日文原名的"第2クール"),Bangumi会把后半段建成独立的family成员,
     # 但它不是一个新季,不该单独占用一个季度序号——否则后面每一部真正的新季都会
     # 被顺移(无职转生第一季/第二季各自拆两段播出,实测下来会把2026年才开播的
-    # 第三季错误编号成"05"而不是"03")。复用bangumi_client.PART_PATTERN识别
-    # 这种"续播后半段":命中的成员直接沿用上一个候选已经分配到的序号,不递增计数器。
+    # 第三季错误编号成"05"而不是"03")。
+    #
+    # 两条并列的"这是续播段"判据:
+    # 1. bangumi_client.PART_PATTERN —— 认"第2部分/后半/完结篇/後編/第2クール/Part2"
+    #    这些固定后缀词。
+    # 2. 显式季号跟前一个候选相同 —— 分段的命名其实是自由的,Re:Zero第三季拆成
+    #    「袭击篇/反击篇」、第四季拆成「丧失篇/夺还篇」,一个后缀词都不命中,于是
+    #    每段各占一个季号,第四季被顺移编成了Season 06(用户实际下载时撞上的)。
+    #    但这些分段的标题里都明写着「第三季」「第四季」,直接比这个就行。
+    #
+    # 只跟**按日期紧邻的前一个候选**比,不跟"目前这一季的季号"比:家族里如果有两部
+    # 不相邻却都写着"第二季"的作品(不同世界观的重启作之类),不会被跨越中间的季度
+    # 错误粘合在一起。
+    #
+    # 显式季号只参与"合不合并"的判断,**不拿来当季号本身**——序号仍然是按首播日期
+    # 数出来的,所以即使Bangumi某个标题的季号写错,也只影响合并,不会在序号序列里
+    # 凿出空洞(build_season_episode_table的偏移量累加依赖序号连续)。
+    #
+    # 反面样本:鬼灭之刃的「游郭篇/刀匠村篇/柱训练篇」是真正独立的季,它们的标题里
+    # 没有"第N季",两条判据都不命中,仍然各占一个季号——所以这里绝不能泛化成
+    # "带'篇'字就合并"。
     ordinal_map: dict[int, str] = {}
     current_ordinal = 0
+    previous_explicit_season: int | None = None
     for bid, _date in candidates:
         detail = details.get(bid) or {}
         name = detail.get("name_cn") or detail.get("name") or ""
-        is_continuation = current_ordinal > 0 and bangumi_client.PART_PATTERN.search(name)
+        explicit_season = bangumi_client.parse_explicit_season(name)
+
+        is_continuation = current_ordinal > 0 and (
+            bool(bangumi_client.PART_PATTERN.search(name))
+            or (explicit_season is not None and explicit_season == previous_explicit_season)
+        )
         if not is_continuation:
             current_ordinal += 1
         ordinal_map[bid] = f"{current_ordinal:02d}"
+        previous_explicit_season = explicit_season
 
     family_map: dict[int, dict] = {}
     for bid in visited:

@@ -40,6 +40,8 @@ class RenamePreviewRequest(BaseModel):
     anime_title: str  # 兜底用:拿不到bgm_id对应的官方名时,使用这个
     bgm_id: Optional[int] = None  # 有值时,优先用Bangumi官方中文名做文件夹/文件名
     titles: list[str]
+    # 跟DownloadRequest同名字段保持一致,让预览显示的目标路径跟提交后真正落地的一致。
+    merge_to_family: bool = True
 
 
 class PrefetchRenameCacheRequest(BaseModel):
@@ -67,6 +69,11 @@ class DownloadRequest(BaseModel):
     release_type: Optional[str] = None
     subscribe: bool = False
     auto_rename: bool = True
+    # 是否并进这部作品所属的Bangumi家族(高达/柯南这类系列的最早那个条目)。
+    # True(默认,也是历史行为)=同系列共用一个媒体库文件夹、按第几季组织;
+    # False=这一部独立成一部,在媒体库单独成卡。默认值保证老客户端不带这个字段时
+    # 行为完全不变。实际落地靠写一条MediaGroupOverride,见models.py该表的说明。
+    merge_to_family: bool = True
     items: list[DownloadItem]
 
 class SettingsUpdate(BaseModel):

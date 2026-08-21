@@ -20,6 +20,23 @@ interface LibraryAnime {
 
 type SortMode = "default" | "recent_watched" | "recent_updated";
 
+// 「归属」弹窗的数据源:这个条目所在 Bangumi 家族的全部成员 + 当前生效的归属
+interface RegroupCandidates {
+  bgm_id: number;
+  auto_root: { bgm_id: number; title: string };
+  members: {
+    bgm_id: number;
+    title: string;
+    cover_url: string | null;
+    platform: string | null;
+    season_ordinal: string | null;
+    folder_bucket: string | null;
+    is_auto_root: boolean;
+  }[];
+  current_root: number;
+  is_overridden: boolean;
+}
+
 // "选择图片"弹窗里的一个家族封面候选
 interface CoverCandidate {
   bgm_id: number;
@@ -60,6 +77,12 @@ interface Episode {
 interface AnimeDetail {
   folder_name: string;
   seasons: Record<string, Episode[]>;
+  // 季度桶 -> 家族里对应的那一部(拆分/合并归属用它当主键)。
+  // 只有"一个桶唯一对应一部"时后端才给,剧场版/OVA 这类多部共用的桶不给。
+  season_owners?: Record<string, { bgm_id: number; name: string }>;
+  // 桶 -> 该桶对应作品的首播日期。给排序用:按作品名命名的目录(Z高达/雷霆宙域这类
+  // 算不出季号的旁支)桶名没有固定模式,靠这个既能认出它们、又能按时间先后排。
+  bucket_dates?: Record<string, string>;
 }
 
 // 定义设置项的类型
@@ -90,25 +113,40 @@ function cleanTitleFromFilename(filename: string): string {
 
 const API_BASE = "http://127.0.0.1:8080";
 
-// 分季排序:TV季数从新到旧排最前,然后剧场版,再OVA,Other/无法识别的兜底桶排最后
-// (对应后端 rename_engine.py / routers/library.py 实际会产出的分类桶名)
-function seasonSortKey(name: string): [number, number] {
+// 分季排序:TV季数从新到旧排最前,然后是"算不出季号、按作品名建的目录"(Z高达/雷霆宙域
+// 这类旁支,见后端 rename_engine.work_title_bucket),再剧场版、OVA,Other/无法识别的
+// 兜底桶排最后。(对应后端 rename_engine.py / routers/library.py 实际会产出的分类桶名)
+//
+// 作品名目录的桶名是按Bangumi作品名动态生成的,认不出固定模式,靠后端一起返回的
+// bucket_dates(家族成员首播日期)来识别并按时间先后排——旁支之间按时间读起来最自然。
+const TIER_SEASON = 0;
+const TIER_WORK_TITLE = 1;
+const TIER_MOVIE = 2;
+const TIER_OVA = 3;
+const TIER_OTHER = 4;
+
+function seasonSortKey(name: string, bucketDates?: Record<string, string>): [number, number, string] {
   const seasonMatch = name.match(/^season\s*(\d+)/i);
   if (seasonMatch) {
     const num = parseInt(seasonMatch[1], 10);
-    if (num === 0) return [2, 0]; // "Season 00" 是OVA专用桶,不算正常TV季
-    return [0, -num]; // 数字取负,配合升序排序实现"季数越大越靠前"
+    // "Season 00" 是老库里"算不出季号"的兜底桶(新内容改走作品名目录),跟OVA放一起
+    if (num === 0) return [TIER_OVA, 0, ""];
+    return [TIER_SEASON, -num, ""]; // 数字取负,配合升序排序实现"季数越大越靠前"
   }
-  if (/剧场版|劇場版|movie/i.test(name)) return [1, 0];
-  if (/\bova\b/i.test(name)) return [2, 0];
-  return [3, 0];
+  if (/剧场版|劇場版|movie/i.test(name)) return [TIER_MOVIE, 0, ""];
+  if (/\bova\b/i.test(name)) return [TIER_OVA, 0, ""];
+  // 剩下的:能在家族成员里查到首播日期的,就是作品名目录;查不到才是真的兜底桶。
+  const date = bucketDates?.[name];
+  if (date) return [TIER_WORK_TITLE, 0, date];
+  return [TIER_OTHER, 0, ""];
 }
 
-function compareSeasonNames(a: string, b: string): number {
-  const [tierA, subA] = seasonSortKey(a);
-  const [tierB, subB] = seasonSortKey(b);
+function compareSeasonNames(a: string, b: string, bucketDates?: Record<string, string>): number {
+  const [tierA, subA, dateA] = seasonSortKey(a, bucketDates);
+  const [tierB, subB, dateB] = seasonSortKey(b, bucketDates);
   if (tierA !== tierB) return tierA - tierB;
   if (subA !== subB) return subA - subB;
+  if (dateA !== dateB) return dateA < dateB ? -1 : 1;
   return a.localeCompare(b, undefined, { numeric: true });
 }
 
@@ -344,9 +382,14 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
       .finally(() => { if (!silent) setStandaloneLoading(false); });
   };
 
-  // 剧场版页(movieOnly)挂载时拉一次列表
+  // 剧场版页(movieOnly)挂载时拉一次列表。系列列表这里本来不需要(不扫盘、无网格),
+  // 但管理态下的"移到其他系列"要拿它当候选,所以静默拉一份——silent=true不会触发
+  // 扫盘,只读已有记录。
   useEffect(() => {
-    if (movieOnly) fetchStandalones();
+    if (movieOnly) {
+      fetchStandalones();
+      fetchAnimes(true);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [movieOnly]);
 
@@ -752,6 +795,109 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
     );
   };
 
+  // ---- 归属弹窗 ----
+  // 一个弹窗三个入口(整个文件夹 / 某个季度桶 / 剧场版模式里的单个文件),
+  // 区别只在"作用于哪些文件"和"这批文件是哪一部能不能自动确定"。
+  // 关键:按钮永远都有,自动确定不了就在弹窗里让用户自己选——绑死在"能自动识别"
+  // 上正是之前拆出去就合并不回来的原因(拆出去之后 season_owners 必然为空)。
+  interface RegroupTarget {
+    label: string;        // 弹窗标题里显示的作用对象
+    relPaths: string[];   // 要搬的文件
+    bgmId: number | null; // 已能确定的归属主体;null=要用户在弹窗里选
+  }
+  const [regroupTarget, setRegroupTarget] = useState<RegroupTarget | null>(null);
+  const [regroupCandidates, setRegroupCandidates] = useState<RegroupCandidates | null>(null);
+  const [regroupLoading, setRegroupLoading] = useState(false);
+  // 用户在弹窗里选中的"这批文件是哪一部"
+  const [pickedBgmId, setPickedBgmId] = useState<number | null>(null);
+
+  const openRegroupDialog = (target: RegroupTarget) => {
+    setRegroupTarget(target);
+    setPickedBgmId(target.bgmId);
+    setRegroupCandidates(null);
+    setRegroupNotice(null);
+    // 候选按"哪个条目"拉:已确定就用它,没确定就用当前文件夹的 bgm_id 当入口——
+    // 后端走的是 Bangumi 客观家族(不受用户覆盖影响),两者都能列出完整家族。
+    const probe = target.bgmId ?? selectedAnime?.bgm_id ?? null;
+    if (!probe) return;
+    setRegroupLoading(true);
+    fetch(`${API_BASE}/library/regroup/candidates/${probe}`)
+      .then((r) => r.json())
+      .then((d: RegroupCandidates) => {
+        setRegroupCandidates(d);
+        // 没预选时,如果家族里只有一个成员,直接替用户选上
+        setPickedBgmId((prev) => prev ?? (d.members.length === 1 ? d.members[0].bgm_id : null));
+      })
+      .catch(() => setRegroupCandidates(null))
+      .finally(() => setRegroupLoading(false));
+  };
+
+  const closeRegroupDialog = () => {
+    setRegroupTarget(null);
+    setRegroupCandidates(null);
+    setPickedBgmId(null);
+  };
+
+  // ---- 归属调整:拆成单独一部 / 合并到另一部 ----
+  // 后端只换顶层文件夹、不重排季度和文件名(那是"修复媒体库"的职责),
+  // 所以成功后提示用户去跑一次修复,避免文件名里还留着旧归属的标题/季号。
+  const [regrouping, setRegrouping] = useState<string | null>(null);
+  const [regroupNotice, setRegroupNotice] = useState<string | null>(null);
+
+  const runRegroup = async (
+    key: string,
+    bgmId: number,
+    targetRootBgmId: number | null,
+    relPaths: string[],
+    restoreAuto = false,
+  ) => {
+    if (relPaths.length === 0) return;
+    setRegrouping(key);
+    setRegroupNotice(null);
+    try {
+      const res = await fetch(`${API_BASE}/library/regroup`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          bgm_id: bgmId,
+          target_root_bgm_id: targetRootBgmId,
+          rel_paths: relPaths,
+          restore_auto: restoreAuto,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setRegroupNotice(data.detail ?? `操作失败(HTTP ${res.status})`);
+        return;
+      }
+      const parts = [`已移动 ${data.moved.length} 个文件到「${data.target_folder}」`];
+      if (data.skipped?.length) parts.push(`跳过 ${data.skipped.length} 个`);
+      if (data.failed?.length) parts.push(`失败 ${data.failed.length} 个`);
+      // 后端搬完会顺手按新归属重排名字/季度目录,不再需要用户手动跑「修复媒体库」
+      const renamed = data.renamed;
+      if (renamed?.succeeded?.length) parts.push(`并已重排 ${renamed.succeeded.length} 个文件的名字`);
+      if (renamed?.failed?.length) {
+        parts.push(`${renamed.failed.length} 个文件重排失败,可到设置页手动跑一次「修复媒体库」`);
+      }
+      setRegroupNotice(parts.join("，"));
+      closeRegroupDialog();
+      // 目录结构变了,两个列表都要刷新。剧场版页(movieOnly)没有详情态,
+      // 只刷登记表即可,不要把它踢回一个它本来就不在的系列网格。
+      fetchStandalones(true);
+      if (!movieOnly) {
+        // 详情页停留的文件夹可能已经被搬空删掉了,退回列表重新扫描
+        setSelectedAnime(null);
+        setDetail(null);
+        fetchAnimes();
+      }
+    } catch (err) {
+      console.error("调整归属失败", err);
+      setRegroupNotice("调整归属失败,请检查后端连接");
+    } finally {
+      setRegrouping(null);
+    }
+  };
+
   // 找到这一集所在的季,以及从这一集开始(含)往后的剩余集数(升序,即"接下来该看的顺序")
   const findRemainingEpisodesInSeason = (ep: Episode): Episode[] => {
     if (!detail) return [ep];
@@ -839,7 +985,8 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
   };
 
   const sortedSeasons = detail
-    ? Object.entries(detail.seasons).sort(([a], [b]) => compareSeasonNames(a, b))
+    ? Object.entries(detail.seasons).sort(([a], [b]) =>
+        compareSeasonNames(a, b, detail.bucket_dates))
     : [];
 
   // 列表页展示顺序:纯本地按当前sort模式重排,animes本身始终保留接口返回的原始顺序
@@ -890,12 +1037,42 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
                   {episodeManageMode ? "结束管理" : "管理"}
                 </button>
               )}
+              {/* 文件夹级归属入口:作用对象是这个文件夹的全部文件,归属主体就是
+                  文件夹自己的 bgm_id,不存在"判断不出是哪一部"的问题。
+                  已经拆出去的那一部要合并回原系列,走的就是这个入口。 */}
+              {episodeManageMode && selectedAnime.bgm_id && detail && (
+                <button
+                  disabled={regrouping !== null}
+                  onClick={() =>
+                    openRegroupDialog({
+                      label: `整个「${selectedAnime.display_title || selectedAnime.folder_name}」`,
+                      relPaths: Object.values(detail.seasons).flat().map((e) => e.rel_path),
+                      bgmId: selectedAnime.bgm_id,
+                    })
+                  }
+                  className="rounded-md border border-border px-3 py-1.5 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion disabled:opacity-40"
+                >
+                  调整归属…
+                </button>
+              )}
               {episodeDeleteError && (
                 <span className="font-mono text-[11px] text-vermillion">
                   删除失败: {episodeDeleteError}
                 </span>
               )}
             </div>
+
+            {regroupNotice && (
+              <div className="mb-4 flex items-start justify-between gap-3 rounded-md border border-vermillion/40 bg-surface p-3 font-mono text-[11px] text-vermillion">
+                <span>{regroupNotice}</span>
+                <button
+                  onClick={() => setRegroupNotice(null)}
+                  className="shrink-0 text-muted transition-colors hover:text-paper"
+                >
+                  知道了
+                </button>
+              </div>
+            )}
 
             <div className="flex flex-col md:flex-row gap-6">
               <div className="w-40 aspect-[2/3] shrink-0 rounded-md bg-surface overflow-hidden shadow-lg">
@@ -962,9 +1139,35 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
                     style={{ scrollMarginTop: headerHeight + 16 }}
                     className="border border-border rounded-lg bg-surface p-4"
                   >
-                    <h3 className="font-display text-lg mb-3 border-b border-border pb-1.5 text-vermillion">
-                      {seasonName}
-                    </h3>
+                    <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-border pb-1.5">
+                      <h3 className="font-display text-lg text-vermillion">{seasonName}</h3>
+                      {/* 归属入口:管理态下**每个桶都有**。能自动确定是哪一部就带上
+                          名字直接预选,确定不了(剧场版/OVA 这类几十部共用的桶)也照样
+                          有按钮,进弹窗让用户自己选——按钮的有无不该取决于系统能不能
+                          自动识别,那正是之前拆出去就合并不回来的根因。 */}
+                      {episodeManageMode && (
+                        <div className="flex flex-wrap items-center gap-2 font-mono text-[11px]">
+                          {detail?.season_owners?.[seasonName] && (
+                            <span className="text-muted/70">
+                              {detail.season_owners[seasonName].name}
+                            </span>
+                          )}
+                          <button
+                            disabled={regrouping !== null}
+                            onClick={() =>
+                              openRegroupDialog({
+                                label: seasonName,
+                                relPaths: episodes.map((e) => e.rel_path),
+                                bgmId: detail?.season_owners?.[seasonName]?.bgm_id ?? null,
+                              })
+                            }
+                            className="rounded border border-border px-2 py-1 text-muted transition-colors hover:border-vermillion hover:text-vermillion disabled:opacity-40"
+                          >
+                            调整归属…
+                          </button>
+                        </div>
+                      )}
+                    </div>
                     <div className="flex flex-col gap-2">
                       {[...episodes].reverse().map((ep, idx) => (
                         <div
@@ -1229,6 +1432,21 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
                       <div className="flex shrink-0 items-center gap-2 font-mono text-xs">
                         <button onClick={() => setPendingMovieDelete(item.rel_path)} className="rounded-md border border-vermillion bg-vermillion px-3 py-1 text-ink hover:bg-vermillion/90">删除文件</button>
                         <button disabled={movieBusy} onClick={() => handleRemoveStandalone(item)} className="rounded-md border border-border px-3 py-1 text-muted hover:border-vermillion hover:text-vermillion disabled:opacity-40">仅移出</button>
+                        {/* 归属调整:跟上面的"重新分组"(只改封面来源、不动文件)不同,
+                            这个会把磁盘上的文件真的搬到另一个系列文件夹下。 */}
+                        <button
+                          disabled={regrouping !== null || item.missing}
+                          onClick={() =>
+                            openRegroupDialog({
+                              label: item.filename,
+                              relPaths: [item.rel_path],
+                              bgmId: item.bgm_id,
+                            })
+                          }
+                          className="rounded-md border border-border px-3 py-1 text-muted transition-colors hover:border-vermillion hover:text-vermillion disabled:opacity-40"
+                        >
+                          调整归属…
+                        </button>
                       </div>
                     )
                   ) : (
@@ -1440,6 +1658,169 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
                 <BangumiResultsList results={pickerResults} onSelect={(bgmId) => pickerSelect(bgmId)} emptyText="" />
               )}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* 「归属」弹窗:先确认这批文件是哪一部,再决定归到哪里 */}
+      {regroupTarget !== null && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-ink/70 p-6"
+          onClick={closeRegroupDialog}
+        >
+          <div
+            className="flex max-h-[80vh] w-full max-w-3xl flex-col rounded-md border border-border bg-surface p-5"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-3 flex items-center justify-between">
+              <div className="min-w-0 text-sm">
+                调整归属：<span className="text-muted">{regroupTarget.label}</span>
+              </div>
+              <button
+                onClick={closeRegroupDialog}
+                className="shrink-0 rounded border border-border px-2 py-1 font-mono text-[11px] text-muted transition-colors hover:text-paper"
+              >
+                关闭
+              </button>
+            </div>
+            <p className="mb-3 font-mono text-[11px] text-muted">
+              共 {regroupTarget.relPaths.length} 个文件。搬到新文件夹后会自动按新归属重排名字和季度目录，
+              不需要再手动跑「修复媒体库」。
+            </p>
+
+            {regroupLoading ? (
+              <div className="py-10 text-center font-mono text-xs text-muted">正在加载家族信息...</div>
+            ) : (
+              <div className="flex min-h-0 flex-col gap-4 overflow-y-auto">
+                {/* 第一段:这批文件是哪一部 */}
+                <div>
+                  <div className="mb-2 font-mono text-[11px] text-muted">
+                    1. 这批文件属于哪一部
+                    {regroupTarget.bgmId !== null && (
+                      <span className="ml-2 text-vermillion">已自动识别，可改</span>
+                    )}
+                  </div>
+                  {!regroupCandidates || regroupCandidates.members.length === 0 ? (
+                    <div className="rounded border border-border bg-ink p-3 font-mono text-[11px] text-muted">
+                      拿不到家族成员列表（这部可能还没匹配 Bangumi 条目）。
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-[repeat(auto-fill,minmax(110px,1fr))] gap-3">
+                      {regroupCandidates.members.map((m) => (
+                        <button
+                          key={m.bgm_id}
+                          onClick={() => setPickedBgmId(m.bgm_id)}
+                          className="group flex flex-col gap-1 text-left"
+                        >
+                          <div
+                            className={`relative aspect-[2/3] overflow-hidden rounded border bg-ink transition-colors ${
+                              pickedBgmId === m.bgm_id
+                                ? "border-vermillion ring-1 ring-vermillion"
+                                : "border-border group-hover:border-vermillion"
+                            }`}
+                          >
+                            {m.cover_url ? (
+                              <img
+                                src={proxiedImageUrl(m.cover_url)}
+                                alt={m.title}
+                                className="h-full w-full object-cover"
+                              />
+                            ) : (
+                              <div className="flex h-full w-full items-center justify-center font-mono text-[10px] text-muted">
+                                无封面
+                              </div>
+                            )}
+                          </div>
+                          <div
+                            className={`line-clamp-2 font-mono text-[10px] leading-snug ${
+                              pickedBgmId === m.bgm_id ? "text-vermillion" : "text-muted"
+                            }`}
+                          >
+                            {m.title}
+                            {m.is_auto_root && <span className="text-vermillion">（系列根）</span>}
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* 第二段:归到哪里 */}
+                <div>
+                  <div className="mb-2 font-mono text-[11px] text-muted">2. 归到哪里</div>
+                  {pickedBgmId === null ? (
+                    <div className="rounded border border-border bg-ink p-3 font-mono text-[11px] text-muted">
+                      请先在上面选中这批文件属于哪一部。
+                    </div>
+                  ) : (
+                    <div className="flex flex-wrap items-center gap-2 font-mono text-[11px]">
+                      <button
+                        disabled={regrouping !== null}
+                        onClick={() =>
+                          runRegroup("dialog", pickedBgmId, null, regroupTarget.relPaths)
+                        }
+                        className="rounded border border-border px-3 py-1.5 text-muted transition-colors hover:border-vermillion hover:text-vermillion disabled:opacity-40"
+                      >
+                        独立成一部
+                      </button>
+                      <select
+                        defaultValue=""
+                        disabled={regrouping !== null}
+                        onChange={(e) => {
+                          const target = Number(e.target.value);
+                          if (target) runRegroup("dialog", pickedBgmId, target, regroupTarget.relPaths);
+                        }}
+                        className="rounded border border-border bg-surface px-2 py-1.5 text-paper outline-none focus:border-vermillion disabled:opacity-40"
+                      >
+                        <option value="">合并到…</option>
+                        {/* 家族根排最前(合并回原系列是最常用的动作),再列媒体库其余系列 */}
+                        {regroupCandidates && (
+                          <option value={regroupCandidates.auto_root.bgm_id}>
+                            {regroupCandidates.auto_root.title}（原系列）
+                          </option>
+                        )}
+                        {animes
+                          .filter(
+                            (a) =>
+                              a.bgm_id &&
+                              a.bgm_id !== regroupCandidates?.auto_root.bgm_id &&
+                              a.bgm_id !== pickedBgmId,
+                          )
+                          .map((a) => (
+                            <option key={a.folder_name} value={a.bgm_id!}>
+                              {a.display_title || a.folder_name}
+                            </option>
+                          ))}
+                      </select>
+                      {regroupCandidates?.is_overridden && (
+                        <button
+                          disabled={regrouping !== null}
+                          onClick={() =>
+                            runRegroup("dialog", pickedBgmId, null, regroupTarget.relPaths, true)
+                          }
+                          className="rounded border border-vermillion px-3 py-1.5 text-vermillion transition-colors hover:bg-vermillion hover:text-ink disabled:opacity-40"
+                        >
+                          恢复自动归属
+                        </button>
+                      )}
+                      {regrouping !== null && <span className="text-muted">处理中...</span>}
+                    </div>
+                  )}
+                  {regroupCandidates?.is_overridden && (
+                    <p className="mt-2 font-mono text-[11px] text-muted">
+                      这一部当前是手动指定的归属。「恢复自动归属」会清掉手动设置，
+                      并把文件搬回 Bangumi 判定的系列「{regroupCandidates.auto_root.title}」。
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {regroupNotice && (
+              <div className="mt-3 rounded border border-vermillion/40 bg-ink p-3 font-mono text-[11px] text-vermillion">
+                {regroupNotice}
+              </div>
+            )}
           </div>
         </div>
       )}

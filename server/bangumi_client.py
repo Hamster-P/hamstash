@@ -35,6 +35,47 @@ PART_PATTERN = re.compile(
 # "这个成员是不是接着上一个候选播的续集、不单独占季度序号",如果"前编"也命中,会把
 # 一个本该正常拿到新序号的"新一季上半段"错误合并进上一季里,反而引入新的错位。
 
+# 标题里"明写着这是第几季"的写法。跟PART_PATTERN是互补的一对:那个靠后缀词猜
+# "这是不是某一季的后半段",这个直接读Bangumi标题自己的声明,可靠得多。
+#
+# 加这个是因为PART_PATTERN只认固定的几个后缀词,而拆播分段的命名是自由的:
+# Re:Zero第三季拆成「袭击篇/反击篇」、第四季拆成「丧失篇/夺还篇」,一个都不命中,
+# 于是每段各占一个季号,第四季被顺移编成了Season 06。但这些分段的标题里
+# **都明写着「第三季」「第四季」**,拿它当判据一次就解决。
+#
+# 要求数字后面紧跟"季"或"期",所以不会误吃「第2部分」「第2クール」——那些仍归
+# PART_PATTERN管;也不会误吃「剧场版第3部」这类。
+_ZH_SEASON_DIGITS = {
+    "一": 1, "二": 2, "三": 3, "四": 4, "五": 5,
+    "六": 6, "七": 7, "八": 8, "九": 9, "十": 10,
+}
+EXPLICIT_SEASON_PATTERN = re.compile(
+    r'第\s*([0-9一二三四五六七八九十]+)\s*[季期]'      # 第三季 / 第3期
+    r'|season\s*([0-9]+)'                             # Season 3
+    r'|([0-9]+)\s*(?:st|nd|rd|th)\s*season',          # 3rd Season
+    re.IGNORECASE,
+)
+
+
+def parse_explicit_season(title: str) -> int | None:
+    """从标题里读出明写的季号,读不到返回None(绝大多数标题都读不到,这是正常的)。
+
+    只用来判断"这两个相邻的候选是不是同一季的两段",**不用来当季号本身**——
+    季号仍然由resolve_family_season_map按首播日期顺序数出来。这样即使Bangumi
+    某个标题写错了季号,也只会影响合不合并,不会在序号序列里凿出空洞。
+    """
+    match = EXPLICIT_SEASON_PATTERN.search(title or "")
+    if not match:
+        return None
+    raw = match.group(1) or match.group(2) or match.group(3)
+    if raw in _ZH_SEASON_DIGITS:
+        return _ZH_SEASON_DIGITS[raw]
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 def _normalize_for_match(text: str) -> str:
     """归一化标题/关键词用于子串匹配:全角标点/字母数字转半角(NFKC)、
     大小写折叠、去除空白,消除纯格式差异导致的误判漏网。

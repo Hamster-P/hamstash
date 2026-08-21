@@ -9,7 +9,116 @@ from sqlalchemy.orm import Session
 
 import rename_engine
 from database import SessionLocal
-from models import AnimeFamilyCache
+from models import AnimeFamilyCache, MediaGroupOverride
+
+
+def resolve_effective_root(db: Session, bgm_id: int | None, computed_root: int | None) -> int | None:
+    """把"Bangumi图谱自动算出来的家族根"换成"用户覆盖之后实际生效的家族根"。
+
+    这是MediaGroupOverride唯一的读取点(见models.py::MediaGroupOverride)——所有
+    归属判断最终都汇聚到这里,下载/RSS轮询/后台整理/修复媒体库四条链路因此自动
+    保持一致,不需要各自打补丁。没有覆盖行就原样返回computed_root,
+    所以空表 == 现状行为。
+
+    root_bgm_id == bgm_id 代表"独立成一部":返回它自己,它就是自己的家族根。
+    """
+    if not bgm_id:
+        return computed_root
+    row = (
+        db.query(MediaGroupOverride)
+        .filter(MediaGroupOverride.bgm_id == bgm_id)
+        .first()
+    )
+    return row.root_bgm_id if row else computed_root
+
+
+async def resolve_auto_root(db: Session, bgm_id: int) -> int:
+    """Bangumi客观算出的家族根,**不经过用户覆盖**。缓存优先,没缓存才联网问一次。
+
+    跟resolve_effective_root是一对:那个回答"用户想让它归到哪",这个回答
+    "Bangumi认为它属于哪个家族"。凡是"这个bgm_id在Bangumi结构里的位置"的问题
+    (季度表、集数偏移、恢复自动归属)都该用这个,不能用文件夹自己的bgm_id——
+    被用户拆成独立一部的条目,它自己是一个顶层文件夹,但在Bangumi结构里
+    依然是别人家族的成员。
+
+    误用的后果实测过:services/library_repair.py的季度表解析原本直接拿文件夹
+    自己的bgm_id当家族根,对"无职转生第三季"这种拆出去的文件夹,会以第三季为根
+    重新解析并落库,把整个家族的source_bgm_id全部改写成第三季的id——之后新下载的
+    无职转生会全部落进"第三季"那个文件夹。
+    """
+    cached = cached_auto_root(db, bgm_id)
+    if cached is not None:
+        return cached
+
+    import bangumi_family  # 延迟导入,避免模块加载顺序问题
+
+    try:
+        return await bangumi_family.resolve_root_subject_id(bgm_id)
+    except Exception:
+        return bgm_id  # 网络不通就当它自己是根,跟其他地方的兜底取向一致
+
+
+def cached_auto_root(db: Session, bgm_id: int | None) -> int | None:
+    """resolve_auto_root的只读缓存版:命中家族缓存就返回家族根,没命中返回None。
+
+    给**不能联网的同步调用方**用(比如媒体库详情页每次渲染都会走一遍,不该为了
+    算家族根去发网络请求)。返回None而不是bgm_id自己,是为了让resolve_auto_root
+    能区分"缓存里说它就是根"和"压根没有缓存行"——后者才需要联网问一次。
+    """
+    if not bgm_id:
+        return None
+    row = (
+        db.query(AnimeFamilyCache)
+        .filter(AnimeFamilyCache.bgm_id == bgm_id)
+        .first()
+    )
+    return row.source_bgm_id if row else None
+
+
+def family_work_title_buckets(db: Session, main_bgm_id: int | None) -> set[str]:
+    """这个家族里所有"以作品名命名"的目录名(算不出季号的成员才有,见
+    rename_engine.work_title_bucket)。
+
+    routers/library.py的scan_local_folder_structure拿它当白名单——这些目录名是
+    按Bangumi作品名动态生成的,写不进那边的静态白名单,不传进去的话会被折叠成
+    "Specials/Others",详情页看不见、修复也修不到(上一版的flat布局就是死在这里)。
+
+    只查本地表、不联网。家族缓存被reset_season_cache清空的窗口里返回空集合,
+    调用方退化成折叠行为——少提建议而已,不会改错文件。
+    """
+    if not main_bgm_id:
+        return set()
+    buckets = set()
+    for (bucket,) in (
+        db.query(AnimeFamilyCache.folder_bucket)
+        .filter(AnimeFamilyCache.source_bgm_id == main_bgm_id)
+        .all()
+    ):
+        if not bucket:
+            continue
+        # 季度目录和固定语义的桶不算作品名目录,scan_local_folder_structure自己认得。
+        if rename_engine.SEASON_DIR_PATTERN.match(bucket):
+            continue
+        if bucket in rename_engine.RESERVED_BUCKET_NAMES:
+            continue
+        buckets.add(bucket)
+    return buckets
+
+
+def set_group_override(db: Session, bgm_id: int, root_bgm_id: int) -> None:
+    """写入/更新一条归属覆盖(按bgm_id upsert)。root_bgm_id == bgm_id 即独立成一部。"""
+    row = db.query(MediaGroupOverride).filter(MediaGroupOverride.bgm_id == bgm_id).first()
+    if row:
+        row.root_bgm_id = root_bgm_id
+    else:
+        db.add(MediaGroupOverride(bgm_id=bgm_id, root_bgm_id=root_bgm_id))
+    db.commit()
+
+
+def clear_group_override(db: Session, bgm_id: int) -> None:
+    """删掉覆盖,恢复成自动判定。"""
+    db.query(MediaGroupOverride).filter(MediaGroupOverride.bgm_id == bgm_id).delete()
+    db.commit()
 
 
 async def resolve_series_identity(db: Session, bgm_id: int | None, fallback_title: str):
@@ -38,15 +147,9 @@ async def resolve_series_identity(db: Session, bgm_id: int | None, fallback_titl
 
     cached_self = db.query(AnimeFamilyCache).filter(AnimeFamilyCache.bgm_id == bgm_id).first()
     if cached_self:
-        main_bgm_id = cached_self.source_bgm_id
         season_title = cached_self.name or fallback_title
-        cached_root = (
-            db.query(AnimeFamilyCache)
-            .filter(AnimeFamilyCache.bgm_id == main_bgm_id)
-            .first()
-        )
-        folder_title = (cached_root.name if cached_root else None) or season_title
-        return folder_title, main_bgm_id, season_title
+        main_bgm_id = resolve_effective_root(db, bgm_id, cached_self.source_bgm_id)
+        return _folder_title_for_root(db, bgm_id, main_bgm_id, season_title), main_bgm_id, season_title
 
     import bangumi_client  # 延迟导入,避免模块加载顺序问题
     import bangumi_family
@@ -67,12 +170,86 @@ async def resolve_series_identity(db: Session, bgm_id: int | None, fallback_titl
                 AnimeFamilyCache.source_bgm_id == main_id
             ).delete(synchronize_session=False)
             _persist_family_map(db, main_id, family_map)
-        main_detail = await bangumi_client.get_subject_detail(main_id)
-        folder_title = main_detail.get("name_cn") or main_detail.get("name") or season_title
+        # 覆盖在"家族缓存已经按Bangumi真实图谱写好"之后才应用:AnimeFamilyCache
+        # 反映的是Bangumi客观结构(季度表/集数偏移还要靠它),用户的覆盖只改
+        # "文件夹归谁",不篡改这份客观数据。
+        main_id = resolve_effective_root(db, bgm_id, main_id)
+        if main_id == bgm_id:
+            folder_title = season_title
+        else:
+            main_detail = await bangumi_client.get_subject_detail(main_id)
+            folder_title = main_detail.get("name_cn") or main_detail.get("name") or season_title
     except Exception:
         main_id, folder_title = bgm_id, season_title
 
     return folder_title, main_id, season_title
+
+
+def _folder_title_for_root(
+    db: Session, bgm_id: int, main_bgm_id: int | None, season_title: str
+) -> str:
+    """家族根对应的文件夹标题。根就是自己时(独立成一部)直接用自己的标题,
+    否则查家族根那一行的官方名——查不到就退回自己的标题兜底。"""
+    if not main_bgm_id or main_bgm_id == bgm_id:
+        return season_title
+    cached_root = (
+        db.query(AnimeFamilyCache)
+        .filter(AnimeFamilyCache.bgm_id == main_bgm_id)
+        .first()
+    )
+    return (cached_root.name if cached_root else None) or season_title
+
+
+# 决定AnimeFamilyCache里存的是什么内容的"算法版本"。
+#
+# **改了季号编号规则、或者分桶命名规则,就必须把这个数字+1。**
+#
+# 为什么需要它:这张表命中就直接返回(见resolve_tv_season_ordinal_cached),
+# _persist_family_map只在未命中时才跑,所以算法改了对**已经缓存过的家族一律不生效**。
+# 实测代价:Re:Zero第四季的季号算法修好、全部测试通过之后,用户机器上依然是
+# Season 06,因为他的库里早就缓存了旧算法算出的03/04/05/06;同一时间高达家族也还
+# 停在ZZ='02',上一轮"不同演绎"的修复同样没落地。两次修复都白做,直到加上这个版本戳。
+#
+# 版本沿革:
+#   1 = 最初版
+#   2 = 「不同演绎」排除规则改成看首播先后 + 算不出季号的成员改用作品名目录
+#   3 = 拆播分段按标题里的显式季号合并(Re:Zero 第三季/第四季各拆两段)
+SEASON_ALGO_VERSION = 3
+_ALGO_VERSION_SETTING_KEY = "season_algo_version"
+
+
+def reset_cache_if_algo_changed(db: Session) -> bool:
+    """算法版本跟上次写缓存时不一致就把AnimeFamilyCache整表清空,返回这次有没有清。
+
+    挂在启动路径(db_migrate.upgrade_db)上,让"升级到新build"自动带上"重算家族关系",
+    用户不需要知道有这么一张缓存表、更不需要手动去删行。
+
+    **整表清空是安全的**:AnimeFamilyCache是纯缓存,清掉只会导致下次用到时重新
+    解析一遍(未命中会自动重算并写回)。用户自己的决定不在这张表里——归属覆盖存在
+    独立的MediaGroupOverride表,封面选择存在LocalMedia.cover_bgm_id,都不受影响。
+    "修复媒体库"每次运行本来也会整表清空(library_repair.reset_season_cache),
+    这个状态本身就是常态。
+
+    版本号存在已有的app_setting表里,不新增表也不新增列。老库读不到这个key,
+    当成0处理 -> 必然触发一次清空,正好把历史遗留的陈旧缓存冲掉;版本号是脏数据时
+    同样当0处理,不抛异常。
+    """
+    from services.common import get_setting, upsert_setting
+
+    try:
+        stored = int(get_setting(db, _ALGO_VERSION_SETTING_KEY, "0"))
+    except (TypeError, ValueError):
+        stored = 0
+
+    if stored == SEASON_ALGO_VERSION:
+        return False
+
+    removed = db.query(AnimeFamilyCache).delete(synchronize_session=False)
+    db.commit()
+    upsert_setting(db, _ALGO_VERSION_SETTING_KEY, str(SEASON_ALGO_VERSION))
+    print(f"[DB] 季度解析算法从v{stored}升到v{SEASON_ALGO_VERSION},"
+          f"已清空家族缓存{removed}行,后续会按新算法重新解析")
+    return True
 
 
 def _persist_family_map(db: Session, main_bgm_id: int, family_map: dict) -> None:
@@ -85,12 +262,20 @@ def _persist_family_map(db: Session, main_bgm_id: int, family_map: dict) -> None
     source_bgm_id)下已经有缓存行,这次直接把那一行的source_bgm_id改写成新算出的
     根,相当于把它从旧家族"认领"进新家族,后写覆盖,不报错也不留脏行。
     """
+    # 家族标题:算不出季号的成员要靠它把作品名里重复的家族前缀去掉(见
+    # rename_engine.work_title_bucket)。取家族根自己在这次结果里的名字,
+    # 拿不到就传空——work_title_bucket会退回作品全名,不会算错。
+    family_title = (family_map.get(main_bgm_id) or {}).get("name") or ""
+
     for bid, info in family_map.items():
         # folder_bucket只是给人查表用的展示字段,用跟preview_rename_file()同一个
         # resolve_folder_bucket()算,保证不会出现"缓存表说进A桶、实际文件却进了B桶"的错位。
+        # 作品名目录这条分支尤其依赖这份一致性:routers/library.py扫描物理目录时
+        # 要拿这一列当"合法桶名"的白名单,对不上就会把目录折叠成Specials/Others。
         media_type = rename_engine.classify_media_type("", info.get("platform"))
         folder_bucket = rename_engine.resolve_folder_bucket(
-            media_type, main_bgm_id, info.get("season_ordinal")
+            media_type, main_bgm_id, info.get("season_ordinal"),
+            work_title=info.get("name"), family_title=family_title,
         )
 
         row = db.query(AnimeFamilyCache).filter(AnimeFamilyCache.bgm_id == bid).first()

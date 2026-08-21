@@ -28,6 +28,7 @@ import config_store
 import models
 import rename_engine
 from routers.library import VIDEO_EXTENSIONS, get_library_root, scan_local_folder_structure
+from services import bgm_series_cache
 from services.common import get_setting
 
 # scan_local_folder_structure对没识别出结构的目录统一归进这个兜底桶——不确定这类
@@ -117,14 +118,26 @@ def reset_season_cache(db: Session) -> int:
     return removed
 
 
-async def _resolve_season_table(db: Session, main_bgm_id: int) -> dict[str, dict]:
+async def _resolve_season_table(db: Session, bgm_id: int) -> dict[str, dict]:
     """拿这部番的"每季集数/偏移量/季度本名"表(见bgm_series_cache.build_season_episode_table),
     它同时也是"当前算法下合法的季度编号集合"的权威来源。缓存未命中(这个bgm_id从没被
     下载/整理流程算过)时现查一次resolve_family_season_map补上。
+
+    传进来的是**顶层文件夹自己的bgm_id**,必须先换算成Bangumi客观家族根再用:
+    被用户"拆成单独一部"的条目自己就是一个顶层文件夹,但它在Bangumi结构里仍然是
+    别人家族的成员。直接拿它当根去解析,_persist_family_map会把整个家族的
+    source_bgm_id改写成它——实测无职转生第三季拆出去之后跑一次修复媒体库,
+    整个无职转生家族的根就变成了第三季,此后新下载的无职转生会全落进第三季文件夹。
+    而且settings.py每次扫描前都会reset_season_cache整表清空,每个文件夹都会命中
+    这条路径,谁最后被处理谁当根,结果还是非确定的。
     """
     import bangumi_family  # 延迟导入,避免循环import
 
-    from services.bgm_series_cache import _persist_family_map, build_season_episode_table
+    from services.bgm_series_cache import (
+        _persist_family_map, build_season_episode_table, resolve_auto_root,
+    )
+
+    main_bgm_id = await resolve_auto_root(db, bgm_id)
 
     has_cache = (
         db.query(models.AnimeFamilyCache)
@@ -197,12 +210,33 @@ def _non_season_args(platform: str | None = None) -> dict:
 
 
 # 文件名要靠"这一部作品自己的标题"来拼的桶(见rename_engine.preview_rename_file
-# 的movie/ova/Season 00分支)。这些桶少了season_hint就会塌缩成家族标题,必须
-# 逐文件解析出真实作品名,解析不出来就不该提改名建议。
-_WORK_TITLE_BUCKETS = {"剧场版", "劇場版", "OVA", "Season 00"}
+# 的movie/ova/"有bgm_id但没季号"三个分支)。这些桶少了season_hint就会塌缩成家族
+# 标题,必须逐文件解析出真实作品名,解析不出来就不该提改名建议。
+# "Season 00"留在这里是为了老库:算不出季号的内容过去都堆在这个桶里,现在改成
+# 按作品名建目录(extra_buckets),两种都要认。
+_STATIC_WORK_TITLE_BUCKETS = {"剧场版", "劇場版", "OVA", "Season 00"}
 
 
-def _resolve_work_title(db: Session, current_relative_path: str) -> str | None:
+def _is_work_title_bucket(bucket_name: str, extra_buckets: set[str] | None) -> bool:
+    """这个桶里的文件名是不是靠"作品自己的标题"拼的。scan_rename_mismatches 和
+    scan_family_folder_merges 共用这一个判定,两边不会漂移。"""
+    return bucket_name in _STATIC_WORK_TITLE_BUCKETS or bucket_name in (extra_buckets or ())
+
+
+def _family_members(db: Session, family_root: int | None) -> list:
+    if not family_root:
+        return []
+    return (
+        db.query(models.AnimeFamilyCache)
+        .filter(models.AnimeFamilyCache.source_bgm_id == family_root)
+        .all()
+    )
+
+
+def _resolve_work_title(
+    db: Session, current_relative_path: str,
+    family_root: int | None = None, bucket_name: str | None = None,
+) -> str | None:
     """反查某个已落地文件"这一部作品自己的标题",拿不到返回None。
 
     剧场版/OVA的文件名是`{作品自己的标题}{字幕组分辨率后缀}`,不含集数也不含
@@ -211,31 +245,61 @@ def _resolve_work_title(db: Session, current_relative_path: str) -> str | None:
     改成『机动战士高达』,而原始种子名里只有罗马音Mobile_Suit_Gundam_Hathaway,
     改完再也还原不回来)。
 
-    用StandaloneMedia.rel_path当锚点,而不是拿原始种子名去跟家族成员名做子串
-    匹配(organize.py::_resolve_standalone_bgm_id那套):实测两个真实样本的原始名
-    里压根没有中文标题(一个只有罗马音,一个只有[M28]这种编号),子串匹配必然落空。
-    StandaloneMedia这张表是整理时按文件登记的,而且apply_rename_fixes/
-    apply_family_merge改完名都会同步它的rel_path,是长期可靠的键。
+    按可靠性从高到低试三条路,全程只查本地表、不发网络请求:
 
-    全程只查本地表,不发网络请求——作品名在AnimeFamilyCache里已经缓存好了。
+    1. StandaloneMedia.rel_path —— 剧场版/OVA 走这条。这张表是整理时按文件登记的,
+       apply_rename_fixes/apply_family_merge 改完名都会同步 rel_path,长期可靠。
+       但它**只在 media_type 是 movie/ova 时才登记**(见 organize.py 的
+       upsert_standalone_media 调用点),TV 旁支从来没有行,所以还需要下面两条。
+    2. 文件已经在作品名目录里 —— 直接拿桶名反查家族成员的 folder_bucket。
+       目录名本来就是按那一部的作品名生成的,这是最直接的锚点。
+    3. 文件还在老的 "Season 00" 桶里(**迁移路径**)—— 取文件名里 " - E"/" - S" 之前的
+       主干,跟家族成员名做不区分大小写的匹配,最长匹配优先。这个桶的文件名主干
+       本来就是本程序自己按作品全名写的,所以匹配得上;跟 organize.py 的
+       _resolve_standalone_bgm_id 是同一个思路。
+
+    三条都落空返回None,调用方跳过这个文件——宁可少提一条建议,也不拿家族标题硬拼。
     """
     row = (
         db.query(models.StandaloneMedia)
         .filter(models.StandaloneMedia.rel_path == _same_relpath(current_relative_path))
         .first()
     )
-    if not row or not row.bgm_id:
+    if row and row.bgm_id:
+        cached = (
+            db.query(models.AnimeFamilyCache)
+            .filter(models.AnimeFamilyCache.bgm_id == row.bgm_id)
+            .first()
+        )
+        name = (cached.name or "").strip() if cached else ""
+        if name:
+            return name
+
+    members = _family_members(db, family_root)
+    if not members:
         return None
-    cached = (
-        db.query(models.AnimeFamilyCache)
-        .filter(models.AnimeFamilyCache.bgm_id == row.bgm_id)
-        .first()
-    )
-    name = (cached.name or "").strip() if cached else ""
-    return name or None
+
+    if bucket_name and bucket_name not in _STATIC_WORK_TITLE_BUCKETS:
+        for m in members:
+            if m.folder_bucket == bucket_name and (m.name or "").strip():
+                return m.name.strip()
+
+    if bucket_name == "Season 00":
+        stem = os.path.splitext(os.path.basename(current_relative_path))[0]
+        # 本程序给这个桶写的文件名是 `{作品全名} - E01 [组][1080p]` 或 `{作品全名} [组][1080p]`
+        stem = re.split(r"\s-\s[ES]\d", stem)[0].strip()
+        lowered = stem.lower()
+        matched = [
+            m for m in members
+            if (m.name or "").strip() and (m.name or "").strip().lower() in lowered
+        ]
+        if matched:
+            return max(matched, key=lambda m: len(m.name.strip())).name.strip()
+
+    return None
 
 
-def _bucket_recompute_args(bucket_name: str) -> dict | None:
+def _bucket_recompute_args(bucket_name: str, extra_buckets: set[str] | None = None) -> dict | None:
     """按扫盘桶名决定重算preview_rename_file要用的season_ordinal/platform等参数
     (不含season_hint,那个要逐文件解析,见_non_season_args/_resolve_work_title)。
     返回None代表这个桶不参与重算(未识别的兜底桶)。只处理不需要season_ordinal存在性
@@ -255,15 +319,24 @@ def _bucket_recompute_args(bucket_name: str) -> dict | None:
         return _non_season_args(platform="剧场版")
     if bucket_name == "OVA":
         return _non_season_args(platform="OVA")
-    if bucket_name in ("Other", "Season 00"):
+    # Season 00 和作品名目录是同一类内容("有bgm_id但算不出季号"),重算参数一样:
+    # season_ordinal为空,platform交给classify_media_type按文件名判断。桶名不同
+    # 只影响落地目录,而那是resolve_folder_bucket按作品名重新算出来的。
+    if bucket_name in ("Other", "Season 00") or bucket_name in (extra_buckets or ()):
         return _non_season_args()
     return None
 
 
-async def scan_rename_mismatches(db: Session) -> list[dict]:
+async def scan_rename_mismatches(
+    db: Session, only_folders: set[str] | None = None
+) -> list[dict]:
     """核心检查:遍历每个已绑定bgm_id的LocalMedia文件夹,按当前改名规则重算每个
     视频文件"应该"落在哪,跟磁盘上实际路径不一致的记为一条改名建议。只读,不动
     文件也不写库。
+
+    only_folders限定只检查这几个顶层文件夹(None=全库,即"修复媒体库"的行为)。
+    给"调整归属搬完文件之后顺手重排这一个文件夹"用,避免为了改几个文件去扫全库、
+    对每部番都发一轮Bangumi请求。纯粹是循环上的一层过滤,不改变任何重算逻辑。
     """
     library_root = get_library_root(db)
     if not library_root.exists():
@@ -271,6 +344,8 @@ async def scan_rename_mismatches(db: Session) -> list[dict]:
 
     results: list[dict] = []
     medias = db.query(models.LocalMedia).filter(models.LocalMedia.bgm_id.isnot(None)).all()
+    if only_folders is not None:
+        medias = [m for m in medias if m.folder_name in only_folders]
     source_lookup = _source_file_name_lookup(db)
 
     for media in medias:
@@ -285,13 +360,21 @@ async def scan_rename_mismatches(db: Session) -> list[dict]:
             continue
         anime_title = folder_match.group(1).strip()
 
+        # 季度表要在扫目录**之前**解析:算不出季号的成员现在落在以作品名命名的
+        # 目录里,而那些目录名只在AnimeFamilyCache.folder_bucket里,不查表的话
+        # scan_local_folder_structure会把它们折叠成"Specials/Others"直接跳过。
+        # 代价是"只有剧场版/OVA、没有真季"的文件夹也会解析一次家族(过去是懒加载),
+        # 但同一家族在一次扫描内只解析一次,而且修复本来就是手动触发的全库操作。
+        season_table = await _resolve_season_table(db, media.bgm_id)
+        family_root = bgm_series_cache.cached_auto_root(db, media.bgm_id) or media.bgm_id
+        extra_buckets = bgm_series_cache.family_work_title_buckets(db, family_root)
+
         anime_path = library_root / media.folder_name
-        structure = scan_local_folder_structure(anime_path, library_root)
+        structure = scan_local_folder_structure(anime_path, library_root, extra_buckets)
         if not structure:
             continue
         all_rel_paths = _list_all_relpaths(anime_path, library_root)
 
-        season_table: dict[str, dict] | None = None
         proposed_targets_seen: dict[str, str] = {}
 
         for bucket_name, episodes in structure.items():
@@ -301,10 +384,7 @@ async def scan_rename_mismatches(db: Session) -> list[dict]:
             season_num = _parse_season_bucket(bucket_name)
             if season_num is not None and season_num != "00":
                 # "Season NN"桶(NN!="00"):不信任文件夹上的数字,拿这部番真实的季度表
-                # 校验/映射一次——懒加载,避免没有任何"真季"内容的番剧也白跑一次
-                # Bangumi请求。
-                if season_table is None:
-                    season_table = await _resolve_season_table(db, media.bgm_id)
+                # 校验/映射一次。
                 effective = _resolve_effective_season(season_num, season_table)
                 if effective is None:
                     continue  # 完全拿不到季度表(网络失败等),这一桶不动
@@ -317,7 +397,7 @@ async def scan_rename_mismatches(db: Session) -> list[dict]:
                 }
                 bucket_season_hint = info["name"]
             else:
-                args = _bucket_recompute_args(bucket_name)
+                args = _bucket_recompute_args(bucket_name, extra_buckets)
                 if args is None:
                     continue
                 bucket_season_hint = None  # 逐文件解析,见下面_resolve_work_title
@@ -335,11 +415,11 @@ async def scan_rename_mismatches(db: Session) -> list[dict]:
                     continue
 
                 season_hint = bucket_season_hint
-                if bucket_name in _WORK_TITLE_BUCKETS:
+                if _is_work_title_bucket(bucket_name, extra_buckets):
                     # 这些桶的文件名靠"这一部作品自己的标题"拼,不是靠家族标题。
                     # 解析不出来就跳过这个文件——回退成anime_title会把副标题抹掉,
                     # 是不可逆的错误改名,宁可少提一条建议。
-                    season_hint = _resolve_work_title(db, current_rel)
+                    season_hint = _resolve_work_title(db, current_rel, family_root, bucket_name)
                     if season_hint is None:
                         continue
 
@@ -421,7 +501,7 @@ async def scan_family_folder_merges(db: Session) -> list[dict]:
     """
     import bangumi_family
 
-    from services.bgm_series_cache import resolve_tv_season_ordinal_cached
+    from services.bgm_series_cache import resolve_effective_root, resolve_tv_season_ordinal_cached
 
     library_root = get_library_root(db)
     if not library_root.exists():
@@ -463,9 +543,13 @@ async def scan_family_folder_merges(db: Session) -> list[dict]:
                 .first()
             )
             if cached:
-                root_cache[bgm_id] = cached.source_bgm_id
+                computed = cached.source_bgm_id
             else:
-                root_cache[bgm_id] = await _resolve_root_with_retry(bgm_id)
+                computed = await _resolve_root_with_retry(bgm_id)
+            # 用户手动拆出来/改过归属的,以用户的决定为准。拆成独立一部的会在这里
+            # 拿到"自己就是自己的根",于是在下面的分组里自成一组、当自己的primary,
+            # 不会再被提议合并回原家族——否则用户每点一次"修复媒体库"就被搬回去一次。
+            root_cache[bgm_id] = resolve_effective_root(db, bgm_id, computed)
         return root_cache[bgm_id]
 
     groups: dict[int, list[models.LocalMedia]] = {}
@@ -504,8 +588,13 @@ async def scan_family_folder_merges(db: Session) -> list[dict]:
                 "season_total_eps": info["eps"] if info else None,
             }
 
+            # 跟scan_rename_mismatches同一个道理:作品名目录不在扫描器的静态白名单里,
+            # 不把家族的合法桶名传进去会被折叠成"Specials/Others"跳过。
+            # season_table上面已经解析过,家族缓存这时是热的。
+            extra_buckets = bgm_series_cache.family_work_title_buckets(db, main_bgm_id)
+
             secondary_path = library_root / secondary.folder_name
-            structure = scan_local_folder_structure(secondary_path, library_root)
+            structure = scan_local_folder_structure(secondary_path, library_root, extra_buckets)
             if not structure:
                 continue
 
@@ -531,8 +620,10 @@ async def scan_family_folder_merges(db: Session) -> list[dict]:
                     # 解析不出来就跳过,不提这条建议。只对真正靠作品标题拼文件名的
                     # 桶设这道门槛,TV正片桶不受影响(它们用SxxExx编号,不看season_hint)。
                     season_hint = args["season_hint"]
-                    if bucket_name in _WORK_TITLE_BUCKETS:
-                        season_hint = _resolve_work_title(db, current_rel)
+                    if _is_work_title_bucket(bucket_name, extra_buckets):
+                        season_hint = _resolve_work_title(
+                            db, current_rel, main_bgm_id, bucket_name
+                        )
                         if season_hint is None:
                             continue
 
@@ -620,36 +711,10 @@ async def apply_family_folder_merges(db: Session, selected_paths: set[str] | Non
             skipped.append({"path": current_rel, "reason": item["block_reason"]})
             continue
 
-        current_full = library_root / current_rel
-        proposed_full = library_root / item["proposed_relative_path"]
         try:
-            proposed_full.parent.mkdir(parents=True, exist_ok=True)
-            current_full.rename(proposed_full)
-
-            video_stem = current_full.stem
-            for sub_rel in item["sibling_subtitles"]:
-                sub_current = library_root / sub_rel
-                if not sub_current.exists():
-                    continue
-                suffix = sub_current.name[len(video_stem):]
-                sub_proposed = proposed_full.with_name(proposed_full.stem + suffix)
-                sub_current.rename(sub_proposed)
-
-            row = rows_by_relpath.get(_same_relpath(current_rel))
-            if row:
-                row.target_relative_path = _to_db_relpath(item["proposed_relative_path"])
-            _migrate_playback_record(db, current_rel, item["proposed_relative_path"])
-            # 同步"剧场版模式"登记表的路径:改名后旧 rel_path 会失效,这里跟着更新
-            # (本模块相对路径都是正斜杠,与 StandaloneMedia.rel_path 同格式)。
-            new_rel = item["proposed_relative_path"].replace("\\", "/")
-            db.query(models.StandaloneMedia).filter(
-                models.StandaloneMedia.rel_path == current_rel.replace("\\", "/")
-            ).update(
-                {
-                    models.StandaloneMedia.rel_path: new_rel,
-                    models.StandaloneMedia.filename: os.path.basename(new_rel),
-                },
-                synchronize_session=False,
+            move_media_file_with_sync(
+                db, library_root, current_rel, item["proposed_relative_path"],
+                item["sibling_subtitles"], rows_by_relpath,
             )
             db.commit()
             succeeded.append({"from": current_rel, "to": item["proposed_relative_path"]})
@@ -715,39 +780,46 @@ def scan_orphaned_records(db: Session) -> dict:
 
 
 def _migrate_playback_record(db: Session, old_relpath: str, new_relpath: str) -> None:
-    """把这一集的观看标记跟着改名迁过去。
+    """把这一集的观看标记跟着改名/搬家迁过去。
 
     PlaybackRecord是按(folder_name, filename)存的,而详情页判断"看过没有"是拿裸文件名
     去匹配的(见routers/library.py::get_anime_seasons_and_episodes里的watched_map)。
     改完名如果不迁这张表,记录行还在、但文件名对不上,这一集在界面上就变回"没看过"——
     行没删,等于白丢了观看进度。
 
-    修复只在同一个番剧顶层文件夹内部搬动(anime_root是按同一个folder_name拼出来的),
-    所以folder_name一定不变,只需要改filename。
+    顶层文件夹也可能变:跨文件夹合并(apply_family_folder_merges)和媒体库里的
+    拆分/合并归属(routers/library.py::regroup_*)都会把文件搬到另一个番剧文件夹下,
+    这时候只改filename、不改folder_name,记录会留在一个即将被删掉的旧文件夹名下,
+    等于观看进度照样丢。所以两段都要迁。
     """
     old_parts = old_relpath.split("/")
     new_parts = new_relpath.split("/")
     if len(old_parts) < 2 or len(new_parts) < 2:
         return
-    folder_name, old_name = old_parts[0], old_parts[-1]
-    new_name = new_parts[-1]
-    if old_name == new_name:
+    old_folder, old_name = old_parts[0], old_parts[-1]
+    new_folder, new_name = new_parts[0], new_parts[-1]
+    if old_folder == new_folder and old_name == new_name:
         return
 
     rows = (
         db.query(models.PlaybackRecord)
         .filter(
-            models.PlaybackRecord.folder_name == folder_name,
+            models.PlaybackRecord.folder_name.in_([old_folder, new_folder]),
             models.PlaybackRecord.filename.in_([old_name, new_name]),
         )
         .all()
     )
-    old_row = next((r for r in rows if r.filename == old_name), None)
+    old_row = next(
+        (r for r in rows if r.folder_name == old_folder and r.filename == old_name), None
+    )
     if old_row is None:
         return  # 这一集本来没被标记看过,不凭空插入新记录
 
-    new_row = next((r for r in rows if r.filename == new_name), None)
+    new_row = next(
+        (r for r in rows if r.folder_name == new_folder and r.filename == new_name), None
+    )
     if new_row is None:
+        old_row.folder_name = new_folder
         old_row.filename = new_name
         return
 
@@ -758,13 +830,88 @@ def _migrate_playback_record(db: Session, old_relpath: str, new_relpath: str) ->
     db.delete(old_row)
 
 
-async def apply_rename_fixes(db: Session, selected_paths: set[str] | None) -> dict:
+def move_media_file_with_sync(
+    db: Session,
+    library_root: Path,
+    current_rel: str,
+    proposed_rel: str,
+    sibling_subtitles: list[str] | None = None,
+    rows_by_relpath: dict[str, "models.RenamedFile"] | None = None,
+) -> None:
+    """把一个视频文件(连同跟随的字幕)移动到新位置,并把四张表里指向它的路径一起改掉:
+    RenamedFile.target_relative_path / PlaybackRecord / StandaloneMedia。
+
+    顺序是先动文件、再写库:文件系统操作失败会直接抛OSError,这时候一个字都还没写进
+    数据库,调用方rollback即可,不会出现"库里说搬好了、磁盘上没搬"的错位。
+    本函数不commit,事务边界交给调用方(批量应用时是一个文件一提交)。
+
+    rows_by_relpath是可选的RenamedFile预建索引——批量场景(apply_rename_fixes/
+    apply_family_folder_merges)一次性建好复用,避免每个文件都全表扫一遍;
+    单个文件的场景(媒体库里的拆分/合并)不传,内部按需查一次。
+
+    抽出来给三处共用:apply_rename_fixes、apply_family_folder_merges,
+    以及routers/library.py里的拆分/合并归属接口——原本前两处是逐行重复的同一段代码。
+    """
+    current_full = library_root / current_rel
+    proposed_full = library_root / proposed_rel
+
+    proposed_full.parent.mkdir(parents=True, exist_ok=True)
+    video_stem = current_full.stem
+    current_full.rename(proposed_full)
+
+    for sub_rel in sibling_subtitles or []:
+        sub_current = library_root / sub_rel
+        if not sub_current.exists():
+            continue
+        # 字幕文件名 = 视频文件名主干 + 语言/格式后缀(比如"01.chs.ass"里的".chs.ass"),
+        # 把这段后缀原样接到改名后的视频主干上。
+        suffix = sub_current.name[len(video_stem):]
+        sub_current.rename(proposed_full.with_name(proposed_full.stem + suffix))
+
+    if rows_by_relpath is not None:
+        row = rows_by_relpath.get(_same_relpath(current_rel))
+    else:
+        row = (
+            db.query(models.RenamedFile)
+            .filter(models.RenamedFile.target_relative_path.isnot(None))
+            .filter(models.RenamedFile.target_relative_path.in_(
+                [_same_relpath(current_rel), _to_db_relpath(current_rel)]
+            ))
+            .first()
+        )
+    if row:
+        row.target_relative_path = _to_db_relpath(proposed_rel)
+
+    _migrate_playback_record(db, current_rel, proposed_rel)
+
+    # 同步"剧场版模式"登记表的路径:改名后旧 rel_path 会失效,这里跟着更新
+    # (本模块相对路径都是正斜杠,与 StandaloneMedia.rel_path 同格式)。
+    new_rel = _same_relpath(proposed_rel)
+    db.query(models.StandaloneMedia).filter(
+        models.StandaloneMedia.rel_path == _same_relpath(current_rel)
+    ).update(
+        {
+            models.StandaloneMedia.rel_path: new_rel,
+            models.StandaloneMedia.filename: os.path.basename(new_rel),
+            models.StandaloneMedia.library_folder: new_rel.split("/")[0],
+        },
+        synchronize_session=False,
+    )
+
+
+async def apply_rename_fixes(
+    db: Session, selected_paths: set[str] | None, only_folders: set[str] | None = None
+) -> dict:
     """重新执行一次只读扫描(防止扫描和点击应用之间用户手动改动了文件的TOCTOU问题),
     对选中且未被阻塞的条目实际执行文件系统rename/move,成功后把对应的RenamedFile路径
     和PlaybackRecord观看标记一起同步过去(都在同一次commit里,保证"文件改名成功才写库")。
+
+    selected_paths=None代表"这次扫出来的都应用";配合only_folders就是
+    "只重排这几个文件夹、全部应用",给调整归属之后的自动重排用(见routers/library.py
+    ::regroup_media)。被blocked的条目(目标已存在/同批撞车)照旧跳过,不会覆盖文件。
     """
     library_root = get_library_root(db)
-    mismatches = await scan_rename_mismatches(db)
+    mismatches = await scan_rename_mismatches(db, only_folders=only_folders)
 
     # 一次性按"只统一分隔符"的key给RenamedFile建索引,供下面改完名后同步DB路径用
     # (不能直接用==比,原因见_same_relpath)。同一个归一化路径理论上只会有一行,
@@ -785,38 +932,10 @@ async def apply_rename_fixes(db: Session, selected_paths: set[str] | None) -> di
             skipped.append({"path": current_rel, "reason": item["block_reason"]})
             continue
 
-        current_full = library_root / current_rel
-        proposed_full = library_root / item["proposed_relative_path"]
         try:
-            proposed_full.parent.mkdir(parents=True, exist_ok=True)
-            current_full.rename(proposed_full)
-
-            video_stem = current_full.stem
-            for sub_rel in item["sibling_subtitles"]:
-                sub_current = library_root / sub_rel
-                if not sub_current.exists():
-                    continue
-                # 字幕文件名 = 视频文件名主干 + 语言/格式后缀(比如"01.chs.ass"里的
-                # ".chs.ass"),把这段后缀原样接到改名后的视频主干上。
-                suffix = sub_current.name[len(video_stem):]
-                sub_proposed = proposed_full.with_name(proposed_full.stem + suffix)
-                sub_current.rename(sub_proposed)
-
-            row = rows_by_relpath.get(_same_relpath(current_rel))
-            if row:
-                row.target_relative_path = _to_db_relpath(item["proposed_relative_path"])
-            _migrate_playback_record(db, current_rel, item["proposed_relative_path"])
-            # 同步"剧场版模式"登记表的路径:改名后旧 rel_path 会失效,这里跟着更新
-            # (本模块相对路径都是正斜杠,与 StandaloneMedia.rel_path 同格式)。
-            new_rel = item["proposed_relative_path"].replace("\\", "/")
-            db.query(models.StandaloneMedia).filter(
-                models.StandaloneMedia.rel_path == current_rel.replace("\\", "/")
-            ).update(
-                {
-                    models.StandaloneMedia.rel_path: new_rel,
-                    models.StandaloneMedia.filename: os.path.basename(new_rel),
-                },
-                synchronize_session=False,
+            move_media_file_with_sync(
+                db, library_root, current_rel, item["proposed_relative_path"],
+                item["sibling_subtitles"], rows_by_relpath,
             )
             db.commit()
             succeeded.append({"from": current_rel, "to": item["proposed_relative_path"]})

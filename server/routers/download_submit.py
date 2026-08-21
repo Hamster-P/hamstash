@@ -9,7 +9,14 @@ import qbittorrent_client
 from database import get_db
 from models import AnimeFamilyCache, DownloadTask, SubscriptionRule
 from schemas import DownloadRequest, PrefetchRenameCacheRequest, RenamePreviewRequest
-from services.bgm_series_cache import prefetch_rename_cache_task, resolve_series_identity
+from services.bgm_series_cache import (
+    build_season_episode_table,
+    clear_group_override,
+    prefetch_rename_cache_task,
+    resolve_effective_root,
+    resolve_series_identity,
+    set_group_override,
+)
 from services.common import get_setting
 from services.staging import staging_folder, upsert_anime_folder
 from services.rss_poller import poll_subscription_task
@@ -95,15 +102,45 @@ async def preview_rename_batch(
         background_tasks.add_task(prefetch_rename_cache_task, payload.bgm_id, payload.anime_title)
         return {"status": "pending", "previews": []}
 
-    # 家族根节点自己的那一行缓存了它的官方标题,拿来当anime_title(全家共用的
-    # 文件夹名);根节点本身没有独立成行是不该发生的反常状态,兜底退回请求里带的标题。
-    cached_root = (
-        db.query(AnimeFamilyCache)
-        .filter(AnimeFamilyCache.bgm_id == cached_self.source_bgm_id)
-        .first()
-    )
-    anime_title = (cached_root.name if cached_root else None) or payload.anime_title
-    folder_bgm_id = cached_self.source_bgm_id
+    # 预览必须跟这次提交实际会用的归属一致,否则用户会看到"预览说进A文件夹、
+    # 下完却进了B文件夹"。merge_to_family=False时这一部自己就是自己的家族根,
+    # 跟execute_download写完覆盖之后resolve_series_identity算出来的结果对齐。
+    if payload.merge_to_family:
+        folder_bgm_id = resolve_effective_root(db, payload.bgm_id, cached_self.source_bgm_id)
+    else:
+        folder_bgm_id = payload.bgm_id
+
+    if folder_bgm_id == payload.bgm_id:
+        anime_title = cached_self.name or payload.anime_title
+    else:
+        # 家族根节点自己的那一行缓存了它的官方标题,拿来当anime_title(全家共用的
+        # 文件夹名);根节点本身没有独立成行是不该发生的反常状态,兜底退回请求里带的标题。
+        cached_root = (
+            db.query(AnimeFamilyCache)
+            .filter(AnimeFamilyCache.bgm_id == folder_bgm_id)
+            .first()
+        )
+        anime_title = (cached_root.name if cached_root else None) or payload.anime_title
+
+    # 集数偏移量/本季总集数:字幕组常用跨季连续的绝对编号(实测Re:Zero第四季发的是
+    # 71~79,而这一季自己只有19集),rename_engine._normalize_absolute_episode靠这两个
+    # 参数把它换算回季内编号。以前这里一个都没传,两个参数全走默认值0/None,那个函数
+    # 第一行就直接原样返回——**预览显示的集数跟下载后实际落地的集数对不上**,而真正
+    # 整理时走的organize._resolve_season_context是传的。
+    #
+    # 取值口径跟organize那边完全一致(都用"生效的家族根"+cached_self的season_ordinal),
+    # 这样预览算出来的就是实际会落地的。build_season_episode_table只读AnimeFamilyCache、
+    # 不发网络请求,而能走到这里就说明cached_self已命中缓存、家族数据是热的,
+    # 不会给预览引入网络依赖(那正是上面status="pending"分支刻意避开的东西)。
+    episode_offset = 0
+    season_total_eps = None
+    if cached_self.season_ordinal:
+        season_info = build_season_episode_table(db, folder_bgm_id).get(
+            cached_self.season_ordinal
+        )
+        if season_info:
+            episode_offset = season_info["episode_offset"]
+            season_total_eps = season_info["eps"]
 
     previews = [
         rename_engine.preview_rename_file(
@@ -115,6 +152,8 @@ async def preview_rename_batch(
             season_hint=cached_self.name,
             season_ordinal=cached_self.season_ordinal,
             platform=cached_self.platform,
+            episode_offset=episode_offset,
+            season_total_eps=season_total_eps,
         )
         for title in payload.titles
     ]
@@ -133,6 +172,17 @@ async def execute_download(
     - 对每个选中的种子,计算改名预览(如果开启auto_rename,使用Bangumi官方名),
       推送给qBittorrent,并在 download_task 表里留档。
     """
+    # "是否并进主系列"必须在解析系列归属之前落库:resolve_series_identity内部会
+    # 经由resolve_effective_root读这条覆盖,才能返回"这一部自己就是自己的家族根",
+    # 后面的暂存目录/媒体库文件夹名全都由它算出来。
+    if payload.bgm_id:
+        if payload.merge_to_family:
+            # 用户这次选了合并——如果之前拆出去过,这次要把覆盖撤掉恢复自动判定,
+            # 否则旧覆盖会继续把它钉在独立状态上,开关看起来"打开了却没生效"。
+            clear_group_override(db, payload.bgm_id)
+        else:
+            set_group_override(db, payload.bgm_id, payload.bgm_id)
+
     anime_title, main_bgm_id, season_title = await resolve_series_identity(
         db, payload.bgm_id, payload.anime_title
     )

@@ -118,6 +118,10 @@ export default function DownloadPage({
   const [lastOpenedDetail, setLastOpenedDetail] = useState<string | null>(null);
 
   const [subscribe, setSubscribe] = useState(initialSubscribe);
+  // 是否并进这部作品所属的Bangumi家族(高达/柯南这类系列的最早那个条目)。
+  // 打开(默认)=同系列共用一个媒体库文件夹、按第几季组织,与历史行为一致;
+  // 关闭=这一部独立成一部,在媒体库单独成卡(比如高达SEED不想跟初代高达混在一起)。
+  const [mergeToFamily, setMergeToFamily] = useState(true);
   const [autoRename, setAutoRename] = useState(true);
   const [previews, setPreviews] = useState<RenamePreview[]>([]);
   // 改名规则(季度序号)可能还在后台算——不在预览请求里同步现算阻塞交互,
@@ -284,6 +288,10 @@ export default function DownloadPage({
 
   const selectedItems = filteredResults.filter((_, i) => selected.has(i));
 
+  // 后端最终会用哪个bgm_id(跟handleSubmit里传的那个保持一致)——"合并到主系列"
+  // 靠它写归属覆盖,拿不到bgm_id时这个开关没有作用对象,不渲染。
+  const effectiveBgmId = bgmId ?? selectedItems[0]?.bgm_id ?? null;
+
   // 改名规则可能还在后台算(比如首次遇到这部番,家族解析要联网爬关联图谱)——
   // 后端命中缓存才会返回status="ready",没命中返回"pending"且顺手在后台补一次
   // 预热。这里遇到pending就隔几秒自己再问一次,直到变成ready或者依赖变化/组件
@@ -303,7 +311,12 @@ export default function DownloadPage({
       fetch(`${API_BASE}/resources/preview-rename`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ anime_title: animeTitle, bgm_id: bgmId, titles }),
+        body: JSON.stringify({
+          anime_title: animeTitle,
+          bgm_id: bgmId,
+          titles,
+          merge_to_family: mergeToFamily,
+        }),
       })
         .then((res) => res.json())
         .then((data: { status: "ready" | "pending"; previews: RenamePreview[] }) => {
@@ -326,8 +339,10 @@ export default function DownloadPage({
       cancelled = true;
       window.clearTimeout(retryTimer);
     };
+    // mergeToFamily也在依赖里:它决定文件夹归属(合并进系列根 vs 独立成一部),
+    // 改了必须重算预览,否则预览显示的目标路径跟提交后真正落地的对不上。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoRename, selected, searchBox, bgmId]);
+  }, [autoRename, selected, searchBox, bgmId, mergeToFamily]);
 
   const handleSubmit = async () => {
     if (selectedItems.length === 0) return;
@@ -350,6 +365,7 @@ export default function DownloadPage({
           release_type: releaseType !== "不限" ? releaseType : null,
           subscribe,
           auto_rename: autoRename,
+          merge_to_family: mergeToFamily,
           items: selectedItems.map((item) => ({
             title: item.title,
             magnet: item.magnet,
@@ -633,6 +649,23 @@ export default function DownloadPage({
               更早的历史存量不会被订阅自动补下载,需要的话请在上面的列表里手动勾选下载
             </div>
           )}
+          {effectiveBgmId !== null && (
+            <>
+              <ToggleRow
+                label="合并到主系列"
+                description="是否自动合并到最早的主系列中"
+                checked={mergeToFamily}
+                onChange={setMergeToFamily}
+              />
+              {!mergeToFamily && (
+                <div className="rounded border border-border bg-ink p-3 font-mono text-[11px] text-muted">
+                  已关闭合并——这一部会作为独立的一部入库,在媒体库单独显示一张卡片,
+                  不并进所属系列的主文件夹。之后可以在媒体库详情页里改回来。
+                </div>
+              )}
+            </>
+          )}
+
           <ToggleRow
             label="自动改名"
             description="下载后自动整理为刮削友好的文件夹结构(优先用Bangumi官方译名)"

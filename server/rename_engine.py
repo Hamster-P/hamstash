@@ -50,13 +50,70 @@ def classify_media_type(torrent_title: str, platform: str | None = None) -> str:
     return "tv"
 
 
-def resolve_folder_bucket(media_type: str, bgm_id: int | None, season_ordinal: str | None) -> str:
+# 番剧文件夹下"这是个季度目录"的判定。routers/library.py的scan_local_folder_structure
+# 扫描物理目录时也用这一个,不能两边各写一份——work_title_bucket()要靠它避开
+# 会被误认成季度目录的作品名(比如"SEED DESTINY"开头的S+字母就会命中)。
+SEASON_DIR_PATTERN = re.compile(r"^(Season\s*|S|Specials|SP|第\s*)(\d+|[a-zA-Z]+)", re.IGNORECASE)
+
+# 顶层桶里语义固定、不能被作品名目录占用的名字。
+RESERVED_BUCKET_NAMES = {"剧场版", "劇場版", "OVA", "Other", "Specials/Others"}
+
+
+def work_title_bucket(work_title: str | None, family_title: str | None) -> str | None:
+    """算"这一部作品自己的目录名",拿不到返回None(调用方应退回Season 00)。
+
+    用于**算不出season_ordinal的TV条目**:它们过去一律堆进Season 00,而播放器
+    (Jellyfin/Plex)把Season 00当Specials——机动战士Z高达这种50集正片被当成特典。
+    改成每部一个以作品名命名的目录,季号算不算得出来就不再影响目录结构。
+
+    作品名以家族标题开头时去掉这段前缀:家族名已经是上一级目录了,再重复一遍没有
+    信息量,去掉之后正好是用户要的"略称"——
+        机动战士高达0083 星尘的回忆  ->  0083 星尘的回忆
+        机动战士高达 雷霆宙域        ->  雷霆宙域
+        机动战士Z高达               ->  机动战士Z高达(前缀对不上,保留全名)
+    (查过Bangumi的infobox:"别名"字段里放的是罗马音和日文原名,没有可用的简称,
+     去前缀是唯一不联网、不引入新数据的做法。)
+
+    三道护栏,任何一条不满足就退回作品全名;全名也不可用时返回None:
+    1. 去掉前缀后剩不到2个字符(比如家族标题几乎等于作品名),太短没法辨认;
+    2. 结果命中SEASON_DIR_PATTERN——"SEED DESTINY"这类S开头的名字会被目录扫描器
+       误认成季度目录,不能用;
+    3. 结果撞上RESERVED_BUCKET_NAMES里语义固定的桶名。
+    """
+    full = (work_title or "").strip()
+    if not full:
+        return None
+
+    candidates = []
+    family = (family_title or "").strip()
+    if family and full.startswith(family):
+        trimmed = full[len(family):].strip(" 　-–—:：·")
+        if len(trimmed) >= 2:
+            candidates.append(trimmed)
+    candidates.append(full)
+
+    for name in candidates:
+        safe = _sanitize_filename_segment(name)
+        if safe in RESERVED_BUCKET_NAMES or SEASON_DIR_PATTERN.match(safe):
+            continue
+        return safe
+    return None
+
+
+def resolve_folder_bucket(
+    media_type: str, bgm_id: int | None, season_ordinal: str | None,
+    work_title: str | None = None, family_title: str | None = None,
+) -> str:
     """
     根据media_type(classify_media_type的结果)+season_ordinal+bgm_id,算出这一部
-    内容该落到哪个顶层桶:剧场版/OVA/Season 00/Season {ordinal}。preview_rename_file()
+    内容该落到哪个顶层桶:剧场版/OVA/作品名目录/Season {ordinal}。preview_rename_file()
     的改名路径、以及services/common.py家族缓存表写入时的"落地目录"展示字段,
     都调用这一个函数,保证两处判断永远是同一套逻辑,不会出现"缓存表说进A桶、
     实际文件却进了B桶"的错位。
+
+    work_title/family_title只在"有bgm_id但算不出season_ordinal"这一条分支上用得到,
+    交给work_title_bucket()拼目录名;拿不到作品名(历史数据、没匹配上Bangumi)时
+    退回原来的"Season 00",老库的行为不变。
 
     不处理"extra"(OP/ED/PV这类)——那是种子内单个文件级别的判断,不是一个
     Bangumi条目本身该归哪里的问题,调用方自己处理,不经过这个函数。
@@ -69,7 +126,7 @@ def resolve_folder_bucket(media_type: str, bgm_id: int | None, season_ordinal: s
     if media_type == "ova":
         return "OVA"
     if media_type == "tv" and bgm_id is not None and season_ordinal is None:
-        return "Season 00"
+        return work_title_bucket(work_title, family_title) or "Season 00"
     if season_ordinal is not None:
         return f"Season {season_ordinal}"
     return "Season 01"
@@ -347,7 +404,12 @@ def preview_rename_file(
     # 走Season 00桶的情况:已知bgm_id(有Bangumi结构信息)但season_ordinal算不出来
     # ——说明这一部不在"真季名单"里(比如集数很短的旁支正片、剧场版剪成TV重播的版本),
     # 又不是OVA/剧场版,不能硬撞Season 01,也不该混进OVA文件夹。
-    folder_bucket = resolve_folder_bucket(media_type, bgm_id, season_ordinal)
+    # season_hint就是"这一部作品自己的标题",anime_title是家族共用标题——算不出
+    # season_ordinal的TV条目靠这两个拼出以作品名命名的目录(见work_title_bucket)。
+    folder_bucket = resolve_folder_bucket(
+        media_type, bgm_id, season_ordinal,
+        work_title=season_hint, family_title=anime_title,
+    )
 
     # 下面movie/ova/Season 00三个分支都拿"这一部作品自己的标题"当文件名主干,
     # season_hint缺席时只能退回家族共用的anime_title——那会把副标题整段抹掉
@@ -383,10 +445,15 @@ def preview_rename_file(
             filename = f"{work_title} - E{episode_str}{meta_suffix}.{file_ext}"
         else:
             filename = f"{work_title}{meta_suffix}.{file_ext}"
-    elif folder_bucket == "Season 00":
+    elif bgm_id is not None and season_ordinal is None:
+        # 有Bangumi结构信息但算不出季号的TV条目。桶名由resolve_folder_bucket给出:
+        # 拿得到作品名就是以作品名命名的目录,拿不到才退回"Season 00"——判定条件写成
+        # 跟resolve_folder_bucket里那条分支同一个表达式,两边不会因为桶名变了就错位。
         folder_path = f"{anime_root}\\{folder_bucket}"
-        # 同上:Season 00桶装的是"够不上真季"的旁支正片/短篇特典,不是TV正片的
-        # 某一季,同样不套SxxExx编号,但同样存在多集撞名覆盖的风险,处理方式跟OVA一致。
+        # 同上:这类是"够不上真季"的旁支正片/短篇特典,不是TV正片的某一季,
+        # 同样不套SxxExx编号,但同样存在多集撞名覆盖的风险,处理方式跟OVA一致。
+        # 文件名用**完整**作品名(不是目录用的略称),跟剧场版/OVA桶的做法一致:
+        # 文件被单独拷出去时仍然自带完整信息。
         work_title = _sanitize_filename_segment(season_hint or anime_title)
         if episode_str != "??":
             filename = f"{work_title} - E{episode_str}{meta_suffix}.{file_ext}"

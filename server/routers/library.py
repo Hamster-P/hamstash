@@ -126,9 +126,17 @@ def get_library_root(db: Session) -> Path:
     return Path(raw_path)
 
 
-def scan_local_folder_structure(anime_path: Path, library_root: Path):
+def scan_local_folder_structure(anime_path: Path, library_root: Path,
+                                extra_buckets: set[str] | None = None):
     """
     扫描单部动漫文件夹下的物理结构。
+
+    extra_buckets:这部番额外的合法桶名,来自AnimeFamilyCache.folder_bucket——
+    算不出季号的成员现在会落进以作品名命名的目录(见rename_engine.work_title_bucket),
+    这些目录名是动态的,没法写进下面的白名单,必须由调用方查表传进来。
+    不传(或者家族缓存刚被reset_season_cache清空的窗口)时退化成原来的折叠行为:
+    这些目录归进"Specials/Others",而services/library_repair.py会跳过这个桶——
+    **只会少提改名建议,不会改错文件**,跟"Season 00"过去的表现一致。
     """
     structure = {}
     if not anime_path.exists():
@@ -149,9 +157,16 @@ def scan_local_folder_structure(anime_path: Path, library_root: Path):
         for entry in it:
             if entry.is_dir():
                 # rename_engine.py 实际会创建的子目录名只有这几种:Season NN、Season 00(OVA)、
-                # 剧场版、Other——这几个要保留各自的桶,不能被下面的兜底正则一起归进"Specials/Others"
-                season_match = re.match(r"^(Season\s*|S|Specials|SP|第\s*)(\d+|[a-zA-Z]+)", entry.name, re.IGNORECASE)
-                is_known_bucket = bool(season_match) or entry.name in ("剧场版", "劇場版", "Other", "OVA")
+                # 剧场版、Other、以及算不出季号时按作品名命名的目录(extra_buckets)——
+                # 这几个要保留各自的桶,不能被下面的兜底正则一起归进"Specials/Others"。
+                # 季度目录的正则用rename_engine那一份,不在这里另写一个:
+                # work_title_bucket()要靠同一个正则避开会被误认成季度目录的作品名。
+                season_match = rename_engine.SEASON_DIR_PATTERN.match(entry.name)
+                is_known_bucket = (
+                    bool(season_match)
+                    or entry.name in ("剧场版", "劇場版", "Other", "OVA")
+                    or entry.name in (extra_buckets or ())
+                )
                 season_name = entry.name if is_known_bucket else "Specials/Others"
                 episodes = []
                 for dirpath, _dirnames, filenames in os.walk(entry.path):
@@ -576,6 +591,236 @@ async def regroup_standalone_media(req: StandaloneRegroupRequest, db: Session = 
     return {"status": "success", "updated": len(req.ids), "bgm_id": req.bgm_id}
 
 
+# ----- 归属调整:把内容拆成独立一部 / 合并到另一部 -----
+
+
+class RegroupRequest(BaseModel):
+    """把一批已经落地的文件,从当前所在的库文件夹改挂到另一个归属下。
+
+    rel_paths 由前端从详情页/剧场版列表里已有的结构直接给出(一个季度桶下的全部
+    视频文件,或剧场版模式里选中的那几个文件),后端不再重新推导"哪些文件属于这一部"
+    ——那份结构前端本来就有,重推一遍只会多一个可能不一致的来源。
+    """
+    bgm_id: int  # 要改归属的那部作品(写进MediaGroupOverride的主键)
+    target_root_bgm_id: int | None = None  # None=拆成独立一部;否则并进这个家族根
+    rel_paths: list[str]  # 相对library_root的正斜杠路径
+    # 恢复自动归属:删掉手动覆盖,并把文件搬回Bangumi自动算出的家族文件夹。
+    # 为真时忽略target_root_bgm_id。
+    restore_auto: bool = False
+
+
+@router.get("/library/regroup/candidates/{bgm_id}")
+async def list_regroup_candidates(bgm_id: int, db: Session = Depends(get_db)):
+    """「归属」弹窗的数据源:这个条目所在Bangumi家族的全部成员 + 当前生效的归属。
+
+    候选走_family_root_and_members(跟"选择图片"弹窗同一个函数),它读的是
+    AnimeFamilyCache.source_bgm_id(Bangumi客观结构),**不经过用户覆盖**——
+    所以对已经被拆出去的条目(比如无职转生第三季),这里照样能列出完整家族,
+    用户才有得选、能把它合并回去。这正是拆出去之后"合并不回来"的修复点。
+    """
+    auto_root, members = await _family_root_and_members(db, bgm_id, "")
+
+    member_ids = [m.bgm_id for m in members] or [bgm_id]
+    catalogs = {
+        c.bgm_id: c
+        for c in db.query(models.AnimeCatalog).filter(models.AnimeCatalog.bgm_id.in_(member_ids)).all()
+    }
+
+    def _title(mid: int, cached_name: str | None = None) -> str:
+        row = catalogs.get(mid)
+        if row and (row.title or "").strip():
+            return row.title.strip()
+        return (cached_name or "").strip() or f"bgm-{mid}"
+
+    payload_members = [
+        {
+            "bgm_id": m.bgm_id,
+            "title": _title(m.bgm_id, m.name),
+            "cover_url": (catalogs.get(m.bgm_id).cover_url if catalogs.get(m.bgm_id) else None),
+            "platform": m.platform,
+            "season_ordinal": m.season_ordinal,
+            "folder_bucket": m.folder_bucket,
+            "is_auto_root": m.bgm_id == auto_root,
+        }
+        for m in members
+    ]
+    # 家族根排最前,其余按bgm_id降序(越新的id越大),跟补番/选择图片的排序习惯一致
+    payload_members.sort(key=lambda x: (not x["is_auto_root"], -x["bgm_id"]))
+
+    override = (
+        db.query(models.MediaGroupOverride)
+        .filter(models.MediaGroupOverride.bgm_id == bgm_id)
+        .first()
+    )
+    return {
+        "bgm_id": bgm_id,
+        "auto_root": {"bgm_id": auto_root, "title": _title(auto_root)},
+        "members": payload_members,
+        "current_root": override.root_bgm_id if override else auto_root,
+        "is_overridden": override is not None,
+    }
+
+
+def _title_for_bgm_id(db: Session, bgm_id: int, fallback: str) -> str:
+    """某个条目用于拼文件夹名的标题:家族缓存 -> 番剧元数据 -> 兜底。"""
+    cached = (
+        db.query(models.AnimeFamilyCache)
+        .filter(models.AnimeFamilyCache.bgm_id == bgm_id)
+        .first()
+    )
+    if cached and (cached.name or "").strip():
+        return cached.name.strip()
+    catalog = (
+        db.query(models.AnimeCatalog)
+        .filter(models.AnimeCatalog.bgm_id == bgm_id)
+        .first()
+    )
+    if catalog and (catalog.title or "").strip():
+        return catalog.title.strip()
+    return fallback
+
+
+@router.post("/library/regroup")
+async def regroup_media(req: RegroupRequest, db: Session = Depends(get_db)):
+    """拆成独立一部 / 合并到另一部:写归属覆盖 + 把文件搬到新文件夹 + 同步数据库,
+    最后按新归属把名字和季度目录一并重排好,用户不需要再手动跑一次"修复媒体库"。
+
+    搬家这一步只换顶层文件夹,子路径原样保留;重排交给library_repair那套既有逻辑
+    (限定只扫这一个文件夹),不在这里复制第二份改名规则——两份早晚会漂移。
+
+    归属覆盖(MediaGroupOverride)先写:写完之后重排和"修复媒体库"的合并扫描都会
+    认这个新归属,不会再把刚拆出来的文件夹提议合并回原家族(见
+    services/library_repair.py::scan_family_folder_merges的_root_of)。
+    """
+    from services.library_repair import (
+        _list_all_relpaths, apply_rename_fixes, move_media_file_with_sync,
+    )
+
+    if not req.rel_paths:
+        raise HTTPException(status_code=400, detail="没有要移动的文件")
+
+    library_root = get_library_root(db)
+    auto_root = await bgm_series_cache.resolve_auto_root(db, req.bgm_id)
+    new_root = auto_root if req.restore_auto else (req.target_root_bgm_id or req.bgm_id)
+
+    fallback = _norm_rel(req.rel_paths[0]).split("/")[0]
+    new_folder = rename_engine.build_anime_folder_name(
+        _title_for_bgm_id(db, new_root, fallback), new_root
+    )
+
+    # 先落归属:即使下面搬文件中途失败,归属本身已经是用户要的状态,
+    # 重试这个操作是幂等的(已经搬过去的文件不会再出现在rel_paths里)。
+    #
+    # 归属跟Bangumi自动判定一致时**删覆盖**而不是写一条等价的显式覆盖——
+    # 保持"没有覆盖行 == 沿用自动判定"这个语义干净:以后Bangumi家族结构真的变了,
+    # 没被钉住的条目能自然跟着走,被钉住的会一直停在旧答案上。
+    if new_root == auto_root:
+        bgm_series_cache.clear_group_override(db, req.bgm_id)
+    else:
+        bgm_series_cache.set_group_override(db, req.bgm_id, new_root)
+
+    # 字幕要跟着视频一起搬,否则搬完就成了没字幕的孤儿文件。按源文件夹缓存一份
+    # 完整文件清单(含非视频文件),交给rename_engine那套"同目录+同文件名主干"的
+    # 判定——跟下载整理时字幕跟随改名用的是同一个函数,判定标准一致。
+    all_paths_by_folder: dict[str, list[str]] = {}
+
+    def _siblings_of(current_rel: str, folder: str) -> list[str]:
+        if folder not in all_paths_by_folder:
+            all_paths_by_folder[folder] = _list_all_relpaths(library_root / folder, library_root)
+        return rename_engine.find_sibling_subtitles(current_rel, all_paths_by_folder[folder])
+
+    source_folders: set[str] = set()
+    moved, skipped, failed = [], [], []
+    for raw in req.rel_paths:
+        current_rel = _norm_rel(raw)
+        parts = current_rel.split("/")
+        if len(parts) < 2:
+            skipped.append({"path": current_rel, "reason": "不是番剧文件夹下的相对路径"})
+            continue
+        source_folders.add(parts[0])
+        proposed_rel = "/".join([new_folder, *parts[1:]])
+        if proposed_rel == current_rel:
+            skipped.append({"path": current_rel, "reason": "已经在目标文件夹下"})
+            continue
+        if not (library_root / current_rel).exists():
+            skipped.append({"path": current_rel, "reason": "文件不存在"})
+            continue
+        if (library_root / proposed_rel).exists():
+            skipped.append({"path": current_rel, "reason": "目标位置已存在同名文件,未覆盖"})
+            continue
+        try:
+            move_media_file_with_sync(
+                db, library_root, current_rel, proposed_rel,
+                _siblings_of(current_rel, parts[0]),
+            )
+            db.commit()
+            moved.append({"from": current_rel, "to": proposed_rel})
+        except OSError as e:
+            db.rollback()
+            failed.append({"path": current_rel, "error": str(e)})
+
+    # 新文件夹要有自己的LocalMedia行,媒体库列表才会把它当成独立的一部显示出来。
+    if moved:
+        target_media = (
+            db.query(models.LocalMedia)
+            .filter(models.LocalMedia.folder_name == new_folder)
+            .first()
+        )
+        if target_media is None:
+            db.add(models.LocalMedia(folder_name=new_folder, bgm_id=new_root))
+        elif target_media.bgm_id is None:
+            target_media.bgm_id = new_root
+        db.commit()
+
+    # 源文件夹被搬空了就顺手清理,不留空壳目录和指向它的脏记录
+    # (跟apply_family_folder_merges末尾同一套判断:还有任何文件就不删)。
+    removed_folders = []
+    for folder_name in source_folders:
+        if folder_name == new_folder:
+            continue
+        folder_path = library_root / folder_name
+        if not folder_path.is_dir():
+            continue
+        if any(p.is_file() for p in folder_path.rglob("*")):
+            continue
+        shutil.rmtree(folder_path, ignore_errors=True)
+        stale = (
+            db.query(models.LocalMedia)
+            .filter(models.LocalMedia.folder_name == folder_name)
+            .first()
+        )
+        if stale:
+            db.delete(stale)
+            db.commit()
+        removed_folders.append(folder_name)
+
+    # 搬过来的文件名里还带着旧归属的标题/季号,按新归属重排一遍——限定只扫这一个
+    # 文件夹,不做全库扫描(那会对每部番都发一轮Bangumi请求)。复用"修复媒体库"
+    # 同一套逻辑,被blocked的条目(目标已存在/同批撞车)照旧跳过,不会覆盖文件。
+    # 刻意不调reset_season_cache:清空家族缓存是全库手动修复的动作,
+    # 每次调整归属都清一次会白白引发大量联网重算。
+    renamed = {"succeeded": [], "skipped": [], "failed": []}
+    if moved:
+        try:
+            renamed = await apply_rename_fixes(db, selected_paths=None, only_folders={new_folder})
+        except Exception as e:
+            # 重排失败不影响"文件已经搬过去了"这个既成事实,把错误带回前端让用户知道
+            # 可以再手动跑一次修复,不要把整个请求打成500。
+            print(f"[REGROUP] 自动重排失败 folder={new_folder}: {e}")
+            renamed = {"succeeded": [], "skipped": [], "failed": [{"error": str(e)}]}
+
+    _detail_structure_cache.clear()  # 目录结构变了,详情页缓存整体失效
+    return {
+        "status": "success",
+        "target_folder": new_folder,
+        "moved": moved,
+        "skipped": skipped,
+        "failed": failed,
+        "removed_folders": removed_folders,
+        "renamed": renamed,
+    }
+
+
 @router.get("/library/scan")
 async def scan_and_update_library(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     """
@@ -744,12 +989,28 @@ def get_anime_seasons_and_episodes(folder_name: str, db: Session = Depends(get_d
         _detail_structure_cache.pop(folder_name, None)
         raise HTTPException(status_code=404, detail="Anime folder not found on disk.")
 
+    # 这部番的家族根:拆出去的文件夹自己的bgm_id名下没有家族行,必须换算成
+    # Bangumi客观家族根才查得到成员(跟library_repair._resolve_season_table同一个道理)。
+    # 详情页是同步接口、每次渲染都会走,只查缓存不联网。
+    media = (
+        db.query(models.LocalMedia)
+        .filter(models.LocalMedia.folder_name == folder_name)
+        .first()
+    )
+    family_root = None
+    if media and media.bgm_id:
+        family_root = bgm_series_cache.cached_auto_root(db, media.bgm_id) or media.bgm_id
+    extra_buckets = bgm_series_cache.family_work_title_buckets(db, family_root)
+
+    # 结构缓存的key要带上extra_buckets:磁盘目录没变、但家族缓存重算之后合法桶名
+    # 可能变了(作品名目录 <-> Specials/Others),只按目录签名判断会读到陈旧结构。
+    cache_key = (signature, frozenset(extra_buckets))
     cached = _detail_structure_cache.get(folder_name)
-    if cached and cached[0] == signature:
+    if cached and cached[0] == cache_key:
         base_structure = cached[1]
     else:
-        base_structure = scan_local_folder_structure(anime_path, library_root)
-        _detail_structure_cache[folder_name] = (signature, base_structure)
+        base_structure = scan_local_folder_structure(anime_path, library_root, extra_buckets)
+        _detail_structure_cache[folder_name] = (cache_key, base_structure)
 
     # 提取已播放记录
     watched_records = db.query(models.PlaybackRecord).filter(
@@ -775,9 +1036,38 @@ def get_anime_seasons_and_episodes(folder_name: str, db: Session = Depends(get_d
                 ep["is_watched"] = False
                 ep["watched_at"] = None
 
+    # 每个桶对应家族里的哪一部(拆分/合并归属时要拿它当覆盖的主键)。
+    # 只给"这个桶唯一对应一个成员"的情况——Season NN 是一对一,而剧场版/OVA 桶
+    # 往往塞着几十部,给不出唯一的归属主体,前端那边也就不显示拆分入口。
+    # 作品名目录天生一部一个桶,所以那些过去全挤在"Season 00"里、拿不到归属的旁支,
+    # 现在自动都有了拆分/合并入口。
+    # bucket_dates 给前端排序用:Season NN 之后的作品名目录按首播日期排,不按字符串序。
+    season_owners: dict[str, dict] = {}
+    bucket_dates: dict[str, str] = {}
+    if family_root:
+        by_bucket: dict[str, list] = {}
+        for m in (
+            db.query(models.AnimeFamilyCache)
+            .filter(models.AnimeFamilyCache.source_bgm_id == family_root)
+            .all()
+        ):
+            if m.folder_bucket:
+                by_bucket.setdefault(m.folder_bucket, []).append(m)
+        season_owners = {
+            bucket: {"bgm_id": members[0].bgm_id, "name": members[0].name}
+            for bucket, members in by_bucket.items()
+            if len(members) == 1
+        }
+        for bucket, members in by_bucket.items():
+            dates = sorted(m.date for m in members if m.date)
+            if dates:
+                bucket_dates[bucket] = dates[0]
+
     return {
         "folder_name": folder_name,
-        "seasons": structure
+        "seasons": structure,
+        "season_owners": season_owners,
+        "bucket_dates": bucket_dates,
     }
 
 

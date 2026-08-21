@@ -227,3 +227,26 @@ class AnimeOriginCache(Base):
     is_japanese = Column(Boolean, nullable=False)
     meta_tags = Column(String, nullable=True)  # 逗号分隔的原始tags,留着排查/以后可能要用其他产地判断
     cached_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class MediaGroupOverride(Base):
+    """用户对"这部作品归到哪个家族"的手动覆盖。
+
+    Bangumi关联图谱算出来的家族归属不总是符合使用习惯:高达UC家族46个成员会全部
+    塞进同一个文件夹,而0083/∀高达/独角兽这些"同世界观但各自独立的新作"被当成
+    同一部的不同季管理并不合理。这张表让自动判定成为"默认值"而不是"唯一答案":
+    root_bgm_id指向这一部该归到的家族根,root_bgm_id == bgm_id 表示"独立成一部",
+    不并进任何家族、在媒体库里自己一个顶层文件夹、自己一张卡。
+
+    没有对应行 = 完全沿用现有自动判定,所以历史库升级后行为逐字节不变;
+    表本身由database.Base.metadata.create_all自动建出(见db_migrate.py),不需要写迁移。
+
+    刻意独立成表、不塞进AnimeFamilyCache:那张表是纯缓存,
+    services/library_repair.py::reset_season_cache每次"修复媒体库"扫描都会整表清空,
+    用户的手动决定放进去会被静默抹掉。
+    """
+    __tablename__ = "media_group_override"
+
+    bgm_id = Column(Integer, primary_key=True)  # 被覆盖归属的那个具体条目
+    root_bgm_id = Column(Integer, nullable=False, index=True)  # 归到哪个家族根;==bgm_id即独立成一部
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
