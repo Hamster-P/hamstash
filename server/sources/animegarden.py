@@ -64,12 +64,26 @@ class AnimeGardenAdapter(SourceAdapter):
                 if provider and provider_id is not None
                 else None
             )
+            # 字幕组名按可靠性依次兜底。上游的 fansub 是它**自己维护的字幕组库**
+            # (带 id),只收录登记过的组;个人发布或没登记的组一律是 null,组名只
+            # 出现在 publisher 里(实测"晚街与灯":fansub=null / publisher=晚街与灯)。
+            # 只看 fansub 会让这批资源全部塌成"未知字幕组"——下拉框里区分不开,
+            # 订阅也只能靠"未知字幕组"这个伪组名去匹配。
+            # 本文件的 parse_feed 早就用 extract_fansub_name(title) 兜底了,
+            # 搜索路径不兜底等于两条路径判定不一致,正是 0.7.0 那次要根除的问题。
+            title = item.get("title", "")
+            publisher = item.get("publisher") or {}
+            fansub_name = (
+                fansub.get("name")
+                or publisher.get("name")
+                or extract_fansub_name(title)  # 解析不出时它自己返回"未知字幕组"
+            )
             results.append(
                 ResourceItem(
                     source="animegarden",
                     provider=provider,
-                    title=item.get("title", ""),
-                    fansub_name=fansub.get("name", "未知字幕组"),
+                    title=title,
+                    fansub_name=fansub_name,
                     magnet=item.get("magnet"),
                     size=animegarden_size_to_bytes(item.get("size")),
                     created_at=item.get("createdAt"),
@@ -82,6 +96,25 @@ class AnimeGardenAdapter(SourceAdapter):
         return results
 
     async def _fetch_page(self, extra_params: dict, page: int, page_size: int = 100) -> tuple[list[dict], bool]:
+        resources, complete = await self._request_page(extra_params, page, page_size)
+
+        # 上游的 fansub 参数只认它**自己登记过**的字幕组:
+        #   fansub=Kirara Fantasia(已登记)  -> 正常过滤,只回这个组
+        #   fansub=晚街与灯(只在 publisher 里) -> **返回 0 条**,而不是忽略这个条件
+        #   fansub=未知字幕组(压根不是组名)   -> 直接忽略,返回全量
+        # 所以自从 _shape 用 publisher 兜底出真实组名之后,用户按这类组去搜索/订阅
+        # 会一条都拿不到 —— 光修显示名等于把老 bug 换成一个更隐蔽的新 bug。
+        # 查空就退回不带 fansub 再查一次,后面交给本地 matches_criteria 过滤
+        # (搜索走 resource_client、轮询走 rss_poller,两边都过同一个谓词)。
+        # 已登记的组第一次就有结果,不会多这一次请求;真正无结果的查询多一次请求,
+        # 拿回来的也会被本地过滤清空,结果不变。
+        if not resources and "fansub" in extra_params:
+            without_fansub = {k: v for k, v in extra_params.items() if k != "fansub"}
+            resources, complete = await self._request_page(without_fansub, page, page_size)
+
+        return resources, complete
+
+    async def _request_page(self, extra_params: dict, page: int, page_size: int) -> tuple[list[dict], bool]:
         resp = await http_get(self._api_url(), params={**extra_params, "page": page, "pageSize": page_size})
         data = resp.json()
         resources = data.get("resources", [])

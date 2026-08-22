@@ -56,6 +56,9 @@ export default function RssPage() {
   // 上次 RSS 轮询的前置障碍消息(代理/qB 不可达),空=正常。只在进入页面时读一次(见下方
   // 挂载 effect),不做定时刷新;"更新所有RSS源"按钮会重查并刷新它。
   const [statusMessage, setStatusMessage] = useState("");
+  // 升级时做过的一次性数据迁移提示。跟 statusMessage 分开:那个是每轮轮询重算的
+  // 瞬时状态(代理/qB 不可达),这个要一直留到用户点掉。
+  const [notice, setNotice] = useState("");
   const [refreshingAll, setRefreshingAll] = useState(false);
 
   const loadSubs = async () => {
@@ -79,10 +82,21 @@ export default function RssPage() {
     try {
       const res = await fetch(`${API_BASE}/rss-engine/status`);
       if (!res.ok) return;
-      const data = (await res.json()) as { message: string };
+      const data = (await res.json()) as { message: string; notice?: string };
       setStatusMessage(data.message ?? "");
+      setNotice(data.notice ?? "");
     } catch {
       // 后端没起/请求失败:保持上次已知消息,不误报
+    }
+  };
+
+  // 一次性升级提示(比如字幕组识别改动导致订阅被重置),点掉之后后端不再返回。
+  const dismissNotice = async () => {
+    setNotice("");
+    try {
+      await fetch(`${API_BASE}/rss-engine/status/dismiss-notice`, { method: "POST" });
+    } catch {
+      // 清不掉也没关系:下次进页面会再提示一遍,不会丢信息
     }
   };
 
@@ -216,6 +230,20 @@ export default function RssPage() {
       {statusMessage && (
         <div className="mb-4 rounded-md border border-vermillion/40 bg-surface p-3 font-mono text-xs text-vermillion">
           {statusMessage}
+        </div>
+      )}
+
+      {/* 一次性升级提示:用 gold 而不是 vermillion,跟上面"出错了"的红字区分开——
+          这是"我们替你改了配置"的知会,不是故障。 */}
+      {notice && (
+        <div className="mb-4 flex items-start justify-between gap-3 rounded-md border border-gold/40 bg-surface p-3 font-mono text-xs text-gold">
+          <span>{notice}</span>
+          <button
+            onClick={dismissNotice}
+            className="shrink-0 text-muted transition-colors hover:text-paper"
+          >
+            知道了
+          </button>
         </div>
       )}
 

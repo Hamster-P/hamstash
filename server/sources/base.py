@@ -208,12 +208,26 @@ def build_effective_keyword(keyword: str, extra_terms: list[str], fansub_name: s
     return " ".join(parts)
 
 
-def animegarden_size_to_bytes(size_kb) -> int | None:
-    """AnimeGarden 的 size 单位是 KB,统一转成字节(跟 parse_size_text / 前端 formatSize
-    "size 永远是字节数"的约定一致)。"""
-    if not size_kb:
+def animegarden_size_to_bytes(size_bytes) -> int | None:
+    """AnimeGarden 的 size **本来就是字节数**,这里只做空值/类型归一,不做单位换算
+    (跟 parse_size_text / 前端 formatSize "size 永远是字节数"的约定一致)。
+
+    这个函数原本写的是 `int(size_kb) * 1024`,注释也声称上游单位是 KB —— 那是错的,
+    而且从 0.7.0 落地第一天就错(不是上游后来改了口径),导致所有 AnimeGarden 结果的
+    大小统一虚报 1024 倍:界面上一集 1080p 番显示成"1433.60 GB"。
+
+    三重实测确认过是字节:
+    1. 300 条样本、3 个 provider(dmhy/moe/mikan)全是 int,当字节解释中位数
+       567MB~1.4GB、最大 133GB(整季 BD 合集),当 KB 则中位数 567GB~1.4TB,不可能;
+    2. 跟 dmhy 页面抓取那条**完全独立**的链路(parse_size_text 解析"622.2MB"这类
+       人类可读字符串)按标题精确配对 18 条,比值全部严格等于 1.0000;
+    3. 各 provider 之间没有第二个数量级分布,不存在"不同源/不同上传者口径不一样"。
+
+    所以不要再给它补上 *1024。
+    """
+    if not size_bytes:
         return None
-    return int(size_kb) * 1024
+    return int(size_bytes)
 
 
 def parse_size_text(size_text: str | None) -> int | None:

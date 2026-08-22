@@ -64,11 +64,15 @@ def _refresh_stale_caches() -> None:
     """
     from database import SessionLocal
     from services.bgm_series_cache import reset_cache_if_algo_changed
+    from services.rss_migration import reset_unknown_fansub_rules
 
     db = SessionLocal()
     try:
         if reset_cache_if_algo_changed(db):
             _mark_family_cache_needs_rewarm()
+        # 一次性数据迁移:AnimeGarden 适配器改用 publisher 兜底真实字幕组名之后,
+        # 旧的"未知字幕组"订阅会静默失效,必须放宽成"不限"。幂等,详见该函数。
+        reset_unknown_fansub_rules(db)
     finally:
         db.close()
 

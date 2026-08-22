@@ -14,17 +14,49 @@ from database import get_db
 from models import RssMatchedItem, SubscriptionRule
 from schemas import RssMatchedItemResponse, RssSubscriptionResponse, RssToggleRequest
 from services import rss_poller
-from services.common import get_setting
+from services.common import get_setting, upsert_setting
+from services.rss_migration import FANSUB_RESET_COUNT_KEY
 from services.rss_poller import poll_subscription
 
 router = APIRouter(prefix="/rss-engine", tags=["RSS订阅"])
 
 
 @router.get("/status")
-def rss_status():
-    """RSS 页顶部红字状态:返回上次 RSS 轮询遇到的前置障碍(代理/qBittorrent 不可达),
-    空字符串=正常。只读后台全局变量、不发任何网络请求——RssPage 进入时读一次即可。"""
-    return {"message": rss_poller.get_last_poll_status()}
+def rss_status(db: Session = Depends(get_db)):
+    """RSS 页顶部状态:
+    - message: 上次 RSS 轮询遇到的前置障碍(代理/qBittorrent 不可达),空字符串=正常。
+      只读后台全局变量、不发任何网络请求。
+    - notice: 升级时做过的一次性数据迁移提示,空字符串=没有。跟 message 分开返回,
+      因为 message 是每轮轮询重算的瞬时状态,而 notice 要一直留到用户点掉为止。
+
+    RssPage 进入时读一次即可。"""
+    return {
+        "message": rss_poller.get_last_poll_status(),
+        "notice": _fansub_reset_notice(db),
+    }
+
+
+def _fansub_reset_notice(db: Session) -> str:
+    """AnimeGarden 字幕组重置迁移的一次性提示文案,没有要提示的就返回空串。"""
+    try:
+        count = int(get_setting(db, FANSUB_RESET_COUNT_KEY, "0"))
+    except (TypeError, ValueError):
+        count = 0
+    if count <= 0:
+        return ""
+    return (
+        f"本次升级已把 {count} 条 AnimeGarden 订阅的字幕组从「未知字幕组」重置为「不限」。"
+        "原因:这些资源的字幕组名此前识别不出来,现在能正确显示了(比如「晚街与灯」),"
+        "旧的「未知字幕组」标识不再产生,继续用它会导致订阅抓不到任何内容。"
+        "如需重新限定字幕组,请在下载页重新订阅。"
+    )
+
+
+@router.post("/status/dismiss-notice")
+def dismiss_notice(db: Session = Depends(get_db)):
+    """用户点掉一次性提示:清零计数,之后不再返回 notice。"""
+    upsert_setting(db, FANSUB_RESET_COUNT_KEY, "0")
+    return {"ok": True}
 
 
 @router.post("/refresh-all")
