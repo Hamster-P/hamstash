@@ -1222,10 +1222,31 @@ function LibraryRepairSection() {
   const [cleanRenamedFiles, setCleanRenamedFiles] = useState(true);
   const [cleanAnimeFolders, setCleanAnimeFolders] = useState(true);
 
+  // 季度编号规则升级后的一次性提示(后端在真的重算过家族缓存时才返回)
+  const [repairNotice, setRepairNotice] = useState("");
+  useEffect(() => {
+    fetch(`${API_BASE}/library/repair/notice`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => setRepairNotice(data?.notice ?? ""))
+      .catch(() => {
+        /* 后端没起就不提示,不打扰 */
+      });
+  }, []);
+
+  const dismissRepairNotice = async () => {
+    setRepairNotice("");
+    try {
+      await fetch(`${API_BASE}/library/repair/notice/dismiss`, { method: "POST" });
+    } catch {
+      /* 清不掉没关系,下次进页面再提示一遍,不会丢信息 */
+    }
+  };
+
   const handleScan = async () => {
     setScanning(true);
     setError(null);
     setApplyResult(null);
+    setRepairNotice("");  // 扫了就是在做我们建议的事,横幅不用再挂着
     try {
       const res = await fetch(`${API_BASE}/library/repair/scan`);
       if (!res.ok) {
@@ -1328,6 +1349,22 @@ function LibraryRepairSection() {
         按当前改名规则重新核对媒体库里每个文件的命名/路径,并清理指向已不存在文件的数据库记录。
         涉及文件改名/移动和数据删除,请先扫描确认再应用。
       </p>
+
+      {/* 季度编号规则升级后的一次性提示:缓存重算只让"以后的下载"用新编号,
+          已经落地的文件不会自己重排,得靠用户跑一次修复。用 gold 而不是红色,
+          这是建议不是故障。 */}
+      {repairNotice && (
+        <div className="mb-3 flex items-start justify-between gap-3 rounded-md border border-gold/40 bg-ink p-3 font-mono text-[11px] text-gold">
+          <span>{repairNotice}</span>
+          <button
+            type="button"
+            onClick={dismissRepairNotice}
+            className="shrink-0 text-muted transition-colors hover:text-paper"
+          >
+            知道了
+          </button>
+        </div>
+      )}
       <div className="flex items-center gap-3">
         <button
           type="button"

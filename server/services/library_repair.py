@@ -22,6 +22,7 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 import config_store
@@ -299,6 +300,141 @@ def _resolve_work_title(
     return None
 
 
+def resolve_landed_bgm_id(db: Session, current_relative_path: str) -> int | None:
+    """反查某个已落地文件**真正属于家族里的哪一部**,拿不到返回None。
+
+    为什么需要:季度编号会随算法改动或Bangumi新增家族成员而变化,而已经落地的文件
+    不会自己跟着重排。实测案例——魔法少女奈叶 EXCEEDS 的第7、8集分处 Season 04 和
+    Season 05:0.7.3 修好「不同演绎」误伤之后 A's 拿回了第二季,整个家族顺移一位,
+    E07 是升级前落地的、E08 是升级后落地的。
+
+    而扫描原本只校验"文件夹上的季号在不在合法集合里"——"04"确实合法(那是ViVid),
+    于是原样采用,一条建议都提不出来。**要判断"这个文件是不是真属于这一季",
+    必须知道它当初是按哪个Bangumi条目下载的。**
+
+    走的是确定性链路,不做标题模糊匹配:原始种子名写的是繁体「奈葉」、Bangumi 存的是
+    简体「奈叶」,差一个字,子串匹配必然落空(项目里也没有引入简繁转换)。
+
+        RenamedFile.torrent_hash -> RssMatchedItem -> SubscriptionRule.bgm_id
+
+    两个查找键都要试,因为各源填的字段不一样(实测用户库:nyaa 的 info_hash 347/347
+    全填;animegarden 16/16 全为空,哈希只出现在 magnet 的 btih 里)。两条都走之后,
+    磁盘上真实存在的文件 100% 能反查到。
+
+    **单次下载(非订阅)反查不到**:download_task 没有 bgm_id 列,它的 anime_title 跟
+    anime_folder 也对不上(实测 join 到 0 行),RenamedFile 更没有记过暂存目录。
+    这种情况返回 None,调用方保持现状、不猜——宁可少提一条建议。
+    """
+    # target_relative_path 历史上两种分隔符都存过(见_same_relpath),两种形态都查一次,
+    # 不去动大小写(POSIX下大小写有意义,跟_same_relpath保持同一取向)。
+    row = (
+        db.query(models.RenamedFile)
+        .filter(
+            or_(
+                models.RenamedFile.target_relative_path == _same_relpath(current_relative_path),
+                models.RenamedFile.target_relative_path == _to_db_relpath(current_relative_path),
+            )
+        )
+        .first()
+    )
+    if row is None or not row.torrent_hash:
+        return None
+    return _bgm_id_by_torrent_hash(db, row.torrent_hash)
+
+
+def _bgm_id_by_torrent_hash(db: Session, torrent_hash: str) -> int | None:
+    """种子哈希 -> 当初是按哪个Bangumi条目订阅下载的。见resolve_landed_bgm_id的说明。"""
+    info_hash = (torrent_hash or "").strip().lower()
+    if not info_hash:
+        return None
+
+    matched = (
+        db.query(models.RssMatchedItem)
+        .filter(func.lower(models.RssMatchedItem.info_hash) == info_hash)
+        .first()
+    )
+    if matched is None:
+        # animegarden 这类源不填 info_hash(实测16/16全为空),哈希只在磁力链接的btih段里
+        matched = (
+            db.query(models.RssMatchedItem)
+            .filter(models.RssMatchedItem.magnet.ilike(f"%btih:{info_hash}%"))
+            .first()
+        )
+    if matched is None:
+        return None
+
+    rule = (
+        db.query(models.SubscriptionRule)
+        .filter(models.SubscriptionRule.id == matched.subscription_id)
+        .first()
+    )
+    return rule.bgm_id if rule else None
+
+
+def _landed_bgm_id_lookup(db: Session) -> dict[str, int]:
+    """target_relative_path(归一化)-> 当初下载时选中的bgm_id。
+
+    跟_source_file_name_lookup同一个模式:扫描前一次性建表,避免在每个文件上
+    各查一遍库。反查不到来源的文件不会出现在这份表里,调用方据此保持现状。
+    """
+    lookup: dict[str, int] = {}
+    for row in (
+        db.query(models.RenamedFile)
+        .filter(models.RenamedFile.target_relative_path.isnot(None),
+                models.RenamedFile.status == "done")
+        .all()
+    ):
+        if not row.torrent_hash:
+            continue
+        bgm_id = _bgm_id_by_torrent_hash(db, row.torrent_hash)
+        if bgm_id:
+            lookup[_same_relpath(row.target_relative_path)] = bgm_id
+    return lookup
+
+
+def _season_args_for_landed_file(
+    db: Session,
+    current_relative_path: str,
+    family_root: int | None,
+    season_table: dict[str, dict],
+    landed_bgm_lookup: dict[str, int],
+) -> dict | None:
+    """按"这个文件当初是按哪个Bangumi条目下载的"算出它真正该用的季度参数,
+    拿不到/不该改就返回None(调用方沿用文件夹上的季号,行为不变)。
+
+    四道护栏,任何一条不满足都返回None——这个函数会导致文件在季度目录之间搬家,
+    宁可不动也不能动错:
+    1. 反查不到来源(手动拖进库的、单次下载的)——不猜;
+    2. 反查到的条目**不属于这个文件夹的家族**(用户手动搬过文件/绑错了)——不越权;
+    3. 这个条目在家族里没有季号(剧场版/OVA/旁支)——它压根不该待在Season NN桶里,
+       那是另一类问题,交给别的分支,这里不掺和;
+    4. 算出来的季号不在当前季度表里——数据不自洽,不动。
+    """
+    bgm_id = landed_bgm_lookup.get(_same_relpath(current_relative_path))
+    if not bgm_id:
+        return None
+
+    row = (
+        db.query(models.AnimeFamilyCache)
+        .filter(models.AnimeFamilyCache.bgm_id == bgm_id)
+        .first()
+    )
+    if row is None:
+        return None
+    if family_root is not None and row.source_bgm_id != family_root:
+        return None
+    if not row.season_ordinal or row.season_ordinal not in season_table:
+        return None
+
+    info = season_table[row.season_ordinal]
+    return {
+        "season_ordinal": row.season_ordinal,
+        "platform": info["platform"],
+        "episode_offset": info["episode_offset"],
+        "season_total_eps": info["eps"],
+    }
+
+
 def _bucket_recompute_args(bucket_name: str, extra_buckets: set[str] | None = None) -> dict | None:
     """按扫盘桶名决定重算preview_rename_file要用的season_ordinal/platform等参数
     (不含season_hint,那个要逐文件解析,见_non_season_args/_resolve_work_title)。
@@ -347,6 +483,7 @@ async def scan_rename_mismatches(
     if only_folders is not None:
         medias = [m for m in medias if m.folder_name in only_folders]
     source_lookup = _source_file_name_lookup(db)
+    landed_bgm_lookup = _landed_bgm_id_lookup(db)
 
     for media in medias:
         # 只有物理文件夹名严格符合当前"{标题} [bgm-{id}]"命名约定时才参与重算——
@@ -396,7 +533,9 @@ async def scan_rename_mismatches(
                     "season_total_eps": info["eps"],
                 }
                 bucket_season_hint = info["name"]
+                is_season_bucket = True
             else:
+                is_season_bucket = False
                 args = _bucket_recompute_args(bucket_name, extra_buckets)
                 if args is None:
                     continue
@@ -415,6 +554,7 @@ async def scan_rename_mismatches(
                     continue
 
                 season_hint = bucket_season_hint
+                file_args = args
                 if _is_work_title_bucket(bucket_name, extra_buckets):
                     # 这些桶的文件名靠"这一部作品自己的标题"拼,不是靠家族标题。
                     # 解析不出来就跳过这个文件——回退成anime_title会把副标题抹掉,
@@ -422,6 +562,18 @@ async def scan_rename_mismatches(
                     season_hint = _resolve_work_title(db, current_rel, family_root, bucket_name)
                     if season_hint is None:
                         continue
+                elif is_season_bucket:
+                    # "Season NN"桶:上面只校验了"这个季号合不合法",没校验"这个文件
+                    # 是不是真属于这一季"。季号会随算法改动/Bangumi新增家族成员而变,
+                    # 已落地的文件不会自己跟着重排,于是同一部番的相邻两集可能分处
+                    # 两个季度目录(实测:魔法少女奈叶 EXCEEDS 的E07在Season 04、
+                    # E08在Season 05,因为中间升级到0.7.3、A's拿回了第二季)。
+                    # 这种情况文件夹上的季号本身是合法的(04是ViVid),扫描原本一条
+                    # 建议都提不出来。所以这里再按"这个文件当初是按哪个条目下载的"
+                    # 反查一次,反查得到就以它为准。
+                    file_args = _season_args_for_landed_file(
+                        db, current_rel, family_root, season_table, landed_bgm_lookup,
+                    ) or args
 
                 preview = rename_engine.preview_rename_file(
                     anime_title=anime_title,
@@ -430,10 +582,10 @@ async def scan_rename_mismatches(
                     library_root=str(library_root),
                     bgm_id=media.bgm_id,
                     season_hint=season_hint,
-                    season_ordinal=args["season_ordinal"],
-                    platform=args["platform"],
-                    episode_offset=args["episode_offset"],
-                    season_total_eps=args["season_total_eps"],
+                    season_ordinal=file_args["season_ordinal"],
+                    platform=file_args["platform"],
+                    episode_offset=file_args["episode_offset"],
+                    season_total_eps=file_args["season_total_eps"],
                 )
                 target_full_path = preview.get("target_full_path")
                 if not target_full_path or preview.get("parsed_episode") == "??":

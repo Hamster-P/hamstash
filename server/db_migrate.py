@@ -63,13 +63,19 @@ def _refresh_stale_caches() -> None:
     放模块顶会让"建表"依赖上一堆跟建表无关的东西。
     """
     from database import SessionLocal
-    from services.bgm_series_cache import reset_cache_if_algo_changed
+    from services.bgm_series_cache import SEASON_ALGO_CHANGED_KEY, reset_cache_if_algo_changed
+    from services.common import upsert_setting
     from services.rss_migration import reset_unknown_fansub_rules
 
     db = SessionLocal()
     try:
         if reset_cache_if_algo_changed(db):
             _mark_family_cache_needs_rewarm()
+            # 季度编号规则变了,**已经落地的文件不会自己跟着重排**——实测案例:
+            # 魔法少女奈叶 EXCEEDS 的 E07/E08 因为跨版本下载而分处 Season 04/05。
+            # 缓存重算只让"以后的下载"正确,存量得靠用户跑一次修复媒体库,
+            # 所以这里立个标记,让媒体库页提示他。
+            upsert_setting(db, SEASON_ALGO_CHANGED_KEY, "1")
         # 一次性数据迁移:AnimeGarden 适配器改用 publisher 兜底真实字幕组名之后,
         # 旧的"未知字幕组"订阅会静默失效,必须放宽成"不限"。幂等,详见该函数。
         reset_unknown_fansub_rules(db)

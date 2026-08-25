@@ -13,7 +13,7 @@ import qbittorrent_client
 from database import get_db
 from routers.library import scan_and_update_library
 from schemas import ProxyTestRequest, SettingsUpdate
-from services import library_health, library_repair
+from services import bgm_series_cache, library_health, library_repair
 from services.common import get_setting, upsert_setting
 from services.proxy import get_proxy_url, get_system_proxy, set_proxy_url_cache
 
@@ -272,11 +272,35 @@ async def scan_library_repair(background_tasks: BackgroundTasks, db: Session = D
     rename_mismatches = await library_repair.scan_rename_mismatches(db)
     family_merges = await library_repair.scan_family_folder_merges(db)
     orphans = library_repair.scan_orphaned_records(db)
+    # 扫过就算响应过这次提示了:用户已经在做我们建议他做的事,不用再挂着横幅。
+    upsert_setting(db, bgm_series_cache.SEASON_ALGO_CHANGED_KEY, "")
     return {
         "rename_mismatches": rename_mismatches,
         "family_merges": family_merges,
         **orphans,
     }
+
+
+@router.get("/library/repair/notice")
+def library_repair_notice(db: Session = Depends(get_db)):
+    """"修复媒体库"卡片上的一次性提示,空字符串=没有。
+
+    季度编号规则变过之后(SEASON_ALGO_VERSION 提升 -> 家族缓存整表重算),
+    **已经落地的文件不会自己跟着重排**:重算只保证以后的下载用新编号。
+    实测案例——魔法少女奈叶 EXCEEDS 的第7、8集因为跨版本下载,分处
+    Season 04 和 Season 05。存量得靠用户跑一次修复,所以在这里提示他。
+    """
+    if not get_setting(db, bgm_series_cache.SEASON_ALGO_CHANGED_KEY, ""):
+        return {"notice": ""}
+    return {"notice": "季度编号规则在本次升级中有更新。已下载的旧文件不会自动重排，"
+                      "建议扫描一次，确认后应用改名建议。"}
+
+
+@router.post("/library/repair/notice/dismiss")
+def dismiss_library_repair_notice(db: Session = Depends(get_db)):
+    """用户点掉提示。"""
+    upsert_setting(db, bgm_series_cache.SEASON_ALGO_CHANGED_KEY, "")
+    return {"ok": True}
 
 
 class RepairApplyRequest(BaseModel):

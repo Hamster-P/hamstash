@@ -217,6 +217,12 @@ def _folder_title_for_root(
 SEASON_ALGO_VERSION = 3
 _ALGO_VERSION_SETTING_KEY = "season_algo_version"
 
+# "季度编号规则刚变过,建议跑一次修复媒体库"的一次性提示标记。
+# 缓存重算只保证**以后的下载**用新编号,已经落地的文件不会自己重排——
+# 实测:魔法少女奈叶 EXCEEDS 的 E07/E08 因为跨版本下载,分处 Season 04 和 Season 05。
+# 由 db_migrate 在真的清过缓存时置上,媒体库页读一次、用户点掉即清。
+SEASON_ALGO_CHANGED_KEY = "season_algo_changed_notice"
+
 
 def reset_cache_if_algo_changed(db: Session) -> bool:
     """算法版本跟上次写缓存时不一致就把AnimeFamilyCache整表清空,返回这次有没有清。
