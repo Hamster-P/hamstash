@@ -933,6 +933,31 @@ function UpdateSection() {
     }
   };
 
+  // 跳级升级(比如落后好几个版本)时,updater自带的update.body只含最新一个版本的说明。
+  // 这里向后端要"当前版本到目标版本之间"的完整区间,拼成多版本更新说明;拿不到/为空
+  // 时fallback回单版本的fallbackBody,保证"检查更新"本身不因为这条增强逻辑而失败。
+  const buildReleaseNotes = async (
+    current: string | null,
+    target: string,
+    fallbackBody: string,
+  ): Promise<string> => {
+    if (!current) return fallbackBody;
+    try {
+      const res = await fetch(
+        `${API_BASE}/update/changelog?current=${encodeURIComponent(current)}&target=${encodeURIComponent(target)}`,
+      );
+      if (!res.ok) return fallbackBody;
+      const data = await res.json();
+      const versions = (data?.versions ?? []) as { version: string; date: string | null; body: string }[];
+      if (versions.length === 0) return fallbackBody;
+      return versions
+        .map((v) => `v${v.version}${v.date ? ` (${v.date})` : ""}\n${v.body}`)
+        .join("\n\n");
+    } catch {
+      return fallbackBody;
+    }
+  };
+
   const handleCheck = async () => {
     setPhase("checking");
     setError(null);
@@ -944,7 +969,7 @@ function UpdateSection() {
         return;
       }
       setNewVersion(update.version);
-      setReleaseNotes(update.body ?? "");
+      setReleaseNotes(await buildReleaseNotes(currentVersion, update.version, update.body ?? ""));
       setPhase("available");
     } catch (err) {
       setError(
@@ -1043,7 +1068,7 @@ function UpdateSection() {
             发现新版本 v{newVersion}
           </div>
           {releaseNotes && (
-            <p className="mt-1.5 whitespace-pre-wrap font-mono text-[11px] leading-snug text-muted">
+            <p className="mt-1.5 max-h-56 overflow-y-auto whitespace-pre-wrap font-mono text-[11px] leading-snug text-muted">
               {releaseNotes}
             </p>
           )}

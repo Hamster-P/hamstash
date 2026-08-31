@@ -307,6 +307,29 @@ def _resolve_version_conflict(
     return {"action": "proceed"}
 
 
+def _all_plans_superseded(db: Session, torrent_hash: str, plans: list[dict]) -> bool:
+    """种子内每个待改名文件在媒体库目标位置都已被"等于或更高版本"占着时返回True——
+    这种整个种子都追不上现状,不该再搬进媒体库(典型场景:字幕组发了v2、v2先下完
+    并整理入库,原始v1才姗姗下完)。只要有任意一个文件是 proceed / delete_then_proceed
+    / skip_collection,就返回False,交回_apply_organize_plan逐文件处理。
+
+    纯决策,复用_resolve_version_conflict,不另写版本比较。在_move_to_library之前调用,
+    避免低版本种子的原始文件被setLocation搬进番剧库根目录、判跳过后又没人清理。
+    """
+    for item in plans:
+        preview = item["preview"]
+        if not preview["relative_path"]:      # 剧场版等不共享anime_root,交给下游判断
+            return False
+        if item.get("collision_with"):        # 同种子内目标撞车,交给下游按failed处理
+            return False
+        decision = _resolve_version_conflict(
+            db, torrent_hash, preview["target_relative_path"], preview["release_version"]
+        )
+        if decision["action"] != "skip":
+            return False
+    return True
+
+
 def _resolve_standalone_bgm_id(
     db: Session, main_bgm_id: int | None, season_bgm_id: int | None,
     media_type: str, original_file_name: str,
@@ -632,6 +655,30 @@ async def _organize_single_torrent(db: Session, torrent: dict) -> None:
     all_paths = [f["name"] for f in files]
     video_paths = [p for p in all_paths if p.rsplit(".", 1)[-1].lower() in rename_engine.VIDEO_EXTS]
 
+    # 改名预览是纯计算 + Bangumi 查询,不依赖种子是否已搬库——特意放在 _move_to_library
+    # 之前算好,好让下面的整体版本预检能在"文件还没进媒体库"时就拦下追不上现状的种子。
+    # 集数偏移量、季度提示文本、季度序号对种子内所有文件都一样,算一次复用即可。
+    season_context = await _resolve_season_context(db, folder)
+    plans = _preview_files_for_organize(
+        db, folder, context["library_root"], season_context, torrent, video_paths
+    )
+    # 库文件夹名 = 目标根目录的最后一段(剧场版/OVA 登记进"剧场版模式"时要用)。
+    library_folder = os.path.basename(target_root.replace("\\", "/").rstrip("/"))
+
+    # 整体版本预检:这个种子里每个待处理文件在媒体库目标位置都已被等于/更高版本占着
+    # (典型:字幕组发了v2,v2先下完并整理入库,原始v1才姗姗下完)。此时不搬库——否则
+    # v1的原始文件会被setLocation搬进番剧库根目录,随后判跳过、打标签,永久遗留污染媒体库。
+    if plans and not context["already_at_target"] and _all_plans_superseded(db, torrent_hash, plans):
+        for item in plans:
+            upsert_renamed_file(
+                db, torrent_hash, item["video_path"], status="skipped",
+                error="目标位置已有等于或更高版本,未搬入媒体库",
+                release_version=item["preview"]["release_version"],
+            )
+        print(f"[ORGANIZE] 种子整体版本落后于媒体库现状,不搬库、直接结束: hash={torrent_hash}")
+        await _finish_torrent(torrent_hash, staging_folder_path)
+        return
+
     # setLocation是种子级别的,只能设一个根位置——先统一挪到这部番的媒体库根目录,
     # 具体Season/Other子目录分类,靠下面逐个文件调用renameFile的相对路径实现。
     # 注意:解析失败的文件也会被这一步带过来,只是留在根目录、文件名不变,
@@ -642,15 +689,6 @@ async def _organize_single_torrent(db: Session, torrent: dict) -> None:
                 # _match_folder_by_save_path也能按target_root反查回这条AnimeFolder记录,
                 # 接着往下整理,不会卡死在"未知暂存目录"
 
-    # 集数偏移量、季度提示文本、季度序号,对这个种子内所有文件都一样,算一次复用即可,
-    # 不用每个文件都重新查一遍Bangumi。
-    season_context = await _resolve_season_context(db, folder)
-
-    plans = _preview_files_for_organize(
-        db, folder, context["library_root"], season_context, torrent, video_paths
-    )
-    # 库文件夹名 = 目标根目录的最后一段(剧场版/OVA 登记进"剧场版模式"时要用)。
-    library_folder = os.path.basename(target_root.replace("\\", "/").rstrip("/"))
     await _apply_organize_plan(
         db, torrent_hash, all_paths, plans, library_folder, folder.season_bgm_id, folder.main_bgm_id
     )

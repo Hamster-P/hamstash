@@ -13,7 +13,7 @@ import qbittorrent_client
 from database import get_db
 from routers.library import scan_and_update_library
 from schemas import ProxyTestRequest, SettingsUpdate
-from services import bgm_series_cache, library_health, library_repair
+from services import bgm_series_cache, changelog, library_health, library_repair
 from services.common import get_setting, upsert_setting
 from services.proxy import get_proxy_url, get_system_proxy, set_proxy_url_cache
 
@@ -232,6 +232,18 @@ async def test_proxy(payload: ProxyTestRequest):
         "system_proxy_detected": detected or "",
         "checks": checks,
     }
+
+
+@router.get("/update/changelog")
+async def update_changelog(current: str, target: str):
+    """"检查更新"发现新版本后,拿"当前版本到目标版本之间"的完整更新说明(跳级升级场景)。
+
+    跟Tauri updater自带的update.body(latest.json.notes,只含最新一个版本)不是一回事——
+    这里从GitHub现读CHANGELOG.md,按版本区间裁剪。抓取/解析失败时返回空列表而不是报错,
+    前端据此fallback回update.body,不能让这条增强逻辑挡住基本的更新流程。
+    """
+    versions = await changelog.get_changelog_range(current, target)
+    return {"versions": versions}
 
 
 @router.get("/qbittorrent/status")
