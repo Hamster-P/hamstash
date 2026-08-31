@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 import rename_engine
 from database import SessionLocal
-from models import AnimeFamilyCache, MediaGroupOverride
+from models import AnimeFamilyCache, MediaGroupOverride, RelatedAnimeCache
 
 
 def resolve_effective_root(db: Session, bgm_id: int | None, computed_root: int | None) -> int | None:
@@ -251,6 +251,8 @@ def reset_cache_if_algo_changed(db: Session) -> bool:
         return False
 
     removed = db.query(AnimeFamilyCache).delete(synchronize_session=False)
+    # 补番一览缓存依赖家族结构,一并清空,不然算法升级后补番还在拿旧结果。
+    db.query(RelatedAnimeCache).delete(synchronize_session=False)
     db.commit()
     upsert_setting(db, _ALGO_VERSION_SETTING_KEY, str(SEASON_ALGO_VERSION))
     print(f"[DB] 季度解析算法从v{stored}升到v{SEASON_ALGO_VERSION},"
@@ -296,6 +298,11 @@ def _persist_family_map(db: Session, main_bgm_id: int, family_map: dict) -> None
         row.total_episodes = info.get("total_episodes")
         row.season_ordinal = info.get("season_ordinal")
         row.folder_bucket = folder_bucket
+
+    # 家族结构变了,补番一览的整份响应缓存(按家族根存)立即作废,不等它自己的 TTL。
+    db.query(RelatedAnimeCache).filter(
+        RelatedAnimeCache.root_bgm_id == main_bgm_id
+    ).delete(synchronize_session=False)
     db.commit()
 
 

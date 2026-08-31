@@ -113,6 +113,43 @@ function cleanTitleFromFilename(filename: string): string {
 
 const API_BASE = "http://127.0.0.1:8080";
 
+// 从"补番一览"点某部关联作品会跳到顶层 DetailPage(见 App.tsx 的 selectedBgmId 分支),
+// 整个 LibraryPage 被卸载,组件内 state / useRef 全部销毁。要在 DetailPage「返回」后
+// 还原到补番一览,必须把详情态存到组件外——对齐 SearchPage 的 sessionStorage 做法。
+const LIBRARY_DETAIL_SESSION_KEY = "library_detail_session_v1";
+
+interface LibraryDetailSession {
+  anime: LibraryAnime;            // 当时停留的那部番(补番一览的"原番")
+  relatedAnime: BangumiSubject[]; // 已拉到的关联作品列表,免得返回后重新请求
+  gridScrollTop: number;          // 更外层:网格的滚动位置,之后点「返回影视库」要用
+  relatedScrollTop: number;       // 补番一览自己的滚动位置
+}
+
+function loadLibraryDetailSession(): LibraryDetailSession | null {
+  try {
+    const raw = sessionStorage.getItem(LIBRARY_DETAIL_SESSION_KEY);
+    return raw ? (JSON.parse(raw) as LibraryDetailSession) : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveLibraryDetailSession(s: LibraryDetailSession): void {
+  try {
+    sessionStorage.setItem(LIBRARY_DETAIL_SESSION_KEY, JSON.stringify(s));
+  } catch {
+    /* 隐私模式 / 配额满:存不了就算了,退化成回到网格根 */
+  }
+}
+
+function clearLibraryDetailSession(): void {
+  try {
+    sessionStorage.removeItem(LIBRARY_DETAIL_SESSION_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
 // 分季排序:TV季数从新到旧排最前,然后是"算不出季号、按作品名建的目录"(Z高达/雷霆宙域
 // 这类旁支,见后端 rename_engine.work_title_bucket),再剧场版、OVA,Other/无法识别的
 // 兜底桶排最后。(对应后端 rename_engine.py / routers/library.py 实际会产出的分类桶名)
@@ -232,6 +269,10 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
   // 进详情视图那一刻网格的滚动位置,返回列表时恢复。列表/详情共用 <main> 这一个滚动条,
   // 内部切换不卸载组件,所以用 ref 存即可,不需要 sessionStorage。
   const gridScrollTop = useRef(0);
+  // 从 sessionStorage 还原"补番一览"时置真:让下面那个把 scrollTop 归零的 layout-effect
+  // 改用保存的补番一览滚动位置,只生效一次。
+  const restoringRelatedRef = useRef(false);
+  const restoreScrollTop = useRef(0);
   // 吸顶头部(封面+简介+分季快捷按钮)的实际高度,用来给每个分季区块留出滚动余量,
   // 避免点快捷按钮跳转后,区块顶部被吸顶头部盖住
   const headerRef = useRef<HTMLDivElement>(null);
@@ -255,6 +296,27 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
     fetch(`${API_BASE}/library/scan`)
       .then(() => fetchAnimes(true))
       .catch(() => {});
+
+    // 从 DetailPage 返回:还原"补番一览"(原番 + 关联作品列表 + 滚动位置)。
+    // 一次性——用完即清,之后正常进出详情不受影响。
+    const snap = loadLibraryDetailSession();
+    if (snap) {
+      clearLibraryDetailSession();
+      restoringRelatedRef.current = true;
+      restoreScrollTop.current = snap.relatedScrollTop;
+      gridScrollTop.current = snap.gridScrollTop; // 之后点「返回影视库」回到网格原位
+      setSelectedAnime(snap.anime);
+      setShowRelatedAnime(true);
+      setRelatedAnime(snap.relatedAnime);
+      setDetailLoading(true);
+      fetch(`${API_BASE}/library/detail/${encodeURIComponent(snap.anime.folder_name)}`)
+        .then((res) => res.json())
+        .then((data) => {
+          setDetail(data);
+          setDetailLoading(false);
+        })
+        .catch(() => setDetailLoading(false)); // 番被删/改名:补番一览仍可看,退出补番时分集为空
+    }
     fetch(`${API_BASE}/library/sort-mode`)
       .then((res) => res.json())
       .then((data) => {
@@ -735,7 +797,13 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
     const el = scrollContainerRef?.current;
     if (!el) return;
     if (selectedAnime) {
-      el.scrollTop = 0;
+      if (restoringRelatedRef.current) {
+        // 从 DetailPage 返回补番一览:恢复一览的滚动位置,只此一次
+        el.scrollTop = restoreScrollTop.current;
+        restoringRelatedRef.current = false;
+      } else {
+        el.scrollTop = 0;
+      }
     } else {
       el.scrollTop = gridScrollTop.current;
     }
@@ -1122,7 +1190,18 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
               ) : (
                 <BangumiResultsList
                   results={relatedAnime}
-                  onSelect={(bgmId) => onSelectAnime?.(bgmId)}
+                  onSelect={(bgmId) => {
+                    // 跳 DetailPage 前存快照,让 DetailPage「返回」能回到这个补番一览
+                    if (selectedAnime) {
+                      saveLibraryDetailSession({
+                        anime: selectedAnime,
+                        relatedAnime,
+                        gridScrollTop: gridScrollTop.current, // 进详情时已记(handleSelectAnime)
+                        relatedScrollTop: scrollContainerRef?.current?.scrollTop ?? 0,
+                      });
+                    }
+                    onSelectAnime?.(bgmId);
+                  }}
                   emptyText="没有找到相关的关联作品"
                 />
               )

@@ -125,6 +125,12 @@ function AppContent() {
     setSelectedBgmId(null);
     setManualMatchFolder(null);
     setDetailReturnView(null);
+    // 主动点侧边栏进(影视库)= 要全新网格,清掉"返回补番一览"的快照
+    try {
+      sessionStorage.removeItem("library_detail_session_v1");
+    } catch {
+      /* ignore */
+    }
     setView(v);
   };
 

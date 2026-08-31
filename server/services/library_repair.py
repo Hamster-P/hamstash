@@ -115,6 +115,8 @@ def reset_season_cache(db: Session) -> int:
     才动文件"的核心保证。
     """
     removed = db.query(models.AnimeFamilyCache).delete(synchronize_session=False)
+    # 补番一览缓存(related_anime_cache)也建立在家族结构上,一并清掉。
+    db.query(models.RelatedAnimeCache).delete(synchronize_session=False)
     db.commit()
     return removed
 

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey
 from sqlalchemy.sql import func
 from database import Base
 from sqlalchemy import Boolean
@@ -168,6 +168,27 @@ class AnimeFamilyCache(Base):
     season_ordinal = Column(String, nullable=True)  # "01"/"02"/...,None代表不是真季候选
     folder_bucket = Column(String, nullable=True)  # 顶层桶,仅供人工查表时直接可读,不参与改名逻辑判断
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())
+
+
+class RelatedAnimeCache(Base):
+    """
+    影视库详情页"补番"一览(GET /bangumi/related)的整份响应缓存,按家族根 bgm_id 存。
+
+    anime_family_cache 只缓存了"家族成员结构 + 季度序号",没有封面/评分这些展示字段,
+    所以补番接口每次都要对家族每个成员发一轮 relations(核实有没有新续作) + 一轮
+    subject 详情(拿封面/评分),共 2N 次经代理的 bgm.tv 往返,大系列(柯南 60+ 成员)
+    要十几秒。这张表把算好的整份结果(含封面/评分)落库,TTL 内直接返回、零联网。
+
+    失效:超 TTL(见 routers/search.py::RELATED_CACHE_TTL) / 家族被 _persist_family_map
+    重写 / 季度算法版本变更 / 修复媒体库清缓存——后三者由对应流程主动删行,详见
+    services/bgm_series_cache.py 与 services/library_repair.py。
+    """
+    __tablename__ = "related_anime_cache"
+
+    id = Column(Integer, primary_key=True, index=True)
+    root_bgm_id = Column(Integer, unique=True, nullable=False, index=True)  # 家族根,即 AnimeFamilyCache.source_bgm_id
+    payload = Column(Text, nullable=False)  # json.dumps(results 列表),结构同 /bangumi/search 的条目
+    checked_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class RssMatchedItem(Base):
