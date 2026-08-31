@@ -1388,12 +1388,17 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
                       </button>
                     ))}
                   </div>
-                  <button
-                    onClick={() => scanAndFetchAnimes()}
-                    className="rounded-md border border-border px-3 py-1.5 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion"
-                  >
-                    刷新 & 扫盘
-                  </button>
+                  {/* "刷新 & 扫盘"平时用不上(挂载/切回本页会自动静默扫一遍),只有
+                      "停留在本页时手动往库文件夹里加文件"这种场景才需要手动触发,
+                      跟着管理模式一起显示/隐藏,不常驻主工具栏。 */}
+                  {matchMode && (
+                    <button
+                      onClick={() => scanAndFetchAnimes()}
+                      className="rounded-md border border-border px-3 py-1.5 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion"
+                    >
+                      刷新 & 扫盘
+                    </button>
+                  )}
                   <button
                     onClick={() => {
                       setMatchMode((v) => !v);
