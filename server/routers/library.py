@@ -947,6 +947,10 @@ async def list_library_animes(background_tasks: BackgroundTasks, db: Session = D
             )
             if cover_catalog:
                 cover_url = cover_catalog.cover_url
+                # 简介跟随封面:手动选图 / 默认策略选中家族里另一部时,简介也换成那一部的,
+                # 保证卡片上"封面↔简介"是同一部作品。标题/集数仍取绑定条目,不动。
+                if cover_bid != media.bgm_id and cover_catalog.summary:
+                    summary = cover_catalog.summary
             else:
                 background_tasks.add_task(_update_anime_details_from_bgm_task, cover_bid)
 

@@ -1158,7 +1158,7 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
               </div>
               <div className="min-w-0">
                 <h1 className="text-2xl font-bold mb-2">{selectedAnime.display_title || selectedAnime.folder_name}</h1>
-                <p className="text-sm text-muted line-clamp-4 max-w-2xl">
+                <p className="text-sm text-muted max-w-2xl max-h-40 overflow-y-auto pr-1">
                   {selectedAnime.summary}
                 </p>
               </div>
@@ -1473,7 +1473,7 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
               </div>
               <div className="flex min-w-0 flex-1 flex-col">
                 <h1 className="mb-2 text-2xl font-bold">{activeHead.title || activeHead.filename}</h1>
-                <p className="flex-1 overflow-hidden font-mono text-xs leading-relaxed text-muted line-clamp-[9]">
+                <p className="min-h-0 flex-1 overflow-y-auto font-mono text-xs leading-relaxed text-muted">
                   {activeHead.summary || "暂无简介"}
                 </p>
                 {movieManage && (
