@@ -1408,9 +1408,9 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
                                 bgmId: detail?.season_owners?.[seasonName]?.bgm_id ?? null,
                               })
                             }
-                            className="rounded border border-border px-2 py-1 text-muted transition-colors hover:border-vermillion hover:text-vermillion disabled:opacity-40"
+                            className="flex items-center gap-1 rounded border border-border px-2 py-1 text-muted transition-colors hover:border-vermillion hover:text-vermillion disabled:opacity-40"
                           >
-                            调整归属…
+                            <Move size={12} /> 调整归属…
                           </button>
                         </div>
                       )}
@@ -1595,9 +1595,9 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
                   {matchMode && (
                     <button
                       onClick={() => scanAndFetchAnimes()}
-                      className="rounded-md border border-border px-3 py-1.5 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion"
+                      className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion"
                     >
-                      刷新 & 扫盘
+                      <RefreshCcw size={14} /> 刷新 & 扫盘
                     </button>
                   )}
                   <button
@@ -1605,13 +1605,13 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
                       setMatchMode((v) => !v);
                       setPendingDeleteFolder(null);
                     }}
-                    className={`rounded-md border px-3 py-1.5 font-mono text-xs transition-colors ${
+                    className={`flex items-center gap-1.5 rounded-md border px-3 py-1.5 font-mono text-xs transition-colors ${
                       matchMode
                         ? "border-vermillion bg-vermillion text-ink"
                         : "border-border text-muted hover:border-vermillion hover:text-vermillion"
                     }`}
                   >
-                    {matchMode ? "结束管理" : "管理"}
+                    <Settings2 size={14} /> {matchMode ? "结束管理" : "管理"}
                   </button>
                 </>
               ) : (
