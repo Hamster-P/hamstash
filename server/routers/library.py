@@ -17,7 +17,7 @@ import rename_engine
 import config_store
 from database import SessionLocal, get_db
 from services.common import get_setting, upsert_setting
-from services import bgm_series_cache
+from services import bgm_series_cache, anime_meta_resolver
 from bangumi_client import get_subject_detail, normalize_bgm_subject, get_subject_details_batch
 from datetime import datetime
 
@@ -1072,6 +1072,47 @@ def get_anime_seasons_and_episodes(folder_name: str, db: Session = Depends(get_d
         "seasons": structure,
         "season_owners": season_owners,
         "bucket_dates": bucket_dates,
+    }
+
+
+async def _resolve_anime_meta_task(bgm_id: int) -> None:
+    """后台任务版本,仿_update_anime_details_from_bgm_task:GET /anime-meta/{bgm_id}
+    遇到从没解析过的bgm_id时用这个,不阻塞本次响应等一轮真实的TMDB/arm-server网络请求
+    ——这次先返回status=pending,前端按降级态渲染,下次请求就有数据了。
+    """
+    db = SessionLocal()
+    try:
+        await anime_meta_resolver.resolve_one(db, bgm_id)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        print(f"[ANIME_META] 后台解析bgm_id={bgm_id}失败: {e}")
+    finally:
+        db.close()
+
+
+@router.get("/anime-meta/{bgm_id}")
+def get_anime_meta(bgm_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """媒体库详情页头部(背景图/LOGO/分级/标签/类型/工作室)的数据源。
+    查无记录(从没触发过解析)时后台丢一个解析任务,本次先返回status=pending,
+    前端据此走降级态(模糊放大的Bangumi封面+文字标题),不阻塞等待网络请求。
+    """
+    row = db.query(models.AnimeMetaCache).filter(models.AnimeMetaCache.bgm_id == bgm_id).first()
+    if row is None:
+        background_tasks.add_task(_resolve_anime_meta_task, bgm_id)
+        return {"bgm_id": bgm_id, "status": "pending"}
+
+    return {
+        "bgm_id": bgm_id,
+        "status": row.status,
+        "tmdb_id": row.tmdb_id,
+        "backdrop_url": row.backdrop_url,
+        "logo_url": row.logo_url,
+        "content_rating": row.content_rating,
+        "genres": row.genres.split(",") if row.genres else [],
+        "tags": row.tags.split(",") if row.tags else [],
+        "studios": row.studios.split(",") if row.studios else [],
+        "creators": row.creators.split(",") if row.creators else [],
     }
 
 

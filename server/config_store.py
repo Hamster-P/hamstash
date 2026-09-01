@@ -44,6 +44,9 @@ DEFAULTS = {
     # 留空=全部用各 source adapter 的内置默认。用于站点换域名/换镜像、临时停用某个源。
     # 读取见 sources/base.py::source_overrides,注册的源见 sources/registry.py。
     "download_sources": "",
+    # 详情页元数据(TMDB背景图/LOGO/分级等)后台重试轮询间隔,默认1小时——
+    # TMDB/arm-server数据变化不快,不用像下载轮询那样高频;暂不在设置页开放调整。
+    "metadata_poll_interval_seconds": "3600",
 }
 
 

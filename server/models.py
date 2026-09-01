@@ -271,3 +271,44 @@ class MediaGroupOverride(Base):
     bgm_id = Column(Integer, primary_key=True)  # 被覆盖归属的那个具体条目
     root_bgm_id = Column(Integer, nullable=False, index=True)  # 归到哪个家族根;==bgm_id即独立成一部
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class AnimeMetaCache(Base):
+    """bgm_id -> TMDB 元数据(背景图/LOGO/分级/标签/类型/工作室)的解析结果缓存。
+
+    Bangumi不提供横版背景图,也没有分级/标签/工作室字段,媒体库详情页要仿Jellyfin
+    展示这些就得接TMDB;但TMDB没有直接的bgm_id索引,得先经bgm_id->anidb_id
+    (BangumiExtLinker静态快照,见services/id_mapping_cache.py)、
+    再anidb_id->tmdb_id(arm-server在线查询,见arm_client.py)两跳才能拿到tmdb_id,
+    这两跳偶尔查不到(新番AniDB还没收录/冷门国创长尾TMDB本来就没有),
+    所以要有status+attempt_count支持"查不到就标记重试,重试到一定次数放弃"的策略,
+    不能假设每个bgm_id最终都能解析成功。
+
+    resolved字段一次性建全(含TMDB详情),resolve_one()拿到tmdb_id后紧接着
+    把详情也查完写回同一行,不拆两轮请求。
+    """
+    __tablename__ = "anime_meta_cache"
+
+    id = Column(Integer, primary_key=True)
+    bgm_id = Column(Integer, unique=True, index=True, nullable=False)
+    tmdb_id = Column(Integer, nullable=True)
+    tmdb_season = Column(Integer, nullable=True)
+    tvdb_id = Column(Integer, nullable=True)
+    anidb_id = Column(Integer, nullable=True)
+    # pending=从没解析过 / resolved=已拿到tmdb_id / unresolved_retry=解析失败等重试 /
+    # unresolved_permanent=重试次数用尽,不再自动重试
+    status = Column(String, nullable=False, default="pending")
+    attempt_count = Column(Integer, nullable=False, default=0)
+    last_attempt_at = Column(DateTime(timezone=True), nullable=True)
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+    # "tv"/"movie",解析成功时一并写入——纯记录性字段,判断走哪个TMDB接口的逻辑
+    # 在anime_meta_resolver.py里现算,不依赖这一列的历史值。
+    media_type = Column(String, nullable=True)
+    # 以下为TMDB详情字段,status=resolved时才有值
+    backdrop_url = Column(String, nullable=True)
+    logo_url = Column(String, nullable=True)
+    content_rating = Column(String, nullable=True)
+    genres = Column(String, nullable=True)   # 逗号分隔
+    tags = Column(String, nullable=True)     # 逗号分隔
+    studios = Column(String, nullable=True)  # 逗号分隔
+    creators = Column(String, nullable=True)  # 逗号分隔

@@ -10,6 +10,7 @@ from services.proxy import init_proxy_url_cache
 from services.organize import organize_loop
 from services.rss_poller import rss_poll_loop
 from services.library_health import library_root_health_loop
+from services.anime_meta_poller import anime_meta_poll_loop
 
 config_store.DEFAULTS["library_root"] = r"D:\AnimeLibrary"  # 找不到用户配置时的默认值
 
@@ -64,12 +65,14 @@ async def lifespan(app: FastAPI):
     task = asyncio.create_task(organize_loop())
     rss_task = asyncio.create_task(rss_poll_loop())
     health_task = asyncio.create_task(library_root_health_loop())
+    anime_meta_task = asyncio.create_task(anime_meta_poll_loop())
     rewarm_task = asyncio.create_task(rewarm_family_cache_task()) \
         if consume_family_cache_rewarm_flag() else None
     yield
     task.cancel()
     rss_task.cancel()
     health_task.cancel()
+    anime_meta_task.cancel()
     if rewarm_task:
         rewarm_task.cancel()
 

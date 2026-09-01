@@ -1,6 +1,6 @@
 // pages/LibraryPage.tsx
 import { useEffect, useLayoutEffect, useMemo, useState, useRef } from "react";
-import { Play, FolderOpen, ArrowLeft, CheckCircle2, Trash2, Loader2 } from "lucide-react";
+import { Play, FolderOpen, ArrowLeft, CheckCircle2, Trash2, Loader2, Users, Info, Settings2, Move } from "lucide-react";
 import { invoke } from '@tauri-apps/api/core';
 import { isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -83,6 +83,22 @@ interface AnimeDetail {
   // 桶 -> 该桶对应作品的首播日期。给排序用:按作品名命名的目录(Z高达/雷霆宙域这类
   // 算不出季号的旁支)桶名没有固定模式,靠这个既能认出它们、又能按时间先后排。
   bucket_dates?: Record<string, string>;
+}
+
+// 详情页头部背景图/LOGO/分级等元数据(GET /anime-meta/{bgm_id})。status非resolved时
+// (pending/unresolved_retry/unresolved_permanent)前端一律走同一套降级态渲染,
+// 不区分展示——对用户来说"还没查到"和"查不到"没有区别,都是"暂时没有这些"。
+interface AnimeMeta {
+  bgm_id: number;
+  status: "pending" | "resolved" | "unresolved_retry" | "unresolved_permanent";
+  tmdb_id?: number | null;
+  backdrop_url?: string | null;
+  logo_url?: string | null;
+  content_rating?: string | null;
+  genres?: string[];
+  tags?: string[];
+  studios?: string[];
+  creators?: string[];
 }
 
 // 定义设置项的类型
@@ -221,6 +237,9 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
   const [animes, setAnimes] = useState<LibraryAnime[]>([]);
   const [selectedAnime, setSelectedAnime] = useState<LibraryAnime | null>(null);
   const [detail, setDetail] = useState<AnimeDetail | null>(null);
+  // 详情页头部背景图/LOGO等,跟detail(季度结构)并列、互不影响,请求失败/还没解析出
+  // 结果时保持null——渲染层按"没有animeMeta或status非resolved"统一走降级态。
+  const [animeMeta, setAnimeMeta] = useState<AnimeMeta | null>(null);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
   const [sort, setSort] = useState<SortMode>("default");
@@ -307,6 +326,7 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
       restoreScrollTop.current = snap.relatedScrollTop;
       gridScrollTop.current = snap.gridScrollTop; // 之后点「返回影视库」回到网格原位
       setSelectedAnime(snap.anime);
+      if (snap.anime.bgm_id) fetchAnimeMeta(snap.anime.bgm_id);
       if (snap.mode === "self") {
         setShowRelatedAnime(false);
         setRelatedAnime([]);
@@ -670,6 +690,16 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
     }).catch((err: any) => console.error("保存排序方式失败", err));
   };
 
+  // 详情页头部背景图/LOGO等,跟季度结构(detail)分开单独请求,互不阻塞。
+  // 查无记录时后端会自己丢一个后台解析任务、先回status=pending,这里不重试轮询,
+  // 用户下次重新进这部番的详情页(或过一阵子)自然就有数据了。
+  const fetchAnimeMeta = (bgmId: number) => {
+    fetch(`${API_BASE}/anime-meta/${bgmId}`)
+      .then((res) => res.json())
+      .then((data) => setAnimeMeta(data))
+      .catch(() => setAnimeMeta(null));
+  };
+
   // 点击某部动漫后，获取具体季、集数据
   const handleSelectAnime = (anime: LibraryAnime) => {
     // 先同步记下当前网格滚动量,返回列表时恢复
@@ -683,6 +713,8 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
     setShowRelatedAnime(false);
     setRelatedAnime([]);
     setRelatedError(null);
+    setAnimeMeta(null);
+    if (anime.bgm_id) fetchAnimeMeta(anime.bgm_id);
     fetch(`${API_BASE}/library/detail/${encodeURIComponent(anime.folder_name)}`)
       .then((res) => res.json())
       .then((data) => {
@@ -695,6 +727,7 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
   const handleBack = () => {
     setSelectedAnime(null);
     setDetail(null);
+    setAnimeMeta(null);
     setEpisodeManageMode(false);
     setPendingDeleteEpisode(null);
     setEpisodeDeleteError(null);
@@ -1078,6 +1111,11 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
         compareSeasonNames(a, b, detail.bucket_dates))
     : [];
 
+  // 详情页头部真图横幅:比海报渲染高度(240px)更高一些,截取位置能往下多露一截,
+  // 不至于人物脸部刚好卡在裁切线上。标题/简介叠在图片底部,用同一个高度对齐。
+  const HERO_BANNER_HEIGHT = "26rem";
+  const hasHeroBanner = animeMeta?.status === "resolved" && !!animeMeta.backdrop_url;
+
   // 列表页展示顺序:纯本地按当前sort模式重排,animes本身始终保留接口返回的原始顺序
   const displayedAnimes = useMemo(() => sortAnimes(animes, sort), [animes, sort]);
 
@@ -1089,125 +1127,206 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
         <div>
           <div
             ref={headerRef}
-            className="sticky top-0 z-10 bg-ink px-8 pb-4 pt-8"
+            className="sticky top-0 z-10 overflow-hidden bg-ink"
           >
-            <div className="mb-6 flex items-center gap-2">
-              <button
-                onClick={handleBack}
-                className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion"
-              >
-                <ArrowLeft size={14} /> 返回影视库
-              </button>
-              {/* 补番:只有已经匹配了bgm_id的番剧才有起点可以查关联作品 */}
-              {selectedAnime.bgm_id && (
-                <button
-                  onClick={handleToggleRelatedAnime}
-                  className={`rounded-md border px-3 py-1.5 font-mono text-xs transition-colors ${
-                    showRelatedAnime
-                      ? "border-vermillion bg-vermillion text-ink"
-                      : "border-border text-muted hover:border-vermillion hover:text-vermillion"
-                  }`}
-                >
-                  {showRelatedAnime ? "退出补番" : "补番"}
-                </button>
-              )}
-              {selectedAnime.bgm_id && (
-                <button
-                  onClick={handleOpenBangumiIntro}
-                  className="rounded-md border border-border px-3 py-1.5 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion"
-                >
-                  Bangumi介绍
-                </button>
-              )}
-              {!showRelatedAnime && (
-                <button
-                  onClick={() => {
-                    setEpisodeManageMode((v) => !v);
-                    setPendingDeleteEpisode(null);
-                  }}
-                  className={`rounded-md border px-3 py-1.5 font-mono text-xs transition-colors ${
-                    episodeManageMode
-                      ? "border-vermillion bg-vermillion text-ink"
-                      : "border-border text-muted hover:border-vermillion hover:text-vermillion"
-                  }`}
-                >
-                  {episodeManageMode ? "结束管理" : "管理"}
-                </button>
-              )}
-              {/* 文件夹级归属入口:作用对象是这个文件夹的全部文件,归属主体就是
-                  文件夹自己的 bgm_id,不存在"判断不出是哪一部"的问题。
-                  已经拆出去的那一部要合并回原系列,走的就是这个入口。 */}
-              {episodeManageMode && selectedAnime.bgm_id && detail && (
-                <button
-                  disabled={regrouping !== null}
-                  onClick={() =>
-                    openRegroupDialog({
-                      label: `整个「${selectedAnime.display_title || selectedAnime.folder_name}」`,
-                      relPaths: Object.values(detail.seasons).flat().map((e) => e.rel_path),
-                      bgmId: selectedAnime.bgm_id,
-                    })
-                  }
-                  className="rounded-md border border-border px-3 py-1.5 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion disabled:opacity-40"
-                >
-                  调整归属…
-                </button>
-              )}
-              {episodeDeleteError && (
-                <span className="font-mono text-[11px] text-vermillion">
-                  删除失败: {episodeDeleteError}
-                </span>
-              )}
+            {/* 底层:模糊拉伸的氛围图,铺满整个头部(不管头部因为下面的真图撑到多高)。
+                这层反正是糊的,裁多少无所谓——真正要保证不裁切的是第2层的真图。
+                有resolved背景图就用它模糊化(跟上层真图同一张,气氛统一);
+                没有就退回Bangumi封面模糊放大,这个降级态本身就是没有TMDB数据时的
+                正经默认态,不是"报错"或空白观感——追番用户访问新番详情页大概率
+                长期停在这个状态。 */}
+            <div className="absolute inset-0">
+              {animeMeta?.status === "resolved" && animeMeta.backdrop_url ? (
+                <img
+                  src={proxiedImageUrl(animeMeta.backdrop_url)}
+                  alt=""
+                  className="h-full w-full scale-125 object-cover blur-2xl"
+                />
+              ) : selectedAnime.cover_url ? (
+                <img
+                  src={proxiedImageUrl(selectedAnime.cover_url)}
+                  alt=""
+                  className="h-full w-full scale-125 object-cover object-top blur-2xl"
+                />
+              ) : null}
+              <div className="absolute inset-0 bg-gradient-to-b from-ink/10 via-ink/70 to-ink" />
             </div>
 
-            {regroupNotice && (
-              <div className="mb-4 flex items-start justify-between gap-3 rounded-md border border-vermillion/40 bg-surface p-3 font-mono text-[11px] text-vermillion">
-                <span>{regroupNotice}</span>
-                <button
-                  onClick={() => setRegroupNotice(null)}
-                  className="shrink-0 text-muted transition-colors hover:text-paper"
-                >
-                  知道了
-                </button>
+            {/* 真图:全宽横幅,固定高度HERO_BANNER_HEIGHT(比海报渲染高度240px更高一些,
+                之前卡在海报高度上截得太靠上,人物脸部常常被切掉,加高之后object-top能往下
+                多露出一截)。标题/分级/简介不再挪到图片下面单独一段,而是叠回图片底部——
+                跟下面内容层用同一个minHeight对齐,再配一层由下往上的暗化渐变保证可读。 */}
+            {animeMeta?.status === "resolved" && animeMeta.backdrop_url && (
+              <div className="absolute inset-x-0 top-0 overflow-hidden" style={{ height: HERO_BANNER_HEIGHT }}>
+                <img
+                  src={proxiedImageUrl(animeMeta.backdrop_url)}
+                  alt=""
+                  className="h-full w-full object-cover object-top opacity-80"
+                />
+                <div className="absolute inset-0 bg-gradient-to-t from-ink via-ink/30 to-transparent" />
               </div>
             )}
 
-            <div className="flex flex-col md:flex-row gap-6">
-              <div className="w-40 aspect-[2/3] shrink-0 rounded-md bg-surface overflow-hidden shadow-lg">
-                {selectedAnime.cover_url ? (
-                  <img
-                    src={proxiedImageUrl(selectedAnime.cover_url)}
-                    alt={selectedAnime.folder_name}
-                    className="h-full w-full object-cover"
-                  />
-                ) : (
-                  <div className="flex h-full w-full items-center justify-center text-muted">
-                    <FolderOpen size={40} />
-                  </div>
+            <div
+              className="relative flex flex-col px-8 pb-4 pt-8"
+              style={hasHeroBanner ? { minHeight: HERO_BANNER_HEIGHT } : undefined}
+            >
+              <div className="mb-6 flex flex-wrap items-center gap-2">
+                <button
+                  onClick={handleBack}
+                  className="flex items-center gap-1.5 rounded-md border border-border bg-ink/60 px-3 py-1.5 font-mono text-xs text-muted backdrop-blur transition-colors hover:border-vermillion hover:text-vermillion"
+                >
+                  <ArrowLeft size={14} /> 返回影视库
+                </button>
+                {/* 补番:只有已经匹配了bgm_id的番剧才有起点可以查关联作品 */}
+                {selectedAnime.bgm_id && (
+                  <button
+                    onClick={handleToggleRelatedAnime}
+                    title={showRelatedAnime ? "退出补番" : "补番"}
+                    className={`flex items-center gap-1.5 rounded-md border px-3 py-1.5 font-mono text-xs backdrop-blur transition-colors ${
+                      showRelatedAnime
+                        ? "border-vermillion bg-vermillion text-ink"
+                        : "border-border bg-ink/60 text-muted hover:border-vermillion hover:text-vermillion"
+                    }`}
+                  >
+                    <Users size={14} /> {showRelatedAnime ? "退出补番" : "补番"}
+                  </button>
+                )}
+                {selectedAnime.bgm_id && (
+                  <button
+                    onClick={handleOpenBangumiIntro}
+                    title="Bangumi介绍"
+                    className="flex items-center gap-1.5 rounded-md border border-border bg-ink/60 px-3 py-1.5 font-mono text-xs text-muted backdrop-blur transition-colors hover:border-vermillion hover:text-vermillion"
+                  >
+                    <Info size={14} /> Bangumi介绍
+                  </button>
+                )}
+                {!showRelatedAnime && (
+                  <button
+                    onClick={() => {
+                      setEpisodeManageMode((v) => !v);
+                      setPendingDeleteEpisode(null);
+                    }}
+                    title={episodeManageMode ? "结束管理" : "管理"}
+                    className={`flex items-center gap-1.5 rounded-md border px-3 py-1.5 font-mono text-xs backdrop-blur transition-colors ${
+                      episodeManageMode
+                        ? "border-vermillion bg-vermillion text-ink"
+                        : "border-border bg-ink/60 text-muted hover:border-vermillion hover:text-vermillion"
+                    }`}
+                  >
+                    <Settings2 size={14} /> {episodeManageMode ? "结束管理" : "管理"}
+                  </button>
+                )}
+                {/* 文件夹级归属入口:作用对象是这个文件夹的全部文件,归属主体就是
+                    文件夹自己的 bgm_id,不存在"判断不出是哪一部"的问题。
+                    已经拆出去的那一部要合并回原系列,走的就是这个入口。 */}
+                {episodeManageMode && selectedAnime.bgm_id && detail && (
+                  <button
+                    disabled={regrouping !== null}
+                    onClick={() =>
+                      openRegroupDialog({
+                        label: `整个「${selectedAnime.display_title || selectedAnime.folder_name}」`,
+                        relPaths: Object.values(detail.seasons).flat().map((e) => e.rel_path),
+                        bgmId: selectedAnime.bgm_id,
+                      })
+                    }
+                    title="调整归属…"
+                    className="flex items-center gap-1.5 rounded-md border border-border bg-ink/60 px-3 py-1.5 font-mono text-xs text-muted backdrop-blur transition-colors hover:border-vermillion hover:text-vermillion disabled:opacity-40"
+                  >
+                    <Move size={14} /> 调整归属…
+                  </button>
+                )}
+                {episodeDeleteError && (
+                  <span className="font-mono text-[11px] text-vermillion">
+                    删除失败: {episodeDeleteError}
+                  </span>
                 )}
               </div>
-              <div className="min-w-0">
-                <h1 className="text-2xl font-bold mb-2">{selectedAnime.display_title || selectedAnime.folder_name}</h1>
-                <p className="text-sm text-muted max-h-40 overflow-y-auto pr-1">
-                  {selectedAnime.summary}
-                </p>
+
+              {regroupNotice && (
+                <div className="mb-4 flex items-start justify-between gap-3 rounded-md border border-vermillion/40 bg-surface p-3 font-mono text-[11px] text-vermillion">
+                  <span>{regroupNotice}</span>
+                  <button
+                    onClick={() => setRegroupNotice(null)}
+                    className="shrink-0 text-muted transition-colors hover:text-paper"
+                  >
+                    知道了
+                  </button>
+                </div>
+              )}
+
+              {/* 海报+标题/简介+分季跳转打包成一组,用flex-1 justify-center在按钮行
+                  之下的剩余空间里居中——不是把整个头部都居中(按钮行还是钉在最上面),
+                  只是让这一组在按钮行下方"匀出来的高度"里上下留白相等,不再是之前
+                  mt-auto那种"全部空间都堆在上面、这组贴死在底边"的不对称观感。
+                  没有真图时minHeight不生效,没有多余空间可分,这个包裹div就是普通block,
+                  行为跟以前一样。 */}
+              <div className={hasHeroBanner ? "flex flex-1 flex-col justify-center" : undefined}>
+              <div className="flex flex-col gap-6 md:flex-row md:items-end">
+                <div className="w-40 aspect-[2/3] shrink-0 rounded-md border border-border bg-surface shadow-2xl overflow-hidden">
+                  {selectedAnime.cover_url ? (
+                    <img
+                      src={proxiedImageUrl(selectedAnime.cover_url)}
+                      alt={selectedAnime.folder_name}
+                      className="h-full w-full object-cover"
+                    />
+                  ) : (
+                    <div className="flex h-full w-full items-center justify-center text-muted">
+                      <FolderOpen size={40} />
+                    </div>
+                  )}
+                </div>
+                <div className="min-w-0 flex-1">
+                  {/* LOGO:有resolved的TMDB LOGO图就用它,否则退化成文字标题——
+                      这不是"缺失"的观感,大多数动画本来就没有专属ClearLogo。 */}
+                  {animeMeta?.status === "resolved" && animeMeta.logo_url ? (
+                    <img
+                      src={proxiedImageUrl(animeMeta.logo_url)}
+                      alt={selectedAnime.display_title || selectedAnime.folder_name}
+                      className="mb-2 max-h-16 max-w-full object-contain object-left drop-shadow"
+                    />
+                  ) : (
+                    <h1 className="mb-2 font-display text-2xl tracking-tight drop-shadow">
+                      {selectedAnime.display_title || selectedAnime.folder_name}
+                    </h1>
+                  )}
+                  {/* 元数据行:分级/类型/工作室,只在resolved且真有内容时显示,
+                      不留空占位——跟其他字段缺失时的克制风格一致。 */}
+                  {animeMeta?.status === "resolved" &&
+                    (animeMeta.content_rating || (animeMeta.genres?.length ?? 0) > 0 || (animeMeta.studios?.length ?? 0) > 0) && (
+                      <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-muted">
+                        {animeMeta.content_rating && (
+                          <span className="rounded border border-border px-1.5 py-0.5">
+                            {animeMeta.content_rating}
+                          </span>
+                        )}
+                        {(animeMeta.genres?.length ?? 0) > 0 && <span>{animeMeta.genres!.join(" / ")}</span>}
+                        {(animeMeta.studios?.length ?? 0) > 0 && <span>{animeMeta.studios!.join(" / ")}</span>}
+                      </div>
+                    )}
+                  <p className="max-h-32 overflow-y-auto pr-1 text-sm text-muted">
+                    {selectedAnime.summary}
+                  </p>
+                </div>
+              </div>
+
+              {/* 分季/剧场版快捷跳转:按实际扫到的分季动态生成,只有一季时不用显示;
+                  补番视图下跟集数列表无关,不显示 */}
+              {!showRelatedAnime && sortedSeasons.length > 1 && (
+                <div className="flex flex-wrap gap-2 pt-4">
+                  {sortedSeasons.map(([seasonName]) => (
+                    <button
+                      key={seasonName}
+                      onClick={() => scrollToSeason(seasonName)}
+                      className="rounded-md border border-border bg-ink/60 px-3 py-1.5 font-mono text-xs text-muted backdrop-blur transition-colors hover:border-vermillion hover:text-vermillion"
+                    >
+                      {seasonName}
+                    </button>
+                  ))}
+                </div>
+              )}
               </div>
             </div>
-
-            {/* 分季/剧场版快捷跳转:按实际扫到的分季动态生成,只有一季时不用显示;
-                补番视图下跟集数列表无关,不显示 */}
-            {!showRelatedAnime && sortedSeasons.length > 1 && (
-              <div className="flex flex-wrap gap-2 pt-4">
-                {sortedSeasons.map(([seasonName]) => (
-                  <button
-                    key={seasonName}
-                    onClick={() => scrollToSeason(seasonName)}
-                    className="rounded-md border border-border bg-surface px-3 py-1.5 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion"
-                  >
-                    {seasonName}
-                  </button>
-                ))}
-              </div>
-            )}
           </div>
 
           <div className="px-8 pb-8">

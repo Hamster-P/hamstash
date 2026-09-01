@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 import config_store
 import models
 import qbittorrent_client
+import tmdb_client
 from database import get_db
 from routers.library import scan_and_update_library
 from schemas import ProxyTestRequest, SettingsUpdate
@@ -28,6 +29,12 @@ PROXY_PROBE_TIMEOUT = 10.0
 BANGUMI_PROBES = [
     ("Bangumi API", "https://api.bgm.tv/calendar", "追更页的放送数据"),
     ("Bangumi 主站", "https://bgm.tv/subject/1", "详情页内嵌的那块网页"),
+    (
+        "TMDB API",
+        f"https://api.themoviedb.org/3/configuration?api_key={tmdb_client.TMDB_API_KEY}",
+        "媒体库详情页的背景图/LOGO/分级等元数据",
+    ),
+    ("arm-server", "https://arm.haglund.dev/api/v2/ids?source=anidb&id=1", "bgm_id→tmdb_id 映射查询"),
 ]
 
 

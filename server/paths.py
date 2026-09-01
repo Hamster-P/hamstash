@@ -29,6 +29,14 @@ def get_image_cache_dir() -> Path:
     return data_dir / "image_cache" if IS_FROZEN else data_dir / "data" / "image_cache"
 
 
+def get_id_mapping_snapshot_file() -> Path:
+    """BangumiExtLinker映射快照(bgm_id->anidb_id等)本地磁盘副本,跟image_cache同一套
+    "升级/卸载重装不丢数据"规则。下载失败时用这份旧副本兜底,而不是直接失效。"""
+    data_dir = get_data_dir()
+    base = data_dir if IS_FROZEN else data_dir / "data"
+    return base / "id_mapping_snapshot.json"
+
+
 def get_db_location_pointer_file() -> Path:
     """记录"数据库文件当前实际在哪"的一个极小指针文件,供database.py引导逻辑用。
     丢了也无所谓:引导逻辑会当作数据库还在老的默认位置,顶多重新走一遍搬运判断。

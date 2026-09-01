@@ -22,8 +22,9 @@ from services.proxy import get_proxy_url
 
 router = APIRouter(tags=["图片代理"])
 
-# 只允许代理Bangumi自己的图床域名,避免这个接口被当成任意URL的开放代理使用(SSRF)。
-ALLOWED_IMAGE_HOSTS = {"lain.bgm.tv"}
+# 只允许代理这几个已知的图床域名,避免这个接口被当成任意URL的开放代理使用(SSRF)。
+# image.tmdb.org: 详情页背景图/LOGO(见tmdb_client.py)。
+ALLOWED_IMAGE_HOSTS = {"lain.bgm.tv", "image.tmdb.org"}
 
 # 转发时带上跟bangumi_client一致的UA,避免CDN对httpx默认UA区别对待。
 FORWARD_HEADERS = {
