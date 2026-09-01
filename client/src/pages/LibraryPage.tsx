@@ -122,7 +122,8 @@ interface LibraryDetailSession {
   anime: LibraryAnime;            // 当时停留的那部番(补番一览的"原番")
   relatedAnime: BangumiSubject[]; // 已拉到的关联作品列表,免得返回后重新请求
   gridScrollTop: number;          // 更外层:网格的滚动位置,之后点「返回影视库」要用
-  relatedScrollTop: number;       // 补番一览自己的滚动位置
+  relatedScrollTop: number;       // 离开前详情页内容区的滚动位置(补番一览或普通详情态皆用这个字段)
+  mode: "related" | "self";       // related=恢复到补番一览,self=恢复到这部番自己的详情页(Bangumi介绍用)
 }
 
 function loadLibraryDetailSession(): LibraryDetailSession | null {
@@ -306,8 +307,13 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
       restoreScrollTop.current = snap.relatedScrollTop;
       gridScrollTop.current = snap.gridScrollTop; // 之后点「返回影视库」回到网格原位
       setSelectedAnime(snap.anime);
-      setShowRelatedAnime(true);
-      setRelatedAnime(snap.relatedAnime);
+      if (snap.mode === "self") {
+        setShowRelatedAnime(false);
+        setRelatedAnime([]);
+      } else {
+        setShowRelatedAnime(true);
+        setRelatedAnime(snap.relatedAnime);
+      }
       setDetailLoading(true);
       fetch(`${API_BASE}/library/detail/${encodeURIComponent(snap.anime.folder_name)}`)
         .then((res) => res.json())
@@ -778,6 +784,21 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
       });
   };
 
+  // "Bangumi介绍"按钮:跳到顶层DetailPage看这部番自己的Bangumi简介/内嵌详情页
+  // (跟"补番一览点关联作品"跳的是同一个onSelectAnime,同一套session机制,
+  // 只是mode="self"——回来时恢复到这部番自己的详情页,而不是补番一览)。
+  const handleOpenBangumiIntro = () => {
+    if (!selectedAnime?.bgm_id) return;
+    saveLibraryDetailSession({
+      anime: selectedAnime,
+      relatedAnime,
+      gridScrollTop: gridScrollTop.current,
+      relatedScrollTop: scrollContainerRef?.current?.scrollTop ?? 0,
+      mode: "self",
+    });
+    onSelectAnime?.(selectedAnime.bgm_id);
+  };
+
   // "补番"按钮:跟管理模式互斥,第一次打开且还没拉过数据时才发请求
   const handleToggleRelatedAnime = () => {
     if (!showRelatedAnime) {
@@ -1090,6 +1111,14 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
                   {showRelatedAnime ? "退出补番" : "补番"}
                 </button>
               )}
+              {selectedAnime.bgm_id && (
+                <button
+                  onClick={handleOpenBangumiIntro}
+                  className="rounded-md border border-border px-3 py-1.5 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion"
+                >
+                  Bangumi介绍
+                </button>
+              )}
               {!showRelatedAnime && (
                 <button
                   onClick={() => {
@@ -1198,6 +1227,7 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
                         relatedAnime,
                         gridScrollTop: gridScrollTop.current, // 进详情时已记(handleSelectAnime)
                         relatedScrollTop: scrollContainerRef?.current?.scrollTop ?? 0,
+                        mode: "related",
                       });
                     }
                     onSelectAnime?.(bgmId);
