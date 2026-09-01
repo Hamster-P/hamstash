@@ -1158,7 +1158,7 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
               </div>
               <div className="min-w-0">
                 <h1 className="text-2xl font-bold mb-2">{selectedAnime.display_title || selectedAnime.folder_name}</h1>
-                <p className="text-sm text-muted max-w-2xl max-h-40 overflow-y-auto pr-1">
+                <p className="text-sm text-muted max-h-40 overflow-y-auto pr-1">
                   {selectedAnime.summary}
                 </p>
               </div>
