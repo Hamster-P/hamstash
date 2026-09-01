@@ -1,6 +1,6 @@
 // pages/LibraryPage.tsx
 import { useEffect, useLayoutEffect, useMemo, useState, useRef } from "react";
-import { Play, FolderOpen, ArrowLeft, CheckCircle2, Trash2, Loader2, Users, Info, Settings2, Move } from "lucide-react";
+import { Play, FolderOpen, ArrowLeft, CheckCircle2, Trash2, Loader2, Users, Info, Settings2, Move, RefreshCcw, FolderMinus } from "lucide-react";
 import { invoke } from '@tauri-apps/api/core';
 import { isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -535,6 +535,20 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filteredGroups, movieOnly]);
+
+  // 剧场版hero的背景/LOGO跟着activeBgm(鼠标hover切换)走,复用跟详情页头部同一套
+  // animeMeta/fetchAnimeMeta——两者是同一组件实例里互斥的两个视图分支(movieOnly页
+  // 不会进selectedAnime详情态),不会互相冲突。hover划过多张卡会连续触发activeBgm变化,
+  // 加个200ms防抖,划过路上的卡不用每张都发请求。
+  useEffect(() => {
+    if (!movieOnly) return;
+    setAnimeMeta(null);
+    const bgmId = activeHead?.bgm_id;
+    if (!bgmId) return;
+    const timer = setTimeout(() => fetchAnimeMeta(bgmId), 200);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [movieOnly, activeHead?.bgm_id]);
 
   // 播放一个独立剧场版/OVA 文件(单文件,不做整季连播)
   const handlePlayStandalone = async (item: StandaloneItem) => {
@@ -1163,7 +1177,10 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
                   alt=""
                   className="h-full w-full object-cover object-top opacity-80"
                 />
-                <div className="absolute inset-0 bg-gradient-to-t from-ink via-ink/30 to-transparent" />
+                {/* 暗化渐变加深(via-ink/30→via-ink/70,顶部也从全透明改成留一点底色):
+                    之前文字直接叠在鲜艳的原图上对比度不够,标题还好(带drop-shadow),
+                    分级/类型/简介这些次要文字看着发灰、糊在图里。 */}
+                <div className="absolute inset-0 bg-gradient-to-t from-ink via-ink/70 to-ink/10" />
               </div>
             )}
 
@@ -1292,11 +1309,13 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
                   )}
                   {/* 元数据行:分级/类型/工作室,只在resolved且真有内容时显示,
                       不留空占位——跟其他字段缺失时的克制风格一致。 */}
+                  {/* 叠在图上的次要文字之前用text-muted(中灰),对比度不够、糊在图里——
+                      改成text-paper/90(接近白)+drop-shadow,跟标题一个观感强度。 */}
                   {animeMeta?.status === "resolved" &&
                     (animeMeta.content_rating || (animeMeta.genres?.length ?? 0) > 0 || (animeMeta.studios?.length ?? 0) > 0) && (
-                      <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-muted">
+                      <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-paper/90 drop-shadow">
                         {animeMeta.content_rating && (
-                          <span className="rounded border border-border px-1.5 py-0.5">
+                          <span className="rounded border border-border/80 bg-ink/40 px-1.5 py-0.5">
                             {animeMeta.content_rating}
                           </span>
                         )}
@@ -1304,7 +1323,7 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
                         {(animeMeta.studios?.length ?? 0) > 0 && <span>{animeMeta.studios!.join(" / ")}</span>}
                       </div>
                     )}
-                  <p className="max-h-32 overflow-y-auto pr-1 text-sm text-muted">
+                  <p className="max-h-32 overflow-y-auto pr-1 text-sm text-paper/90 drop-shadow">
                     {selectedAnime.summary}
                   </p>
                 </div>
@@ -1501,9 +1520,42 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
       ) : (
         /* 列表视图 */
         <div>
-          {/* 冻结顶部:标题+控件(剧场版再含 hero+明细行),照追更页做法始终贴顶不滚 */}
-          <div className="sticky top-0 z-20 bg-ink px-8 pb-4 pt-8">
-          <div className="flex justify-between items-center mb-6">
+          {/* 铺满整屏的背景,只开这一份,不再跟冻结顶部各搞一套:
+              position:fixed,尺寸永远是整个可视窗口(不是内容高度),盖在body底色
+              和卡片网格后面(负z-index,侧栏Sidebar自己有实色背景不会被透过去),
+              滚动卡片列表时背景常驻不跟着滚走。
+              真图(有TMDB数据时)object-cover铺满整个窗口高度——之前是按16:9比例
+              限高,清晰图只占一小截、剩下大片全是模糊糊,两段观感断裂;现在宽屏/
+              高窗口下会裁掉一些边缘细节,但换来"从头到尾一张连续的图"的整体感,
+              用户反馈更看重这个。模糊放大图仍然垫底,只有没有TMDB数据时才会真的
+              露出来当兜底,不是主力观感。 */}
+          {movieOnly && activeHead && (
+            <div className="fixed inset-0 -z-10">
+              {activeHead.cover_url && (
+                <img
+                  src={proxiedImageUrl(activeHead.cover_url)}
+                  alt=""
+                  className="h-full w-full scale-125 object-cover object-top blur-2xl"
+                />
+              )}
+              {animeMeta?.status === "resolved" && animeMeta.backdrop_url && (
+                <img
+                  src={proxiedImageUrl(animeMeta.backdrop_url)}
+                  alt=""
+                  className="absolute inset-0 h-full w-full object-cover object-top opacity-90"
+                />
+              )}
+              <div className="absolute inset-0 bg-gradient-to-b from-ink/40 via-ink/15 to-ink/75" />
+            </div>
+          )}
+          {/* 冻结顶部:标题+控件(剧场版再含 hero+明细行),照追更页做法始终贴顶不滚。
+              之前给冻结顶部另外叠了一层bg-ink/45,跟下面fixed背景自己的渐变暗化
+              (from-ink/25)撞在一起变成两层暗化叠加,冻结顶部范围因此比卡片区更暗、
+              更"糊"——同一张图深浅不一致,看着像断层。现在冻结顶部完全不再单独加
+              任何背景/遮罩,暗化只交给下面那一份fixed渐变来管,全程只有一个暗化
+              来源,深浅必然连续、不会再有接缝。 */}
+          <div className={`sticky top-0 z-20 overflow-hidden px-8 pt-8 ${movieOnly ? "pb-16" : "bg-ink pb-4"}`}>
+          <div className="relative flex justify-between items-center mb-6">
             <div>
               <h1 className="font-display text-2xl tracking-tight">{movieOnly ? "剧场版" : "影视库"}</h1>
               {!movieOnly && (
@@ -1586,15 +1638,17 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
                       </button>
                     ))}
                   </div>
+                  {/* 之前非激活态没有背景色,直接透在背景图上,灰字+小图标基本看不清——
+                      补上bg-surface,跟左边"全部/未看/已看"筛选条的非激活态背景统一。 */}
                   <button
                     onClick={() => { setMovieManage((v) => !v); setPendingMovieDelete(null); }}
-                    className={`rounded-md border px-3 py-1.5 font-mono text-xs transition-colors ${
+                    className={`flex items-center gap-1.5 rounded-md border px-3 py-1.5 font-mono text-xs transition-colors ${
                       movieManage
                         ? "border-vermillion bg-vermillion text-ink"
-                        : "border-border text-muted hover:border-vermillion hover:text-vermillion"
+                        : "border-border bg-surface text-muted hover:border-vermillion hover:text-vermillion hover:text-paper"
                     }`}
                   >
-                    {movieManage ? "结束管理" : "管理"}
+                    <Settings2 size={14} /> {movieManage ? "结束管理" : "管理"}
                   </button>
                 </>
               )}
@@ -1602,15 +1656,19 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
           </div>
 
           {deleteAnimeError && (
-            <div className="mb-4 rounded-md border border-vermillion/40 bg-surface p-3 font-mono text-xs text-vermillion">
+            <div className="relative mb-4 rounded-md border border-vermillion/40 bg-surface p-3 font-mono text-xs text-vermillion">
               删除失败: {deleteAnimeError}
             </div>
           )}
 
-          {/* 剧场版 hero + 明细行:放进冻结顶部,滚动卡片网格时保持不动 */}
+          {/* 剧场版 hero + 明细行:放进冻结顶部,滚动卡片网格时保持不动。
+              背景已经挪到冻结顶部整层(见上面),这里不再自己围边框/背景,
+              直接把海报+文字铺在共享的通栏背景上——跟详情页头部同一个观感。
+              LOGO/分级/类型/工作室这几块也搬过来跟详情页头部对齐,之前这里
+              没有,看起来两个页面不是一套东西。 */}
           {movieOnly && activeHead && (
-            <div className="flex gap-6 rounded-md border border-border bg-surface p-5">
-              <div className="h-56 w-40 shrink-0 overflow-hidden rounded-md bg-ink shadow-lg">
+            <div className="relative flex gap-6">
+              <div className="h-56 w-40 shrink-0 overflow-hidden rounded-md border border-border bg-surface shadow-2xl">
                 {activeHead.cover_url ? (
                   <img src={proxiedImageUrl(activeHead.cover_url)} alt={activeHead.title ?? ""} className="h-full w-full object-cover" />
                 ) : (
@@ -1621,24 +1679,47 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
                 )}
               </div>
               <div className="flex min-w-0 flex-1 flex-col">
-                <h1 className="mb-2 text-2xl font-bold">{activeHead.title || activeHead.filename}</h1>
-                <p className="min-h-0 flex-1 overflow-y-auto font-mono text-xs leading-relaxed text-muted">
+                {animeMeta?.status === "resolved" && animeMeta.logo_url ? (
+                  <img
+                    src={proxiedImageUrl(animeMeta.logo_url)}
+                    alt={activeHead.title || activeHead.filename}
+                    className="mb-2 max-h-16 max-w-full object-contain object-left drop-shadow"
+                  />
+                ) : (
+                  <h1 className="mb-2 font-display text-2xl tracking-tight drop-shadow">{activeHead.title || activeHead.filename}</h1>
+                )}
+                {animeMeta?.status === "resolved" &&
+                  (animeMeta.content_rating || (animeMeta.genres?.length ?? 0) > 0 || (animeMeta.studios?.length ?? 0) > 0) && (
+                    <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-paper/90 drop-shadow">
+                      {animeMeta.content_rating && (
+                        <span className="rounded border border-border/80 bg-ink/40 px-1.5 py-0.5">
+                          {animeMeta.content_rating}
+                        </span>
+                      )}
+                      {(animeMeta.genres?.length ?? 0) > 0 && <span>{animeMeta.genres!.join(" / ")}</span>}
+                      {(animeMeta.studios?.length ?? 0) > 0 && <span>{animeMeta.studios!.join(" / ")}</span>}
+                    </div>
+                  )}
+                {/* 之前用flex-1+overflow-y-auto指望flex拉伸出高度上限,但这一列的父行
+                    没有强制等高(内容比海报高就把整行撑高),导致简介一直不触发滚动、
+                    往下无限撑。改成跟详情页头部一样直接给max-h硬顶。 */}
+                <p className="max-h-32 overflow-y-auto font-mono text-xs leading-relaxed text-paper/90 drop-shadow">
                   {activeHead.summary || "暂无简介"}
                 </p>
                 {movieManage && (
                   <div className="mt-3 flex items-center gap-2 font-mono text-xs">
                     <button
                       onClick={() => openPickerForRegroup(activeItems)}
-                      className="rounded-md border border-border px-3 py-1.5 text-muted transition-colors hover:border-vermillion hover:text-vermillion"
+                      className="flex items-center gap-1.5 rounded-md border border-border bg-ink/60 px-3 py-1.5 text-muted backdrop-blur transition-colors hover:border-vermillion hover:text-vermillion"
                     >
-                      重选条目
+                      <RefreshCcw size={14} /> 重选条目
                     </button>
                     <button
                       disabled={movieBusy}
                       onClick={() => activeItems.forEach((it) => handleRemoveStandalone(it))}
-                      className="rounded-md border border-vermillion px-3 py-1.5 text-vermillion transition-colors hover:bg-vermillion hover:text-ink disabled:opacity-40"
+                      className="flex items-center gap-1.5 rounded-md border border-vermillion bg-ink/60 px-3 py-1.5 text-vermillion backdrop-blur transition-colors hover:bg-vermillion hover:text-ink disabled:opacity-40"
                     >
-                      移出列表
+                      <FolderMinus size={14} /> 移出列表
                     </button>
                   </div>
                 )}
@@ -1646,7 +1727,7 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
             </div>
           )}
           {movieOnly && expandedBgm !== null && expandedItems.length > 0 && (
-            <div className="mt-4 flex flex-col gap-1.5 rounded-md border border-border bg-surface p-3">
+            <div className="relative mt-4 flex flex-col gap-1.5 rounded-md border border-border bg-surface p-3">
               {expandedItems.map((item) => (
                 <div key={item.id} className="flex items-center justify-between gap-3 rounded px-2 py-1.5 hover:bg-paper/5">
                   <div className="flex min-w-0 items-center gap-2">
@@ -1663,8 +1744,12 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
                       </div>
                     ) : (
                       <div className="flex shrink-0 items-center gap-2 font-mono text-xs">
-                        <button onClick={() => setPendingMovieDelete(item.rel_path)} className="rounded-md border border-vermillion bg-vermillion px-3 py-1 text-ink hover:bg-vermillion/90">删除文件</button>
-                        <button disabled={movieBusy} onClick={() => handleRemoveStandalone(item)} className="rounded-md border border-border px-3 py-1 text-muted hover:border-vermillion hover:text-vermillion disabled:opacity-40">仅移出</button>
+                        <button onClick={() => setPendingMovieDelete(item.rel_path)} className="flex items-center gap-1 rounded-md border border-vermillion bg-vermillion px-3 py-1 text-ink hover:bg-vermillion/90">
+                          <Trash2 size={13} /> 删除文件
+                        </button>
+                        <button disabled={movieBusy} onClick={() => handleRemoveStandalone(item)} className="flex items-center gap-1 rounded-md border border-border px-3 py-1 text-muted hover:border-vermillion hover:text-vermillion disabled:opacity-40">
+                          <FolderMinus size={13} /> 仅移出
+                        </button>
                         {/* 归属调整:跟上面的"重新分组"(只改封面来源、不动文件)不同,
                             这个会把磁盘上的文件真的搬到另一个系列文件夹下。 */}
                         <button
@@ -1676,9 +1761,9 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
                               bgmId: item.bgm_id,
                             })
                           }
-                          className="rounded-md border border-border px-3 py-1 text-muted transition-colors hover:border-vermillion hover:text-vermillion disabled:opacity-40"
+                          className="flex items-center gap-1 rounded-md border border-border px-3 py-1 text-muted transition-colors hover:border-vermillion hover:text-vermillion disabled:opacity-40"
                         >
-                          调整归属…
+                          <Move size={13} /> 调整归属…
                         </button>
                       </div>
                     )
