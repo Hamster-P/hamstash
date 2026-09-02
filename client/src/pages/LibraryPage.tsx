@@ -1138,7 +1138,7 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
   const displayedAnimes = useMemo(() => sortAnimes(animes, sort), [animes, sort]);
 
   return (
-    <div className="text-paper">
+    <div className={`text-paper${movieOnly ? " flex h-full flex-col" : ""}`}>
       {selectedAnime ? (
         /* 详情视图:头部(返回+封面+简介+分季快捷跳转)吸顶固定,滚动集数列表时始终可见,
            跟Excel冻结表头一个道理 */
@@ -1523,7 +1523,7 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
         </div>
       ) : (
         /* 列表视图 */
-        <div>
+        <div className={movieOnly ? "flex min-h-0 flex-1 flex-col" : ""}>
           {/* 铺满整屏的背景,只开这一份,不再跟冻结顶部各搞一套:
               position:fixed,尺寸永远是整个可视窗口(不是内容高度),盖在body底色
               和卡片网格后面(负z-index,侧栏Sidebar自己有实色背景不会被透过去),
@@ -1558,7 +1558,7 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
               更"糊"——同一张图深浅不一致,看着像断层。现在冻结顶部完全不再单独加
               任何背景/遮罩,暗化只交给下面那一份fixed渐变来管,全程只有一个暗化
               来源,深浅必然连续、不会再有接缝。 */}
-          <div className={`sticky top-0 z-20 overflow-hidden px-8 pt-8 ${movieOnly ? "pb-16" : "bg-ink pb-4"}`}>
+          <div className={`overflow-hidden px-8 pt-8 ${movieOnly ? "relative shrink-0 pb-6" : "sticky top-0 z-20 bg-ink pb-4"}`}>
           <div className="relative flex justify-between items-center mb-6">
             <div>
               <h1 className="font-display text-2xl tracking-tight">{movieOnly ? "剧场版" : "影视库"}</h1>
@@ -1707,7 +1707,7 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
                 {/* 之前用flex-1+overflow-y-auto指望flex拉伸出高度上限,但这一列的父行
                     没有强制等高(内容比海报高就把整行撑高),导致简介一直不触发滚动、
                     往下无限撑。改成跟详情页头部一样直接给max-h硬顶。 */}
-                <p className="max-h-32 overflow-y-auto font-mono text-xs leading-relaxed text-paper/90 drop-shadow">
+                <p className="max-h-32 max-w-2xl overflow-y-auto font-mono text-xs leading-relaxed text-paper/90 drop-shadow">
                   {activeHead.summary || "暂无简介"}
                 </p>
                 {movieManage && (
@@ -1788,8 +1788,10 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
           {/* /冻结顶部 */}
 
           {/* pt-3:给卡片右上角骑边框的"未看集数"角标留出空间——它用负偏移探出卡片
-              顶部一点,第一排卡片正好贴着这个容器的上边缘,不留白会被上面滚动区域裁掉。 */}
-          <div className="px-8 pb-8 pt-3">
+              顶部一点,第一排卡片正好贴着这个容器的上边缘,不留白会被上面滚动区域裁掉。
+              剧场版页:顶部 hero 固定不滚,只有卡片网格这一块内部滚动(min-h-0 flex-1
+              overflow-y-auto),否则窗口一矮,卡片会滚到透明的 hero 区域后面露出来。 */}
+          <div className={`px-8 pb-8 pt-3${movieOnly ? " min-h-0 flex-1 overflow-y-auto" : ""}`}>
           {!movieOnly && (loading ? (
             <div className="font-mono text-xs text-muted">正在加载...</div>
           ) : (
