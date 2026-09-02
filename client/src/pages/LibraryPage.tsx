@@ -1316,7 +1316,7 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
                   {/* 叠在图上的次要文字之前用text-muted(中灰),对比度不够、糊在图里——
                       改成text-paper/90(接近白)+drop-shadow,跟标题一个观感强度。 */}
                   {animeMeta?.status === "resolved" &&
-                    (animeMeta.content_rating || (animeMeta.genres?.length ?? 0) > 0 || (animeMeta.studios?.length ?? 0) > 0) && (
+                    (animeMeta.content_rating || (animeMeta.genres?.length ?? 0) > 0) && (
                       <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-paper/90 drop-shadow">
                         {animeMeta.content_rating && (
                           <span className="rounded border border-border/80 bg-ink/40 px-1.5 py-0.5">
@@ -1324,7 +1324,6 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
                           </span>
                         )}
                         {(animeMeta.genres?.length ?? 0) > 0 && <span>{animeMeta.genres!.join(" / ")}</span>}
-                        {(animeMeta.studios?.length ?? 0) > 0 && <span>{animeMeta.studios!.join(" / ")}</span>}
                       </div>
                     )}
                   <p className="max-h-32 overflow-y-auto pr-1 text-sm text-paper/90 drop-shadow">
