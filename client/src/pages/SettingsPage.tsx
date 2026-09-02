@@ -443,7 +443,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
       <div className="mb-6 rounded-md border border-border bg-surface p-4">
         <div className="mb-1 text-sm">未看集数角标</div>
         <p className="mb-3 font-mono text-[11px] text-muted">
-          媒体库卡片右上角显示还有多少集没看过,按实际扫到的视频文件数减去播放记录估算,不会额外触发扫盘。
+          媒体库卡片右上角显示还有多少集没看过,不包含Other分类下的pv,op,ed等内容。
         </p>
         <label className="flex items-center gap-2 font-mono text-xs">
           <input
