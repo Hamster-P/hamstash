@@ -59,7 +59,8 @@ export interface SettingsPageHandle {
   save: () => Promise<void>;
 }
 
-type DefaultHomeView = "tracking" | "search" | "library";
+// 取值跟 Sidebar 的 View key 一致,App.tsx 启动时直接 setView(default_home_view)
+type DefaultHomeView = "tracking" | "search" | "library" | "movieLibrary";
 
 // 设置页分类导航:"基础设置"是初次配置最常碰的几项(目录/代理/qBittorrent连接),
 // 默认打开;软件更新单独置顶、不进任何分类,进页面就看得到。
@@ -184,9 +185,9 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
           defaultSource: validIds.includes(data.default_source)
             ? data.default_source
             : (validIds[0] ?? "dmhy"),
-          defaultHomeView: (["tracking", "search", "library"] as const).includes(
-            data.default_home_view,
-          )
+          defaultHomeView: (
+            ["tracking", "search", "library", "movieLibrary"] as const
+          ).includes(data.default_home_view)
             ? data.default_home_view
             : "tracking",
           coverStrategy: (["latest_tv", "first_season", "matched"] as const).includes(
@@ -460,6 +461,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
           <option value="tracking">追更页面</option>
           <option value="search">搜索页面</option>
           <option value="library">媒体库页面</option>
+          <option value="movieLibrary">剧场版页面</option>
         </select>
       </div>
 

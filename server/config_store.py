@@ -24,7 +24,7 @@ DEFAULTS = {
     "potplayer_path": r"C:\Program Files\DAUM\PotPlayer\PotPlayerMini64.exe",
     "player_mode": "external",  # external=用户指定的PotPlayer等外置播放器 / builtin=内置mpv
     "default_source": "dmhy",  # 下载页默认选中的数据源: dmhy / animegarden / nyaa
-    "default_home_view": "tracking",  # 软件启动时默认显示的页面: tracking/search/library
+    "default_home_view": "tracking",  # 软件启动时默认显示的页面: tracking/search/library/movieLibrary
     # 访问Bangumi/dmhy/animegarden/nyaa/mikan等外部站点时用的代理地址,例如
     # http://127.0.0.1:8000(Clash等工具的本地混合端口)。留空=直连,不走代理。
     # 只影响这几个外部站点的请求,不影响本地qBittorrent连接。
