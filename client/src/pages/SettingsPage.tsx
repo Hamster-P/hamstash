@@ -61,6 +61,18 @@ export interface SettingsPageHandle {
 
 type DefaultHomeView = "tracking" | "search" | "library";
 
+// 设置页分类导航:"基础设置"是初次配置最常碰的几项(目录/代理/qBittorrent连接),
+// 默认打开;软件更新单独置顶、不进任何分类,进页面就看得到。
+type SettingsCategory = "basic" | "general" | "library" | "download" | "playback";
+
+const SETTINGS_CATEGORIES: { id: SettingsCategory; label: string }[] = [
+  { id: "basic", label: "基础设置" },
+  { id: "general", label: "常规" },
+  { id: "library", label: "媒体库" },
+  { id: "download", label: "下载与整理" },
+  { id: "playback", label: "播放" },
+];
+
 // 下载源配置(来自后端 GET /resources/sources):每个源的启用开关 + 可编辑的 URL 字段
 interface SourceUrlField {
   key: string;
@@ -137,6 +149,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
   const [qbStatus, setQbStatus] = useState<"checking" | "connected" | "failed">(
     "checking",
   );
+  const [activeCategory, setActiveCategory] = useState<SettingsCategory>("basic");
 
   useEffect(() => {
     Promise.all([
@@ -331,31 +344,53 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
   }));
 
   return (
-    <div className="max-w-xl p-8">
-      <h1 className="mb-4 font-display text-2xl tracking-tight">设置</h1>
-
-      <div className="mb-6 flex items-center gap-3">
-        <button
-          onClick={handleSave}
-          disabled={saving}
-          className="min-w-[84px] rounded-md border border-vermillion px-4 py-2 text-center font-mono text-xs text-vermillion transition-colors hover:bg-vermillion hover:text-ink disabled:opacity-40"
-        >
-          {saving ? "保存中..." : "应用"}
-        </button>
-        {isDirty && !saving && (
-          <span className="font-mono text-[11px] text-vermillion">
-            有未保存的修改
-          </span>
-        )}
-        {saveMessage && (
-          <span className="font-mono text-[11px] text-muted">{saveMessage}</span>
-        )}
+    <div className="max-w-4xl p-8">
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <h1 className="font-display text-2xl tracking-tight">设置</h1>
+        <div className="flex items-center gap-3">
+          {isDirty && !saving && (
+            <span className="font-mono text-[11px] text-vermillion">
+              有未保存的修改
+            </span>
+          )}
+          {saveMessage && (
+            <span className="font-mono text-[11px] text-muted">{saveMessage}</span>
+          )}
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="min-w-[84px] rounded-md border border-vermillion px-4 py-2 text-center font-mono text-xs text-vermillion transition-colors hover:bg-vermillion hover:text-ink disabled:opacity-40"
+          >
+            {saving ? "保存中..." : "应用"}
+          </button>
+        </div>
       </div>
 
-      <AppearanceSection />
-
+      {/* 软件更新单独置顶、不进任何分类的条件渲染:版本检查优先级高,不希望被
+          "得先点进某个分类"挡住。 */}
       <UpdateSection />
 
+      <div className="flex items-start gap-6">
+        <nav className="flex w-40 shrink-0 flex-col gap-1">
+          {SETTINGS_CATEGORIES.map((c) => (
+            <button
+              key={c.id}
+              type="button"
+              onClick={() => setActiveCategory(c.id)}
+              className={`rounded-md border px-3 py-2 text-left font-mono text-xs transition-colors ${
+                activeCategory === c.id
+                  ? "border-vermillion text-vermillion"
+                  : "border-transparent text-muted hover:border-border hover:text-paper"
+              }`}
+            >
+              {c.label}
+            </button>
+          ))}
+        </nav>
+
+        <div className="min-w-0 flex-1">
+      {activeCategory === "basic" && (
+        <>
       <div className="mb-6 rounded-md border border-border bg-surface p-4">
         <div className="mb-1 text-sm">下载暂存目录</div>
         <p className="mb-3 font-mono text-[11px] text-muted">
@@ -404,6 +439,12 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
           <p className="mt-2 font-mono text-[11px] text-vermillion">{dirConflictError}</p>
         )}
       </div>
+        </>
+      )}
+
+      {activeCategory === "general" && (
+        <>
+      <AppearanceSection />
 
       {/* 默认首页:软件启动时默认显示的页面 */}
       <div className="mb-6 rounded-md border border-border bg-surface p-4">
@@ -422,6 +463,12 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
         </select>
       </div>
 
+      <BackupSection />
+        </>
+      )}
+
+      {activeCategory === "library" && (
+        <>
       {/* 媒体库默认封面:未手动选图的番按此策略自动选封面 */}
       <div className="mb-6 rounded-md border border-border bg-surface p-4">
         <div className="mb-1 text-sm">媒体库默认封面</div>
@@ -456,6 +503,12 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
         </label>
       </div>
 
+      <LibraryRepairSection />
+        </>
+      )}
+
+      {activeCategory === "playback" && (
+        <>
       {/* 新增：播放方式选择 */}
       <div className="mb-6 rounded-md border border-border bg-surface p-4">
         <div className="mb-1 text-sm">播放方式</div>
@@ -511,7 +564,11 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
           )}
         </div>
       )}
+        </>
+      )}
 
+      {activeCategory === "download" && (
+        <>
       {/* 新增：默认下载数据源 */}
       <div className="mb-6 rounded-md border border-border bg-surface p-4">
         <div className="mb-1 text-sm">默认下载数据源</div>
@@ -581,7 +638,11 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
           ))}
         </div>
       </div>
+        </>
+      )}
 
+      {activeCategory === "basic" && (
+        <>
       {/* 新增：访问外部动漫资源站(Bangumi/dmhy/AnimeGarden/nyaa)用的代理 */}
       <div className="mb-6 rounded-md border border-border bg-surface p-4">
         <div className="mb-1 text-sm">网络代理</div>
@@ -604,7 +665,11 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
           sourceIds={sourceConfigs.filter((s) => s.enabled).map((s) => s.id)}
         />
       </div>
+        </>
+      )}
 
+      {activeCategory === "download" && (
+        <>
       <div className="mb-6 rounded-md border border-border bg-surface p-4">
         <div className="mb-1 text-sm">整理任务轮询间隔</div>
         <p className="mb-3 font-mono text-[11px] text-muted">
@@ -665,7 +730,11 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
           <span className="font-mono text-xs text-muted">分钟</span>
         </div>
       </div>
+        </>
+      )}
 
+      {activeCategory === "basic" && (
+        <>
       <div className="mb-6 rounded-md border border-border bg-surface p-4">
         <div className="mb-1 text-sm">qBittorrent 连接状态</div>
         <p className="mb-3 font-mono text-[11px] text-muted">
@@ -708,10 +777,10 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
           </button>
         )}
       </div>
-
-      <LibraryRepairSection />
-
-      <BackupSection />
+        </>
+      )}
+        </div>
+      </div>
     </div>
   );
 });
