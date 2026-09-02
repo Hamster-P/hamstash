@@ -26,13 +26,15 @@ HEADERS = {
 # 后者,不带include_image_language=...,null这个值,TMDB默认只返回"en"语言的图,
 # 动画类条目常常直接查不到任何结果。
 _APPEND = "images,content_ratings,keywords,external_ids"
-_IMAGE_LANGUAGES = "zh,ja,en,null"
+_IMAGE_LANGUAGES = "ja,zh,en,null"
 
 # 分级优先顺序:日版>美版>随便挑一个有的,没有就是None(前端不渲染这一行)。
 _CONTENT_RATING_PREFERENCE = ("JP", "US")
 
-# LOGO语言优先顺序:中文>日文>英文>随便挑一个有的。
-_LOGO_LANGUAGE_PREFERENCE = ("zh", "ja", "en")
+# LOGO在"同朝向"里的语言优先顺序:日文>中文>英文>随便挑一个有的(朝向优先于语言,
+# 见_pick_logo)。注意:TMDB图片元数据只有2位iso_639_1(zh/ja/en...),没有地区码,
+# 简体中文和繁体中文都是"zh",API层面区分不了——"中文"和"中文繁体"合成同一档。
+_LOGO_LANGUAGE_PREFERENCE = ("ja", "zh", "en")
 
 _APPEND_MOVIE = "images,keywords,credits,release_dates,external_ids"
 
@@ -109,22 +111,40 @@ def _image_url(file_path: str | None, size: str) -> str | None:
     return f"{IMAGE_BASE_URL}/{size}{file_path}"
 
 
+def _is_horizontal_logo(logo: dict) -> bool:
+    """宽>=高算横向。竖排LOGO(整块标题竖着排)放详情页/剧场版页头部很难看,能避则避。
+    优先看TMDB给的aspect_ratio(宽/高),缺失再用width/height兜底,都没有当横向处理。"""
+    ar = logo.get("aspect_ratio")
+    if isinstance(ar, (int, float)) and ar > 0:
+        return ar >= 1
+    width, height = logo.get("width") or 0, logo.get("height") or 0
+    return width >= height if height else True
+
+
 def _pick_logo(logos: list[dict]) -> dict | None:
-    """LOGO跟背景图相反,就是要带文字的图,按语言优先顺序选,没有偏好语言的就退回第一张。
-    同语言可能有多张,TMDB本身按社区评分降序返回——只保留每个语言第一次出现的那张
-    (评分最高的),不能用字典推导式直接{lang: item for item in logos}(会保留同语言
-    最后一张,拿到评分较低的图)。"""
+    """LOGO跟背景图相反,就是要带文字的图。挑选优先级:
+      1. 朝向:横向 LOGO 整体优先于竖排(竖排标题挤在详情页头部很难看);
+      2. 同朝向里再按语言 日文>中文>英文>随便挑一个有的;
+      3. TMDB 本身按社区评分降序返回,同朝向同语言下保留靠前那张(评分最高)。
+    先在横向集合里按语言找,找不到再在竖排集合里按语言找。"""
     if not logos:
         return None
-    by_language: dict[str | None, dict] = {}
-    for logo in logos:
-        lang = logo.get("iso_639_1")
-        if lang not in by_language:
-            by_language[lang] = logo
-    for lang in _LOGO_LANGUAGE_PREFERENCE:
-        if by_language.get(lang):
-            return by_language[lang]
-    return logos[0]
+
+    horizontal = [lg for lg in logos if _is_horizontal_logo(lg)]
+    vertical = [lg for lg in logos if not _is_horizontal_logo(lg)]
+
+    def by_language(candidates: list[dict]) -> dict | None:
+        if not candidates:
+            return None
+        buckets: dict[str | None, list[dict]] = {}
+        for logo in candidates:
+            buckets.setdefault(logo.get("iso_639_1"), []).append(logo)
+        for lang in _LOGO_LANGUAGE_PREFERENCE:
+            if buckets.get(lang):
+                return buckets[lang][0]
+        return candidates[0]
+
+    return by_language(horizontal) or by_language(vertical)
 
 
 def _pick_content_rating(data: dict) -> str | None:

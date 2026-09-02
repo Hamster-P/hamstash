@@ -30,7 +30,8 @@ MAX_RETRY_ATTEMPTS = 10
 # 搜索兜底策略等)时把这个数+1。已解析(status=resolved)的行会记下当时的版本号,
 # 版本落后的行由anime_meta_poller后台按新逻辑重取一次,重取期间前端照旧显示旧图。
 #   1 = 最初版
-META_RESOLVER_VERSION = 1
+#   2 = LOGO 挑选改为 横向优先,同朝向里再按 日文>中文>英文(见 tmdb_client._pick_logo)
+META_RESOLVER_VERSION = 2
 _RESOLVER_VERSION_SETTING_KEY = "meta_resolver_version"
 
 
