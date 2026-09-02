@@ -359,6 +359,17 @@ def get_latest_activity(anime_path: Path) -> datetime | None:
     return datetime.fromtimestamp(anime_path.stat().st_mtime)
 
 
+NO_SUMMARY = "暂无简介"
+
+
+def _catalog_summary_stale(catalog) -> bool:
+    """简介缺失 / 只剩占位串——早期一次失败或部分响应会把占位串烤进 AnimeCatalog,
+    此后再没有任何流程回来刷新它(缓存只在"行不存在"时才补)。视图层据此后台补一次,
+    让老坏行自愈。"""
+    s = (getattr(catalog, "summary", None) or "").strip()
+    return not s or s == NO_SUMMARY
+
+
 async def update_anime_details_from_bgm(db: Session, bgm_id: int):
     """
     异步从 Bangumi 获取详情（封面、简介、总集数），并同步保存到本地数据库中
@@ -376,7 +387,9 @@ async def update_anime_details_from_bgm(db: Session, bgm_id: int):
         if catalog:
             catalog.title = info["title"]
             catalog.title_original = info["title_original"]
-            catalog.summary = info["summary"]
+            # 这次也没拿到真简介(占位串)时,不要拿它去覆盖已有的真简介
+            if info["summary"] != NO_SUMMARY or _catalog_summary_stale(catalog):
+                catalog.summary = info["summary"]
             catalog.cover_url = info["cover_url"]
             catalog.air_date = info["air_date"]
             catalog.total_episodes = info["total_eps"]  # 保存总集数到本地表
@@ -674,8 +687,8 @@ async def list_standalone_media(background_tasks: BackgroundTasks, db: Session =
     result = []
     for r in rows:
         catalog = catalogs.get(r.bgm_id)
-        if not catalog:
-            # 封面/标题/简介还没缓存:后台补一次,这次先用兜底,下次列表就有了。
+        if not catalog or _catalog_summary_stale(catalog) or not catalog.cover_url:
+            # 封面/标题/简介还没缓存,或老坏行(简介只剩占位串):后台补一次,下次列表就有了。
             background_tasks.add_task(_update_anime_details_from_bgm_task, r.bgm_id)
         watched_at = watched_map.get((r.library_folder, r.filename))
         result.append({
@@ -1146,6 +1159,9 @@ async def list_library_animes(background_tasks: BackgroundTasks, db: Session = D
                 summary = catalog.summary or "暂无简介"
                 # 尝试从数据库对象中取 total_episodes，如果没这列，它在更新后会被赋值
                 total_episodes = getattr(catalog, "total_episodes", 0) or 0
+                # 老坏行(简介只剩占位串 / 封面空):后台补一次,下次列表就正常了
+                if _catalog_summary_stale(catalog) or not catalog.cover_url:
+                    background_tasks.add_task(_update_anime_details_from_bgm_task, media.bgm_id)
             else:
                 # 若本地暂无缓存，扔进后台任务补一次更新，不阻塞这次列表响应——
                 # 这次请求先用兜底文案返回，下一次任意一次列表请求就能看到补全结果。
@@ -1161,7 +1177,7 @@ async def list_library_animes(background_tasks: BackgroundTasks, db: Session = D
                 cover_url = cover_catalog.cover_url
                 # 简介跟随封面:手动选图 / 默认策略选中家族里另一部时,简介也换成那一部的,
                 # 保证卡片上"封面↔简介"是同一部作品。标题/集数仍取绑定条目,不动。
-                if cover_bid != media.bgm_id and cover_catalog.summary:
+                if cover_bid != media.bgm_id and not _catalog_summary_stale(cover_catalog):
                     summary = cover_catalog.summary
             else:
                 background_tasks.add_task(_update_anime_details_from_bgm_task, cover_bid)
