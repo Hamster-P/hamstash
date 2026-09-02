@@ -19,7 +19,7 @@ from database import SessionLocal, get_db
 from services.common import get_setting, upsert_setting
 from services import bgm_series_cache, anime_meta_resolver
 from bangumi_client import get_subject_detail, normalize_bgm_subject, get_subject_details_batch
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 router = APIRouter(tags=["影视库"])
 
@@ -1305,6 +1305,24 @@ async def _resolve_anime_meta_task(bgm_id: int) -> None:
         db.close()
 
 
+# 详情页反复进出时,同一部番的按需刷新最多隔这么久排一次队(避免 background_tasks 堆积)。
+_META_REFRESH_MIN_INTERVAL = timedelta(hours=1)
+
+
+async def _refresh_anime_meta_task(bgm_id: int) -> None:
+    """已 resolved 但解析逻辑版本落后的行,进详情页时后台按新逻辑重取一次。
+    失败不降级(旧图继续显示),成功则替换成新图。"""
+    db = SessionLocal()
+    try:
+        await anime_meta_resolver.resolve_one(db, bgm_id, is_refresh=True)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        print(f"[ANIME_META] 后台刷新bgm_id={bgm_id}失败: {e}")
+    finally:
+        db.close()
+
+
 @router.get("/anime-meta/{bgm_id}")
 def get_anime_meta(bgm_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     """媒体库详情页头部(背景图/LOGO/分级/标签/类型/工作室)的数据源。
@@ -1315,6 +1333,15 @@ def get_anime_meta(bgm_id: int, background_tasks: BackgroundTasks, db: Session =
     if row is None:
         background_tasks.add_task(_resolve_anime_meta_task, bgm_id)
         return {"bgm_id": bgm_id, "status": "pending"}
+
+    # 已解析但解析逻辑版本落后:照旧返回当前(旧)图,后台按新逻辑重取一次替换掉。
+    # 用 last_attempt_at 节流,避免反复进出详情页把刷新任务堆满。
+    if row.status == "resolved" and (row.resolver_version or 0) < anime_meta_resolver.META_RESOLVER_VERSION:
+        last = row.last_attempt_at
+        if last is not None and last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+        if last is None or last < datetime.now(timezone.utc) - _META_REFRESH_MIN_INTERVAL:
+            background_tasks.add_task(_refresh_anime_meta_task, bgm_id)
 
     return {
         "bgm_id": bgm_id,

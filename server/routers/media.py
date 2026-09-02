@@ -63,6 +63,21 @@ def _find_cached_file(url: str):
     return None
 
 
+def discard_cached_image(url: str) -> None:
+    """删掉某个URL对应的本地缓存文件(几种扩展名都试一遍)。
+
+    元数据刷新按新逻辑挑中了另一张背景图/LOGO时,旧URL的缓存文件永远不会再被
+    请求到,成了只占空间的孤儿——刷新流程(anime_meta_resolver)负责在URL真的
+    变了时调这个把旧文件清掉,别让image_cache/目录只涨不减。删不掉只打日志。
+    """
+    digest = hashlib.sha256(url.encode("utf-8")).hexdigest()
+    for ext in _EXT_BY_CONTENT_TYPE.values():
+        try:
+            (_CACHE_DIR / f"{digest}{ext}").unlink(missing_ok=True)
+        except OSError as e:
+            print(f"[image_proxy] 清理旧图片缓存失败,忽略: {e}")
+
+
 def _write_cache(url: str, content_type: str, content: bytes) -> None:
     """先写临时文件再os.replace成最终文件名,原子写入——避免进程中途被杀掉/
     磁盘写满等情况留下一个半截的坏缓存文件,之后一直被_find_cached_file当成

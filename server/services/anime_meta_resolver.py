@@ -25,6 +25,65 @@ from services import id_mapping_cache
 # "新番时序问题"窗口)。用户后续可以在设置页/详情页手动触发重试(暂未实现)。
 MAX_RETRY_ATTEMPTS = 10
 
+# 背景图/LOGO/分级等的"解析逻辑"版本,跟bgm_series_cache.SEASON_ALGO_VERSION同一个
+# 套路:改动挑图规则(tmdb_client._pick_logo的语言序、backdrop尺寸/候选池、标题
+# 搜索兜底策略等)时把这个数+1。已解析(status=resolved)的行会记下当时的版本号,
+# 版本落后的行由anime_meta_poller后台按新逻辑重取一次,重取期间前端照旧显示旧图。
+#   1 = 最初版
+META_RESOLVER_VERSION = 1
+_RESOLVER_VERSION_SETTING_KEY = "meta_resolver_version"
+
+
+def reset_meta_resolver_if_version_changed(db: Session) -> bool:
+    """挂在启动路径(db_migrate._refresh_stale_caches)上:解析逻辑版本变过时,
+    把之前"彻底放弃"(unresolved_permanent)的行重置为待重试——逻辑升级正是
+    "当初查不到的现在也许查得到"的时机。
+
+    已resolved的行这里不动:它们的resolver_version已落后,poller的陈旧行扫描
+    和详情页的按需触发会各自把它们按新逻辑重取。只碰anime_meta_cache一张表,
+    不清任何缓存、不弹提示。幂等(版本号一致直接返回)。
+    """
+    from services.common import get_setting, upsert_setting
+
+    try:
+        stored = int(get_setting(db, _RESOLVER_VERSION_SETTING_KEY, "0"))
+    except (TypeError, ValueError):
+        stored = 0
+
+    if stored == META_RESOLVER_VERSION:
+        return False
+
+    reset = (
+        db.query(AnimeMetaCache)
+        .filter(AnimeMetaCache.status == "unresolved_permanent")
+        .update(
+            {AnimeMetaCache.status: "unresolved_retry", AnimeMetaCache.attempt_count: 0},
+            synchronize_session=False,
+        )
+    )
+    db.commit()
+    upsert_setting(db, _RESOLVER_VERSION_SETTING_KEY, str(META_RESOLVER_VERSION))
+    print(
+        f"[ANIME_META] 解析逻辑从v{stored}升到v{META_RESOLVER_VERSION},"
+        f"已解析条目将由后台按新逻辑重取;{reset}条永久失败条目重置为待重试"
+    )
+    return True
+
+
+def _discard_replaced_images(
+    old_backdrop: str | None,
+    new_backdrop: str | None,
+    old_logo: str | None,
+    new_logo: str | None,
+) -> None:
+    """刷新后挑到了跟原来不同的图,把旧URL的本地图片缓存清掉。
+    延迟import避免routers<->services循环依赖。"""
+    from routers import media
+
+    for old, new in ((old_backdrop, new_backdrop), (old_logo, new_logo)):
+        if old and old != new:
+            media.discard_cached_image(old)
+
 _SNAPSHOT_TMDB_ID_RE = re.compile(r"^(tv|movie)/(\d+)(?:/season/(\d+))?")
 
 
@@ -52,8 +111,15 @@ def _get_or_create(db: Session, bgm_id: int) -> AnimeMetaCache:
     return row
 
 
-async def resolve_one(db: Session, bgm_id: int) -> None:
+async def resolve_one(db: Session, bgm_id: int, *, is_refresh: bool = False) -> None:
+    """is_refresh=True:这一行已经resolved过,只是解析逻辑升级了要按新逻辑重取。
+    此时解析失败不把行降级成unresolved(旧图继续给前端显示),失败的行留着落后的
+    resolver_version,靠poller的每日退避择机再试;成功则整行覆盖 + 写上新版本号,
+    并清掉被换掉的旧图缓存。
+    """
     row = _get_or_create(db, bgm_id)
+    old_backdrop_url = row.backdrop_url
+    old_logo_url = row.logo_url
     # SQLAlchemy的Column(default=0)只在flush时才生效,新建的row此刻attempt_count
     # 还是None,直接+=1会报"NoneType不支持+="——(row.attempt_count or 0)兜底。
     row.attempt_count = (row.attempt_count or 0) + 1
@@ -149,9 +215,12 @@ async def resolve_one(db: Session, bgm_id: int) -> None:
             resolved_tmdb_season = None
 
     if resolved_tmdb_id is None:
-        row.status = (
-            "unresolved_permanent" if row.attempt_count >= MAX_RETRY_ATTEMPTS else "unresolved_retry"
-        )
+        if not is_refresh:
+            row.status = (
+                "unresolved_permanent" if row.attempt_count >= MAX_RETRY_ATTEMPTS else "unresolved_retry"
+            )
+        # is_refresh: 保持旧行原样(status/URL/resolver_version都不动),
+        # last_attempt_at已在开头更新,由poller的每日退避择机重试。
         return
 
     row.tmdb_id = resolved_tmdb_id
@@ -168,9 +237,11 @@ async def resolve_one(db: Session, bgm_id: int) -> None:
             normalized = tmdb_client.normalize_tmdb_tv(detail)
     except Exception as e:
         print(f"[ANIME_META] TMDB详情请求失败 bgm_id={bgm_id} tmdb_id={resolved_tmdb_id} kind={media_kind}: {e}")
-        row.status = (
-            "unresolved_permanent" if row.attempt_count >= MAX_RETRY_ATTEMPTS else "unresolved_retry"
-        )
+        if not is_refresh:
+            row.status = (
+                "unresolved_permanent" if row.attempt_count >= MAX_RETRY_ATTEMPTS else "unresolved_retry"
+            )
+        # is_refresh: 旧图/旧status保持不变,择机重试。
         return
 
     row.backdrop_url = normalized["backdrop_url"]
@@ -182,3 +253,10 @@ async def resolve_one(db: Session, bgm_id: int) -> None:
     row.creators = ",".join(normalized["creators"])
     row.status = "resolved"
     row.resolved_at = datetime.now(timezone.utc)
+    row.resolver_version = META_RESOLVER_VERSION
+
+    # 按新逻辑挑到了跟原来不同的背景图/LOGO时,清掉旧URL的孤儿图片缓存。
+    if is_refresh:
+        _discard_replaced_images(
+            old_backdrop_url, row.backdrop_url, old_logo_url, row.logo_url
+        )

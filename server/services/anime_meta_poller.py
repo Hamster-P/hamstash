@@ -6,6 +6,9 @@ rss_poll_loop(services/organize.py::organize_loop):可配置间隔、每轮重�
 库有几百部也就几百个bgm_id,不是Bangumi全站两万多条目。
 """
 import asyncio
+from datetime import datetime, timedelta, timezone
+
+from sqlalchemy import or_
 
 import config_store
 from database import SessionLocal
@@ -18,6 +21,12 @@ from services.common import get_setting
 _BATCH_SIZE = 20
 
 _PENDING_STATUSES = ("pending", "unresolved_retry")
+
+# 解析逻辑升级后,已resolved但resolver_version落后的行按新逻辑重取:每轮取这么多条,
+# 比pending批次更保守(这些行前端已经有旧图能显示,不急)。
+_REFRESH_BATCH_SIZE = 10
+# 单条刷新失败后至少隔这么久再试一次(不新增计数列,用last_attempt_at节流)。
+_REFRESH_RETRY_BACKOFF = timedelta(hours=24)
 
 
 async def _poll_once() -> None:
@@ -44,8 +53,44 @@ async def _poll_once() -> None:
             except Exception as e:
                 db.rollback()
                 print(f"[ANIME_META] 解析bgm_id={bgm_id}失败: {e}")
+
+        await _refresh_stale_resolved(db, bgm_ids)
     finally:
         db.close()
+
+
+async def _refresh_stale_resolved(db, bgm_ids: set[int]) -> None:
+    """已resolved但resolver_version落后于当前解析逻辑版本的行,按新逻辑重取一次。
+
+    重取期间前端照旧显示旧图(行仍是resolved、URL不变);成功后整行覆盖成新图,
+    失败则保持原样、隔_REFRESH_RETRY_BACKOFF再试。只处理库里真实存在的bgm_id。
+    """
+    cutoff = datetime.now(timezone.utc) - _REFRESH_RETRY_BACKOFF
+    stale = (
+        db.query(AnimeMetaCache.bgm_id)
+        .filter(
+            AnimeMetaCache.bgm_id.in_(bgm_ids),
+            AnimeMetaCache.status == "resolved",
+            or_(
+                AnimeMetaCache.resolver_version.is_(None),
+                AnimeMetaCache.resolver_version < anime_meta_resolver.META_RESOLVER_VERSION,
+            ),
+            or_(
+                AnimeMetaCache.last_attempt_at.is_(None),
+                AnimeMetaCache.last_attempt_at < cutoff,
+            ),
+        )
+        .limit(_REFRESH_BATCH_SIZE)
+        .all()
+    )
+
+    for (bgm_id,) in stale:
+        try:
+            await anime_meta_resolver.resolve_one(db, bgm_id, is_refresh=True)
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            print(f"[ANIME_META] 刷新bgm_id={bgm_id}失败: {e}")
 
 
 async def anime_meta_poll_loop() -> None:

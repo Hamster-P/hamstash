@@ -320,6 +320,10 @@ class AnimeMetaCache(Base):
     # "tv"/"movie",解析成功时一并写入——纯记录性字段,判断走哪个TMDB接口的逻辑
     # 在anime_meta_resolver.py里现算,不依赖这一列的历史值。
     media_type = Column(String, nullable=True)
+    # 这一行的backdrop/logo等是按哪一版解析逻辑(anime_meta_resolver.META_RESOLVER_VERSION)
+    # 取出来的。NULL或落后于当前版本 = 挑图规则升级过,需要后台按新逻辑重取一次
+    # (重取期间前端照旧显示这一版的旧图,见anime_meta_poller的陈旧行扫描)。
+    resolver_version = Column(Integer, nullable=True)
     # 以下为TMDB详情字段,status=resolved时才有值
     backdrop_url = Column(String, nullable=True)
     logo_url = Column(String, nullable=True)
