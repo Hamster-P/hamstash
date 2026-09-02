@@ -67,6 +67,24 @@ async def _fetch_changelog() -> str:
         return resp.text
 
 
+async def get_full_changelog() -> list[dict]:
+    """返回 CHANGELOG.md 里所有正式版本段落,按版本从新到旧排列(设置页"版本更新历史"弹窗用)。
+
+    跟 get_changelog_range 共用抓取/解析逻辑,只是不做版本区间裁剪。
+    网络/解析异常一律吞掉返回空列表,前端据此提示"暂时拉不到",不报错。
+    """
+    try:
+        content = await _fetch_changelog()
+    except Exception:
+        return []
+
+    sections = _parse_sections(content)
+    sections.sort(key=lambda s: s["version_tuple"], reverse=True)
+    for s in sections:
+        del s["version_tuple"]
+    return sections
+
+
 async def get_changelog_range(current: str, target: str) -> list[dict]:
     """返回严格大于current、小于等于target的所有版本段落,按版本从旧到新排列。
 

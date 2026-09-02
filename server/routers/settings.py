@@ -257,6 +257,16 @@ async def update_changelog(current: str, target: str):
     return {"versions": versions}
 
 
+@router.get("/update/changelog/all")
+async def update_changelog_all():
+    """设置页"版本更新历史"弹窗:CHANGELOG.md 里的全部正式版本更新说明(按版本倒序)。
+
+    从 GitHub 现读 CHANGELOG.md,抓取/解析失败时返回空列表而不是报错,前端据此提示。
+    """
+    versions = await changelog.get_full_changelog()
+    return {"versions": versions}
+
+
 @router.get("/qbittorrent/status")
 async def qbittorrent_status():
     """健康检查:确认后端能不能正常登录qBittorrent。"""

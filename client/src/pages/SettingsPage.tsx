@@ -992,6 +992,8 @@ function UpdateSection() {
   const [releaseNotes, setReleaseNotes] = useState("");
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  // "当前版本"按钮点开的版本更新历史弹窗
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -1145,10 +1147,17 @@ function UpdateSection() {
                 ? "下载并安装"
                 : "检查更新"}
         </button>
-        <span className="font-mono text-[11px] text-muted">
+        <button
+          type="button"
+          onClick={() => setHistoryOpen(true)}
+          disabled={!currentVersion}
+          className="font-mono text-[11px] text-muted underline transition-colors hover:text-paper disabled:no-underline disabled:opacity-60"
+        >
           {currentVersion ? `当前版本 v${currentVersion}` : "当前版本 —"}
-        </span>
+        </button>
       </div>
+
+      {historyOpen && <VersionHistoryModal onClose={() => setHistoryOpen(false)} />}
 
       {phase === "latest" && (
         <p className="mt-3 font-mono text-[11px] text-gold">
@@ -1172,6 +1181,92 @@ function UpdateSection() {
       {phase === "error" && error && (
         <p className="mt-3 font-mono text-[11px] text-vermillion">{error}</p>
       )}
+    </div>
+  );
+}
+
+// 版本更新历史弹窗:点"当前版本"按钮打开,拉 GET /update/changelog/all
+// (从 GitHub 现读 CHANGELOG.md),按版本倒序展示全部正式版本的更新说明。
+function VersionHistoryModal({ onClose }: { onClose: () => void }) {
+  // loading: 加载中 / ok: 拿到列表 / empty: 网络或代理不通、拉不到
+  const [state, setState] = useState<"loading" | "ok" | "empty">("loading");
+  const [versions, setVersions] = useState<
+    { version: string; date: string | null; body: string }[]
+  >([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/update/changelog/all`);
+        const data = await res.json();
+        const list = (data?.versions ?? []) as typeof versions;
+        if (cancelled) return;
+        setVersions(list);
+        setState(list.length > 0 ? "ok" : "empty");
+      } catch {
+        if (!cancelled) setState("empty");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Esc 关闭,跟点遮罩等价
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-ink/60 p-6"
+      onClick={onClose}
+    >
+      <div
+        className="flex max-h-[80vh] w-full max-w-lg flex-col rounded-md border border-border bg-surface"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b border-border px-5 py-3">
+          <div className="text-sm">版本更新历史</div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="font-mono text-xs text-muted transition-colors hover:text-paper"
+          >
+            关闭
+          </button>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+          {state === "loading" && (
+            <div className="flex items-center gap-2 font-mono text-[11px] text-muted">
+              <Loader2 size={14} className="animate-spin" />
+              加载中...
+            </div>
+          )}
+          {state === "empty" && (
+            <p className="font-mono text-[11px] text-muted">
+              暂时拉不到更新日志,请检查网络或代理后重新打开。
+            </p>
+          )}
+          {state === "ok" &&
+            versions.map((v) => (
+              <div key={v.version} className="mb-4 last:mb-0">
+                <div className="mb-1 font-mono text-xs text-paper">
+                  v{v.version}
+                  {v.date && <span className="ml-2 text-muted">{v.date}</span>}
+                </div>
+                <p className="whitespace-pre-wrap font-mono text-[11px] leading-snug text-muted">
+                  {v.body}
+                </p>
+              </div>
+            ))}
+        </div>
+      </div>
     </div>
   );
 }
