@@ -161,8 +161,8 @@ export default function SearchPage({ onSelectAnime, manualMatchFolder, onCancelM
   }, [manualMatchFolder]);
 
   return (
-    <div className="flex flex-col h-full space-y-4 p-4">
-      {/* 顶部标题 + 说明,跟追更/下载页保持一致 */}
+    <div className="flex h-full flex-col space-y-4 px-8 pb-8 pt-8">
+      {/* 顶部标题 + 说明:左/上间距(px-8 pt-8)跟追更/下载/影视库页对齐 */}
       <div>
         <h1 className="mb-1 font-display text-2xl tracking-tight">搜索</h1>
         <p className="font-mono text-xs text-muted">
