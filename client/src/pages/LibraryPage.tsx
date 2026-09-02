@@ -1304,7 +1304,7 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
                     <img
                       src={proxiedImageUrl(animeMeta.logo_url)}
                       alt={selectedAnime.display_title || selectedAnime.folder_name}
-                      className="mb-2 max-h-16 max-w-full object-contain object-left drop-shadow"
+                      className="mb-2 max-h-16 max-w-full object-contain object-left [filter:drop-shadow(0_1px_1px_rgba(0,0,0,0.55))_drop-shadow(0_0_7px_rgba(0,0,0,0.6))]"
                     />
                   ) : (
                     <h1 className="mb-2 font-display text-2xl tracking-tight drop-shadow">
@@ -1686,7 +1686,7 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
                   <img
                     src={proxiedImageUrl(animeMeta.logo_url)}
                     alt={activeHead.title || activeHead.filename}
-                    className="mb-2 max-h-16 max-w-full object-contain object-left drop-shadow"
+                    className="mb-2 max-h-16 max-w-full object-contain object-left [filter:drop-shadow(0_1px_1px_rgba(0,0,0,0.55))_drop-shadow(0_0_7px_rgba(0,0,0,0.6))]"
                   />
                 ) : (
                   <h1 className="mb-2 font-display text-2xl tracking-tight drop-shadow">{activeHead.title || activeHead.filename}</h1>

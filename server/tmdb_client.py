@@ -111,6 +111,30 @@ def _image_url(file_path: str | None, size: str) -> str | None:
     return f"{IMAGE_BASE_URL}/{size}{file_path}"
 
 
+# 背景图分辨率下限:低于这个的(常见是 1280x720 甚至更小的截图)放详情页/剧场版页
+# 头部会糊,直接排除。候选池里没有达标的再回退顶层 backdrop_path。
+_BACKDROP_MIN_WIDTH = 1920
+_BACKDROP_MIN_HEIGHT = 1080
+
+
+def _pick_backdrop(backdrops: list[dict], fallback_path: str | None) -> str | None:
+    """从 images.backdrops[] 候选池里挑背景图:
+      1. 排除分辨率低于 1920x1080 的;
+      2. 横向优先(backdrop 基本都是横的,极少数竖图排掉);
+      3. TMDB 本身按社区评分降序返回,达标里取第一张(评分最高)。
+    候选池里没有任何达标的,就回退到顶层 backdrop_path(TMDB 官网默认图),不至于没图。"""
+    qualified = [
+        b for b in backdrops
+        if (b.get("width") or 0) >= _BACKDROP_MIN_WIDTH
+        and (b.get("height") or 0) >= _BACKDROP_MIN_HEIGHT
+    ]
+    landscape = [b for b in qualified if (b.get("width") or 0) >= (b.get("height") or 0)]
+    pool = landscape or qualified
+    if pool:
+        return pool[0].get("file_path")
+    return fallback_path
+
+
 def _is_horizontal_logo(logo: dict) -> bool:
     """宽>=高算横向。竖排LOGO(整块标题竖着排)放详情页/剧场版页头部很难看,能避则避。
     优先看TMDB给的aspect_ratio(宽/高),缺失再用width/height兜底,都没有当横向处理。"""
@@ -183,10 +207,11 @@ def normalize_tmdb_tv(data: dict) -> dict:
     logo = _pick_logo(images.get("logos") or [])
 
     return {
-        # 背景图直接用顶层backdrop_path,不在images.backdrops[]候选池里自己挑——
-        # 这个字段就是TMDB官网本身展示这个条目时用的默认图,比我们自己按语言/分辨率
-        # 启发式猜的更可靠(实测两个真实条目backdrop_path都跟官网显示的完全一致)。
-        "backdrop_url": _image_url(data.get("backdrop_path"), "w1280"),
+        # 背景图从候选池按"分辨率≥1920x1080 + 横向 + 评分最高"挑,达标为空回退顶层
+        # backdrop_path(见_pick_backdrop)。
+        "backdrop_url": _image_url(
+            _pick_backdrop(images.get("backdrops") or [], data.get("backdrop_path")), "w1280"
+        ),
         "logo_url": _image_url(logo["file_path"], "w500") if logo else None,
         "content_rating": _pick_content_rating(data),
         "genres": [g["name"] for g in (data.get("genres") or []) if g.get("name")],
@@ -209,8 +234,10 @@ def normalize_tmdb_movie(data: dict) -> dict:
     ]
 
     return {
-        # 同normalize_tmdb_tv:直接用顶层backdrop_path,不自己挑。
-        "backdrop_url": _image_url(data.get("backdrop_path"), "w1280"),
+        # 同normalize_tmdb_tv:候选池按分辨率+横向+评分挑,回退顶层backdrop_path。
+        "backdrop_url": _image_url(
+            _pick_backdrop(images.get("backdrops") or [], data.get("backdrop_path")), "w1280"
+        ),
         "logo_url": _image_url(logo["file_path"], "w500") if logo else None,
         "content_rating": _pick_movie_certification(data),
         "genres": [g["name"] for g in (data.get("genres") or []) if g.get("name")],

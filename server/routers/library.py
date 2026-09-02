@@ -506,7 +506,9 @@ class MatchRequest(BaseModel):
 
 
 @router.post("/library/match")
-async def match_anime(req: MatchRequest, db: Session = Depends(get_db)):
+async def match_anime(
+    req: MatchRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)
+):
     """手动将本地文件夹绑定到指定的 Bangumi 条目，不修改物理文件夹名"""
     media = db.query(models.LocalMedia).filter(
         models.LocalMedia.folder_name == req.folder_name
@@ -518,10 +520,22 @@ async def match_anime(req: MatchRequest, db: Session = Depends(get_db)):
         media = models.LocalMedia(folder_name=req.folder_name)
         db.add(media)
 
+    prev_bgm_id = media.bgm_id
     media.bgm_id = req.bgm_id
+    if req.bgm_id != prev_bgm_id:
+        # 换绑到新条目:旧的封面选择(旧家族成员/旧手动选图)已经不适用,清掉让默认
+        # 策略按新条目重新解析——否则「重新匹配」后网格/详情页会一直显示旧图,
+        # 用户还得多点一次「选择图片 → 恢复默认」。
+        media.cover_bgm_id = None
+        media.cover_is_custom = False
     db.commit()
 
     await update_anime_details_from_bgm(db, req.bgm_id)
+    if req.bgm_id != prev_bgm_id:
+        # 同步把新条目的默认封面解析好,回到网格时图就是对的;背景图/LOGO(anime-meta)
+        # 按 bgm_id 缓存,重进详情页会自己取新的,这里只需后台预热一次减少 pending。
+        await _resolve_cover_bgm_id_task(req.folder_name)
+        background_tasks.add_task(_resolve_anime_meta_task, req.bgm_id)
     return {"status": "success", "folder_name": req.folder_name, "bgm_id": req.bgm_id}
 
 
