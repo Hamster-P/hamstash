@@ -17,7 +17,7 @@ import config_store
 import qbittorrent_client
 import rename_engine
 from database import SessionLocal
-from models import AnimeFamilyCache, AnimeFolder, RenamedFile
+from models import AnimeFamilyCache, AnimeFolder, LocalMedia, RenamedFile
 from services.bgm_series_cache import build_season_episode_table, resolve_tv_season_ordinal_cached
 from services.common import get_setting
 from services.staging import (
@@ -96,6 +96,17 @@ async def _organize_completed_torrents() -> None:
                 print(f"[ORGANIZE] 处理种子失败 hash={torrent.get('hash')}: {e}")
     finally:
         db.close()
+
+
+def _invalidate_episode_count(db: Session, folder_name: str) -> None:
+    """新文件整理进这个文件夹了,"未看集数"角标缓存的集数不再准。不在这里精确±算——
+    版本冲突/替换/跳过这些语义混在一起,从外面猜"这次到底净增了几个文件"容易算错;
+    直接置空,交给下次GET /library/scan的后台补课,或用户下次打开这部番详情页时
+    顺手重新扫一遍(见routers/library.py)。"""
+    media = db.query(LocalMedia).filter(LocalMedia.folder_name == folder_name).first()
+    if media and media.episode_file_count is not None:
+        media.episode_file_count = None
+        db.commit()
 
 
 def _anime_target_root(library_root: str, folder: AnimeFolder) -> str:
@@ -643,6 +654,7 @@ async def _organize_single_torrent(db: Session, torrent: dict) -> None:
         if not await _move_to_library(torrent_hash, target_root, context["already_at_target"]):
             print(f"[ORGANIZE] 搬家未确认生效(未改名模式),留到下一轮重试: hash={torrent_hash}")
             return
+        _invalidate_episode_count(db, os.path.basename(target_root.replace("\\", "/").rstrip("/")))
         await _finish_torrent(torrent_hash, staging_folder_path)
         return
 
@@ -692,6 +704,7 @@ async def _organize_single_torrent(db: Session, torrent: dict) -> None:
     await _apply_organize_plan(
         db, torrent_hash, all_paths, plans, library_folder, folder.season_bgm_id, folder.main_bgm_id
     )
+    _invalidate_episode_count(db, library_folder)
 
     # 不管有没有文件失败,都打标签结束这一轮——失败文件的状态已经记进RenamedFile表,
     # 不会无限重试刷日志;后续要重跑,可以手动清掉这个标签(或者以后加个"重试"按钮)。

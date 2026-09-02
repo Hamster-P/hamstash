@@ -128,6 +128,17 @@ class LocalMedia(Base):
     cover_is_custom = Column(Boolean, default=False, nullable=False)
     last_scanned_at = Column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())
     latest_activity_at = Column(DateTime, nullable=True)  # 文件夹自身+各Season子目录mtime的最大值,供列表页"最新更新"排序用
+    # 媒体库卡片"未看集数"角标用:这个文件夹实际扫到的视频文件总数。None=还没扫过。
+    # 不在/library/animes请求路径里现扫——由/library/scan顺手补NULL行、以及详情页/删除/
+    # 调整归属/自动整理入库几个"本来就精确知道数字该怎么变"的时机顺手维护,见library.py。
+    episode_file_count = Column(Integer, nullable=True)
+    episode_count_updated_at = Column(DateTime(timezone=True), nullable=True)
+    # 上次扫出episode_file_count时的目录签名(_folder_structure_signature序列化后的字符串)。
+    # /library/scan每次都会用一次廉价scandir重新算当前签名,跟这列不一致就说明目录内容
+    # 变过(哪怕不是通过delete/regroup/整理入库这几个精确算术路径,比如手动拖文件进去),
+    # 需要重新真扫一遍——不然episode_file_count会一直卡在旧数字,只有"从未扫过(NULL)"
+    # 才会被刷新是不够的。
+    episode_count_signature = Column(String, nullable=True)
 
 class PlaybackRecord(Base):
     """极其轻量的已播放记录表"""
@@ -137,6 +148,11 @@ class PlaybackRecord(Base):
     folder_name = Column(String, index=True)  # 动漫文件夹名
     filename = Column(String, index=True)     # 视频文件名，如 S04E01.mkv
     watched_at = Column(DateTime, default=datetime.now)  # 观看时间
+    # 对应的物理文件已经不在磁盘上了(比如重新下载了别的字幕组版本、旧文件被换掉/删掉),
+    # 这条记录变成"查无实物"的历史脏数据。不物理删除(保留"确实看过"这段历史),但
+    # 打上这个flag之后不再计入任何统计(尤其是"未看集数"角标的已看分子)。
+    # 由GET /library/detail发现文件不存在时顺手打;/library/scan的后台重扫也会顺带核对。
+    is_stale = Column(Boolean, default=False, nullable=False)
 
 
 class AnimeFamilyCache(Base):

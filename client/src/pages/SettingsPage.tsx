@@ -99,6 +99,7 @@ interface SavedSnapshot {
   defaultSource: string;
   defaultHomeView: DefaultHomeView;
   coverStrategy: string;
+  unwatchedBadgeEnabled: boolean;
   proxyUrl: string;
   sourcesJson: string; // serializeSources 的结果,做 dirty 比较
 }
@@ -118,6 +119,8 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
   const [defaultHomeView, setDefaultHomeView] = useState<DefaultHomeView>("tracking");
   // 媒体库默认封面策略: latest_tv / first_season / matched
   const [coverStrategy, setCoverStrategy] = useState<string>("latest_tv");
+  // 媒体库卡片"未看集数"角标开关
+  const [unwatchedBadgeEnabled, setUnwatchedBadgeEnabled] = useState(true);
   const [proxyUrl, setProxyUrl] = useState("");
   const [pollMinutes, setPollMinutes] = useState(5);
   const [rssPollMinutes, setRssPollMinutes] = useState(30);
@@ -178,6 +181,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
           )
             ? data.library_cover_strategy
             : "latest_tv",
+          unwatchedBadgeEnabled: data.library_unwatched_badge_enabled !== false,
           proxyUrl: data.proxy_url ?? "",
           sourcesJson,
         };
@@ -190,6 +194,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
         setDefaultSource(next.defaultSource);
         setDefaultHomeView(next.defaultHomeView);
         setCoverStrategy(next.coverStrategy);
+        setUnwatchedBadgeEnabled(next.unwatchedBadgeEnabled);
         setProxyUrl(next.proxyUrl);
         setSavedSnapshot(next);
       })
@@ -209,6 +214,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
       defaultSource !== savedSnapshot.defaultSource ||
       defaultHomeView !== savedSnapshot.defaultHomeView ||
       coverStrategy !== savedSnapshot.coverStrategy ||
+      unwatchedBadgeEnabled !== savedSnapshot.unwatchedBadgeEnabled ||
       proxyUrl !== savedSnapshot.proxyUrl ||
       serializeSources(sourceConfigs) !== savedSnapshot.sourcesJson);
 
@@ -282,6 +288,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
           default_source: defaultSource,
           default_home_view: defaultHomeView,
           library_cover_strategy: coverStrategy,
+          library_unwatched_badge_enabled: unwatchedBadgeEnabled,
           proxy_url: proxyUrl.trim(),
           download_sources: serializeSources(sourceConfigs),
         }),
@@ -306,6 +313,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
         defaultSource,
         defaultHomeView,
         coverStrategy,
+        unwatchedBadgeEnabled,
         proxyUrl: proxyUrl.trim(),
         sourcesJson: serializeSources(sourceConfigs),
       });
@@ -429,6 +437,23 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
           <option value="first_season">第一季的封面</option>
           <option value="matched">保持匹配条目本身的封面</option>
         </select>
+      </div>
+
+      {/* 媒体库卡片"未看集数"角标 */}
+      <div className="mb-6 rounded-md border border-border bg-surface p-4">
+        <div className="mb-1 text-sm">未看集数角标</div>
+        <p className="mb-3 font-mono text-[11px] text-muted">
+          媒体库卡片右上角显示还有多少集没看过,按实际扫到的视频文件数减去播放记录估算,不会额外触发扫盘。
+        </p>
+        <label className="flex items-center gap-2 font-mono text-xs">
+          <input
+            type="checkbox"
+            checked={unwatchedBadgeEnabled}
+            onChange={(e) => setUnwatchedBadgeEnabled(e.target.checked)}
+            className="accent-vermillion"
+          />
+          在媒体库卡片上显示角标
+        </label>
       </div>
 
       {/* 新增：播放方式选择 */}

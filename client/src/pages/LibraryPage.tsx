@@ -16,6 +16,7 @@ interface LibraryAnime {
   summary: string;
   latest_activity_at: string | null;
   last_watched_at: string | null;
+  unwatched_count: number; // 未看集数角标;后端开关关闭或该文件夹还没扫过集数时恒为0
 }
 
 type SortMode = "default" | "recent_watched" | "recent_updated";
@@ -106,6 +107,7 @@ interface AppSettings {
   library_root: string;
   potplayer_path: string;
   player_mode: "builtin" | "external";
+  library_unwatched_badge_enabled: boolean;
 }
 
 interface LibraryPageProps {
@@ -303,6 +305,7 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
     library_root: "D:\\AnimeLibrary",
     potplayer_path: "C:\\Program Files\\DAUM\\PotPlayer\\PotPlayer64.exe",
     player_mode: "external",
+    library_unwatched_badge_enabled: true,
   });
 
   // 组件挂载时:先拉取设置,再"先秒开列表、后台扫盘",同时恢复上次记住的排序方式。
@@ -365,6 +368,7 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
           library_root: data.library_root || settings.library_root,
           potplayer_path: data.potplayer_path || settings.potplayer_path,
           player_mode: data.player_mode === "builtin" ? "builtin" : "external",
+          library_unwatched_badge_enabled: data.library_unwatched_badge_enabled !== false,
         });
       })
       .catch((err: any) => {
@@ -1783,7 +1787,9 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
           </div>
           {/* /冻结顶部 */}
 
-          <div className="px-8 pb-8">
+          {/* pt-3:给卡片右上角骑边框的"未看集数"角标留出空间——它用负偏移探出卡片
+              顶部一点,第一排卡片正好贴着这个容器的上边缘,不留白会被上面滚动区域裁掉。 */}
+          <div className="px-8 pb-8 pt-3">
           {!movieOnly && (loading ? (
             <div className="font-mono text-xs text-muted">正在加载...</div>
           ) : (
@@ -1792,7 +1798,7 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
                 <div
                   key={anime.id}
                   onClick={() => handleSelectAnime(anime)}
-                  className="group cursor-pointer"
+                  className="group relative cursor-pointer"
                 >
                   <div className="relative aspect-[2/3] overflow-hidden rounded-md bg-surface shadow-md">
                     {anime.cover_url ? (
@@ -1873,6 +1879,14 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
                       </div>
                     )}
                   </div>
+                  {/* 未看集数角标:开关打开且确实有未看集数才显示。挂在最外层卡片(而不是
+                      上面overflow-hidden的封面容器)上,才能用负偏移让圆圈骑在卡片右上角
+                      边框上,不被圆角裁掉一部分。 */}
+                  {settings.library_unwatched_badge_enabled && anime.unwatched_count > 0 && (
+                    <div className="absolute -top-2 -right-2 flex h-7 min-w-7 items-center justify-center rounded-full bg-vermillion/80 px-1.5 font-mono text-xs font-bold text-ink shadow-lg ring-2 ring-surface backdrop-blur-sm">
+                      {anime.unwatched_count > 99 ? "99+" : anime.unwatched_count}
+                    </div>
+                  )}
                   <div className="mt-2 line-clamp-2 text-sm font-medium leading-snug group-hover:text-vermillion transition-colors">
                     {anime.display_title || anime.folder_name}
                   </div>

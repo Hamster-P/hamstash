@@ -90,6 +90,8 @@ class SettingsUpdate(BaseModel):
     download_sources: str = ""
     # 媒体库默认封面策略: latest_tv / first_season / matched(见 config_store.DEFAULTS)
     library_cover_strategy: str = "latest_tv"
+    # 媒体库卡片"未看集数"角标开关
+    library_unwatched_badge_enabled: bool = True
 
     @field_validator("proxy_url")
     @classmethod

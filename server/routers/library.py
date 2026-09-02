@@ -70,6 +70,15 @@ def _folder_structure_signature(anime_path: Path):
     except OSError:
         return None
     return (root_mtime, sub_mtimes)
+
+
+def _serialize_signature(signature) -> str | None:
+    """把_folder_structure_signature()的(root_mtime, frozenset)元组序列化成可存进数据库/
+    做字符串比较的形式。目录不存在(signature=None)时返回None。"""
+    if signature is None:
+        return None
+    root_mtime, sub_mtimes = signature
+    return f"{root_mtime}:" + ",".join(sorted(f"{m}" for m in sub_mtimes))
 # ----------------- 数据模型定义 -----------------
 class WatchedRequest(BaseModel):
     folder_name: str
@@ -126,6 +135,27 @@ def get_library_root(db: Session) -> Path:
     return Path(raw_path)
 
 
+def _bucket_name_for_subdir(dir_name: str, extra_buckets: set[str] | None) -> str:
+    """给番剧根目录下某个直接子目录分类,决定它进哪个"桶"。抽出来独立成一个函数
+    (而不是只在scan_local_folder_structure内联),因为delete_episode那边做"未看集数"
+    角标精确算术更新时,需要用同一套规则单独判断"被删的这个文件在不在正片桶里"
+    (只有正片桶才计入角标分母,见_NON_EPISODE_BUCKETS),不能反手再写一份容易跟这边
+    分叉的判断逻辑。
+
+    rename_engine.py 实际会创建的子目录名只有这几种:Season NN、Season 00(OVA)、
+    剧场版、Other、以及算不出季号时按作品名命名的目录(extra_buckets)——这几个要保留
+    各自的桶,不能被下面的兜底正则一起归进"Specials/Others"。季度目录的正则用
+    rename_engine那一份,不在这里另写一个:work_title_bucket()要靠同一个正则避开
+    会被误认成季度目录的作品名。"""
+    season_match = rename_engine.SEASON_DIR_PATTERN.match(dir_name)
+    is_known_bucket = (
+        bool(season_match)
+        or dir_name in ("剧场版", "劇場版", "Other", "OVA")
+        or dir_name in (extra_buckets or ())
+    )
+    return dir_name if is_known_bucket else "Specials/Others"
+
+
 def scan_local_folder_structure(anime_path: Path, library_root: Path,
                                 extra_buckets: set[str] | None = None):
     """
@@ -156,18 +186,7 @@ def scan_local_folder_structure(anime_path: Path, library_root: Path,
     with os.scandir(anime_path) as it:
         for entry in it:
             if entry.is_dir():
-                # rename_engine.py 实际会创建的子目录名只有这几种:Season NN、Season 00(OVA)、
-                # 剧场版、Other、以及算不出季号时按作品名命名的目录(extra_buckets)——
-                # 这几个要保留各自的桶,不能被下面的兜底正则一起归进"Specials/Others"。
-                # 季度目录的正则用rename_engine那一份,不在这里另写一个:
-                # work_title_bucket()要靠同一个正则避开会被误认成季度目录的作品名。
-                season_match = rename_engine.SEASON_DIR_PATTERN.match(entry.name)
-                is_known_bucket = (
-                    bool(season_match)
-                    or entry.name in ("剧场版", "劇場版", "Other", "OVA")
-                    or entry.name in (extra_buckets or ())
-                )
-                season_name = entry.name if is_known_bucket else "Specials/Others"
+                season_name = _bucket_name_for_subdir(entry.name, extra_buckets)
                 episodes = []
                 for dirpath, _dirnames, filenames in os.walk(entry.path):
                     for fname in filenames:
@@ -193,6 +212,133 @@ def scan_local_folder_structure(anime_path: Path, library_root: Path,
     for episodes in structure.values():
         episodes.sort(key=lambda x: x["filename"])
     return structure
+
+
+
+# "未看集数"角标只应该反映真正的正片(季度剧集/剧场版/OVA),不该被"Other"(rename_engine
+# 固定拿来放PV/预告这类附赠内容的桶)和"Specials/Others"(算不出季号/不认识的杂项兜底桶,
+# 装的多是CM/菜单/花絮)撑大分母——不然角标数字会比用户直觉里的"还剩几集没看"大得多。
+_NON_EPISODE_BUCKETS = {"Other", "Specials/Others"}
+
+
+def _sum_real_episodes(structure: dict) -> int:
+    """按上面的口径,只数正片桶里的视频文件数。"""
+    return sum(
+        len(episodes) for bucket, episodes in structure.items()
+        if bucket not in _NON_EPISODE_BUCKETS
+    )
+
+
+def _flag_stale_playback_records(db: Session, folder_name: str, structure: dict) -> None:
+    """已播放记录里,文件已经不在磁盘上的(重新下载了别的字幕组版本、旧文件被换掉/手动删了)
+    打上is_stale——这类记录不物理删除(保留"确实看过"的历史),但从此不再计入"未看集数"
+    角标的已看分子,避免把早就不存在的旧文件也算成"占着一个未看名额"或"多算一次已看"。
+    只在调用方已经手头有一份现成structure的地方顺手核对(详情页/badge重扫),不为此单独扫盘。"""
+    existing_filenames = {
+        ep["filename"] for episodes in structure.values() for ep in episodes
+    }
+    stale_records = (
+        db.query(models.PlaybackRecord)
+        .filter(
+            models.PlaybackRecord.folder_name == folder_name,
+            models.PlaybackRecord.is_stale.is_(False),
+        )
+        .all()
+    )
+    changed = False
+    for record in stale_records:
+        if record.filename not in existing_filenames:
+            record.is_stale = True
+            changed = True
+    if changed:
+        db.commit()
+
+
+def _count_episode_files(db: Session, library_root: Path, media: "models.LocalMedia") -> tuple[int, str | None] | None:
+    """跟详情页GET /library/detail完全同一套逻辑(算家族桶→scan_local_folder_structure),
+    数出这个文件夹当前实际有多少"正片"视频文件(见_sum_real_episodes)——媒体库卡片
+    "未看集数"角标用这个数字当分母,不用AnimeCatalog.total_episodes(那个只挂在单个
+    bgm_id上,家族合并的文件夹会算错)。顺手核对一遍播放记录里有没有文件已经不存在了
+    (见_flag_stale_playback_records)。
+    返回(正片视频文件数, 本次扫描时的目录签名字符串);文件夹不存在时返回None,不写0
+    (0是"确实扫到0集",跟"没扫过/扫不到"要分开)。"""
+    anime_path = library_root / media.folder_name
+    signature = _folder_structure_signature(anime_path)
+    if signature is None:
+        return None
+    family_root = None
+    if media.bgm_id:
+        family_root = bgm_series_cache.cached_auto_root(db, media.bgm_id) or media.bgm_id
+    extra_buckets = bgm_series_cache.family_work_title_buckets(db, family_root)
+    structure = scan_local_folder_structure(anime_path, library_root, extra_buckets)
+    _flag_stale_playback_records(db, media.folder_name, structure)
+    count = _sum_real_episodes(structure)
+    return count, _serialize_signature(signature)
+
+
+def _backfill_missing_episode_counts(library_root: Path) -> None:
+    """后台任务(不阻塞调用方):刷新"未看集数"角标要用的episode_file_count缓存列。
+    不是只补NULL行——如果只看NULL,一个文件夹只要曾经被扫过一次,之后哪怕手动往里面
+    拖了新文件(没走delete/regroup/自动整理入库这几个精确算术更新的路径),这个数字会
+    永远卡在旧值,角标越来越不准。所以这里对**每一行**都先用_folder_structure_signature
+    做一次廉价核对(一次scandir,不遍历文件),签名跟上次落库时不一致(或本来就是NULL)
+    才会被丢进线程池真正重扫;签名没变的行直接跳过,不产生额外磁盘IO。
+    每个线程各开一个session,互不干扰,扫完统一在主线程里落库。"""
+    from concurrent.futures import ThreadPoolExecutor
+
+    db = SessionLocal()
+    try:
+        rows = db.query(
+            models.LocalMedia.id,
+            models.LocalMedia.folder_name,
+            models.LocalMedia.episode_file_count,
+            models.LocalMedia.episode_count_signature,
+        ).all()
+    finally:
+        db.close()
+
+    stale_ids: list[int] = []
+    for media_id, folder_name, count, stored_signature in rows:
+        if count is None:
+            stale_ids.append(media_id)
+            continue
+        current_signature = _serialize_signature(_folder_structure_signature(library_root / folder_name))
+        if current_signature != stored_signature:
+            stale_ids.append(media_id)
+
+    if not stale_ids:
+        return
+
+    def _scan_one(media_id: int):
+        thread_db = SessionLocal()
+        try:
+            media = thread_db.query(models.LocalMedia).filter(models.LocalMedia.id == media_id).first()
+            if media is None:
+                return media_id, None
+            return media_id, _count_episode_files(thread_db, library_root, media)
+        except Exception as e:
+            print(f"[LIBRARY] 补全未看集数角标失败 media_id={media_id}: {e}")
+            return media_id, None
+        finally:
+            thread_db.close()
+
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        results = list(pool.map(_scan_one, stale_ids))
+
+    db = SessionLocal()
+    try:
+        for media_id, result in results:
+            if result is None:
+                continue
+            count, signature = result
+            media = db.query(models.LocalMedia).filter(models.LocalMedia.id == media_id).first()
+            if media:
+                media.episode_file_count = count
+                media.episode_count_signature = signature
+                media.episode_count_updated_at = datetime.now()
+        db.commit()
+    finally:
+        db.close()
 
 
 def get_latest_activity(anime_path: Path) -> datetime | None:
@@ -809,6 +955,34 @@ async def regroup_media(req: RegroupRequest, db: Session = Depends(get_db)):
             print(f"[REGROUP] 自动重排失败 folder={new_folder}: {e}")
             renamed = {"succeeded": [], "skipped": [], "failed": [{"error": str(e)}]}
 
+    # "未看集数"角标:这批移动精确知道从哪个文件夹搬出多少个视频文件、搬进新文件夹
+    # 多少个,直接算术调整,不用等下次扫描——文件已经在磁盘上挪好、数字在同一个请求
+    # 里一起改完,不会有"文件挪了但数字没跟上"的窗口。
+    if moved:
+        moved_out_by_folder: dict[str, int] = {}
+        for m in moved:
+            src_folder = m["from"].split("/", 1)[0]
+            moved_out_by_folder[src_folder] = moved_out_by_folder.get(src_folder, 0) + 1
+        for src_folder, n in moved_out_by_folder.items():
+            if src_folder == new_folder or src_folder in removed_folders:
+                continue  # 搬空删掉的文件夹LocalMedia行已经没了,不用调
+            src_media = db.query(models.LocalMedia).filter(models.LocalMedia.folder_name == src_folder).first()
+            if src_media and src_media.episode_file_count is not None:
+                src_media.episode_file_count = max(src_media.episode_file_count - n, 0)
+                src_media.episode_count_updated_at = datetime.now()
+        dest_media = db.query(models.LocalMedia).filter(models.LocalMedia.folder_name == new_folder).first()
+        if dest_media:
+            if dest_media.episode_file_count is not None:
+                dest_media.episode_file_count += len(moved)
+                dest_media.episode_count_updated_at = datetime.now()
+            elif target_media is None:
+                # target_media是上面"新文件夹要有自己的LocalMedia行"那段判断出的:这次是
+                # 全新建的文件夹,搬进来的就是它现在拥有的全部文件,可以当准确初始值。
+                # 已有文件夹但之前没扫过(target_media非None)则不猜,留None交给下次扫描/详情页补。
+                dest_media.episode_file_count = len(moved)
+                dest_media.episode_count_updated_at = datetime.now()
+        db.commit()
+
     _detail_structure_cache.clear()  # 目录结构变了,详情页缓存整体失效
     return {
         "status": "success",
@@ -889,6 +1063,14 @@ async def scan_and_update_library(background_tasks: BackgroundTasks, db: Session
         media.latest_activity_at = folder_mtimes.get(media.folder_name)
     db.commit()
 
+    # 媒体库卡片"未看集数"角标:挂载页面/切回tab/点这个按钮都会走到这里,顺手把还没扫过
+    # 集数的文件夹补一遍——扔进background_tasks,不阻塞这个接口本身的响应。开关关掉时
+    # 完全跳过,不产生任何这个功能相关的磁盘IO。
+    if get_setting(
+        db, "library_unwatched_badge_enabled", config_store.DEFAULTS["library_unwatched_badge_enabled"]
+    ) == "true":
+        background_tasks.add_task(_backfill_missing_episode_counts, library_root)
+
     return {"status": "success", "added": added, "current_total": len(local_folders)}
 
 
@@ -915,6 +1097,22 @@ async def list_library_animes(background_tasks: BackgroundTasks, db: Session = D
         .group_by(models.PlaybackRecord.folder_name)
         .all()
     )
+
+    # "未看集数"角标:同样是纯DB聚合,不碰硬盘。分母(episode_file_count)由
+    # /library/scan的后台补课、以及详情页/删除/调整归属/自动整理入库几处顺手维护,
+    # 这里只负责读,读不到(None,还没被扫过)时角标直接不显示,不现扫。
+    badge_enabled = get_setting(
+        db, "library_unwatched_badge_enabled", config_store.DEFAULTS["library_unwatched_badge_enabled"]
+    ) == "true"
+    # is_stale=True的记录(文件已经不在磁盘上,见_flag_stale_playback_records)不计入
+    # 已看数——不然重新下载过别的字幕组版本/旧文件被换掉之后,新旧两个文件名都被记过
+    # "已看",会把已看数虚高,角标反而比真实剩余集数小。
+    watched_count_map = dict(
+        db.query(models.PlaybackRecord.folder_name, func.count(func.distinct(models.PlaybackRecord.filename)))
+        .filter(models.PlaybackRecord.is_stale.is_(False))
+        .group_by(models.PlaybackRecord.folder_name)
+        .all()
+    ) if badge_enabled else {}
 
     response_data = []
     for media in local_medias:
@@ -963,6 +1161,11 @@ async def list_library_animes(background_tasks: BackgroundTasks, db: Session = D
             ):
                 background_tasks.add_task(_resolve_cover_bgm_id_task, media.folder_name)
 
+        unwatched_count = 0
+        if badge_enabled and media.episode_file_count:
+            watched = watched_count_map.get(media.folder_name, 0)
+            unwatched_count = max(media.episode_file_count - watched, 0)
+
         response_data.append({
             "id": media.id,
             "folder_name": media.folder_name,
@@ -973,6 +1176,7 @@ async def list_library_animes(background_tasks: BackgroundTasks, db: Session = D
             "total_episodes": total_episodes,    # 总集数
             "latest_activity_at": media.latest_activity_at,
             "last_watched_at": last_watched_map.get(media.folder_name),
+            "unwatched_count": unwatched_count,  # 未看集数角标;开关关闭或还没扫过时恒为0
         })
 
     for item in response_data:
@@ -1015,6 +1219,16 @@ def get_anime_seasons_and_episodes(folder_name: str, db: Session = Depends(get_d
     else:
         base_structure = scan_local_folder_structure(anime_path, library_root, extra_buckets)
         _detail_structure_cache[folder_name] = (cache_key, base_structure)
+
+    # 顺手更新"未看集数"角标用的缓存列:详情页本来就在算这个文件夹的真实结构,
+    # 免费拿到准确数字,不用等/library/scan的后台补课轮到这个文件夹。同时核对一遍
+    # 播放记录里有没有文件已经不在磁盘上了(见_flag_stale_playback_records)。
+    if media:
+        _flag_stale_playback_records(db, folder_name, base_structure)
+        media.episode_file_count = _sum_real_episodes(base_structure)
+        media.episode_count_signature = _serialize_signature(signature)
+        media.episode_count_updated_at = datetime.now()
+        db.commit()
 
     # 提取已播放记录
     watched_records = db.query(models.PlaybackRecord).filter(
@@ -1197,5 +1411,25 @@ def delete_episode(req: EpisodeDeleteRequest, db: Session = Depends(get_db)):
     db.query(models.StandaloneMedia).filter(
         models.StandaloneMedia.rel_path == _norm_rel(req.rel_path)
     ).delete(synchronize_session=False)
+
+    # "未看集数"角标:这一刻精确知道少了1个文件,直接算术-1,不用等下次扫描——
+    # 只在当前值非None时才减(是None说明还没被扫过,留给/library/scan或详情页去补,
+    # 不瞎猜),clamp到>=0防御性处理。但只有删的是正片桶(Season/剧场版/OVA/家族桶)里
+    # 的文件才减:删的是"Other"/"Specials/Others"这类本来就没被计入分母的附赠内容,
+    # 分母不该跟着掉,不然会把角标衬得比实际"还剩几集"更小。
+    rel_parts = _norm_rel(req.rel_path).split("/")
+    folder_name = rel_parts[0]
+    media = db.query(models.LocalMedia).filter(models.LocalMedia.folder_name == folder_name).first()
+    is_real_episode = True
+    if len(rel_parts) >= 3:  # 文件在某个子目录下,不是直接堆在番剧根目录
+        family_root = None
+        if media and media.bgm_id:
+            family_root = bgm_series_cache.cached_auto_root(db, media.bgm_id) or media.bgm_id
+        extra_buckets = bgm_series_cache.family_work_title_buckets(db, family_root)
+        is_real_episode = _bucket_name_for_subdir(rel_parts[1], extra_buckets) not in _NON_EPISODE_BUCKETS
+    if media and media.episode_file_count is not None and is_real_episode:
+        media.episode_file_count = max(media.episode_file_count - 1, 0)
+        media.episode_count_updated_at = datetime.now()
+
     db.commit()
     return {"status": "success", "rel_path": req.rel_path}

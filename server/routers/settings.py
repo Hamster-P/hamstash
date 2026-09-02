@@ -68,6 +68,9 @@ def get_settings(db: Session = Depends(get_db)):
         "library_cover_strategy": get_setting(
             db, "library_cover_strategy", config_store.DEFAULTS["library_cover_strategy"]
         ),
+        "library_unwatched_badge_enabled": get_setting(
+            db, "library_unwatched_badge_enabled", config_store.DEFAULTS["library_unwatched_badge_enabled"]
+        ) == "true",
         # 只读:实际生效的代理地址(手填留空时是探测到的系统代理)。跟proxy_url分开返回,
         # 不能把探测值回填进设置页输入框——那样用户一点保存就把探测结果固化成手动配置了。
         # 客户端Rust侧创建内嵌webview时读的是这个值(见src-tauri/src/lib.rs)。
@@ -117,6 +120,7 @@ def update_settings(payload: SettingsUpdate, db: Session = Depends(get_db)):
         # 漏掉的话每次保存都会把下载源覆盖配置从 INI 抹掉(SQLite 副本还在,但两边会不一致)。
         "download_sources": payload.download_sources,
         "library_cover_strategy": payload.library_cover_strategy,
+        "library_unwatched_badge_enabled": str(payload.library_unwatched_badge_enabled).lower(),
     }
     for key, value in values.items():
         upsert_setting(db, key, value)

@@ -47,6 +47,9 @@ DEFAULTS = {
     # 详情页元数据(TMDB背景图/LOGO/分级等)后台重试轮询间隔,默认1小时——
     # TMDB/arm-server数据变化不快,不用像下载轮询那样高频;暂不在设置页开放调整。
     "metadata_poll_interval_seconds": "3600",
+    # 媒体库卡片右上角"未看集数"角标开关。关闭时前端不显示角标,后端也不再借
+    # /library/scan顺手补扫集数(见routers/library.py::_backfill_missing_episode_counts)。
+    "library_unwatched_badge_enabled": "true",
 }
 
 
