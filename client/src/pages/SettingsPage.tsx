@@ -1016,15 +1016,17 @@ function UpdateSection() {
     };
   }, []);
 
-  // GitHub 端点/安装包国内默认访问不了,复用设置页里那个"网络代理"(proxy_url,本来
-  // 给后端访问Bangumi/dmhy用)——GitHub同属外部站点。检查时现读,拿到用户最新填的值;
+  // GitHub 端点/安装包国内默认访问不了,复用设置页里那个"网络代理"——GitHub 同属外部
+  // 站点。读的是 effective_proxy_url(实际生效代理:设置页手填优先,留空时回退到后端
+  // 探测到的系统代理),跟 Rust 侧建内嵌 webview 用的是同一个值(见 src-tauri/src/lib.rs)
+  // ——这样开了系统代理开关但没在设置页手填的用户也能自动更新。检查时现读拿最新值;
   // 后端没起/读失败就静默降级为不带代理(走直连,TUN/全局模式下本就透明)。
   const getProxyOptions = async (): Promise<{ proxy?: string } | undefined> => {
     try {
       const res = await fetch(`${API_BASE}/settings`);
       if (!res.ok) return undefined;
       const data = await res.json();
-      const proxy = (data?.proxy_url ?? "").trim();
+      const proxy = (data?.effective_proxy_url ?? "").trim();
       return proxy ? { proxy } : undefined;
     } catch {
       return undefined;

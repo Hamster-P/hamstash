@@ -26,15 +26,18 @@ HEADERS = {
 # 后者,不带include_image_language=...,null这个值,TMDB默认只返回"en"语言的图,
 # 动画类条目常常直接查不到任何结果。
 _APPEND = "images,content_ratings,keywords,external_ids"
-_IMAGE_LANGUAGES = "ja,zh,en,null"
+# 必须带上 null,否则 TMDB 默认只回 en 语言的图;动画类条目的背景图/LOGO 经常是
+# "未定义语言"(纯画面无字幕 / 纯图形 LOGO),不要 null 就常常一张都取不到。
+_IMAGE_LANGUAGES = "ja,zh,null,en"
 
 # 分级优先顺序:日版>美版>随便挑一个有的,没有就是None(前端不渲染这一行)。
 _CONTENT_RATING_PREFERENCE = ("JP", "US")
 
-# LOGO在"同朝向"里的语言优先顺序:日文>中文>英文>随便挑一个有的(朝向优先于语言,
-# 见_pick_logo)。注意:TMDB图片元数据只有2位iso_639_1(zh/ja/en...),没有地区码,
-# 简体中文和繁体中文都是"zh",API层面区分不了——"中文"和"中文繁体"合成同一档。
-_LOGO_LANGUAGE_PREFERENCE = ("ja", "zh", "en")
+# 背景图/LOGO 的语言优先顺序:日文 > 中文 > 未定义语言(iso_639_1 为 null/空) > 英文
+# > 随便挑一个有的。None 这一档对应 TMDB 里 "Not Specified (xx-XX)" 的图。
+# 注意:TMDB 图片元数据只有 2 位 iso_639_1(zh/ja/en...),没有地区码,简体中文和
+# 繁体中文都是 "zh",API 层面区分不了。
+_IMAGE_LANGUAGE_PREFERENCE = ("ja", "zh", None, "en")
 
 _APPEND_MOVIE = "images,keywords,credits,release_dates,external_ids"
 
@@ -117,11 +120,27 @@ _BACKDROP_MIN_WIDTH = 1920
 _BACKDROP_MIN_HEIGHT = 1080
 
 
+def _pick_by_language(candidates: list[dict]) -> dict | None:
+    """按 _IMAGE_LANGUAGE_PREFERENCE(日文>中文>未定义>英文>随便挑一个)选一张。
+    iso_639_1 为 null 或空串都归到"未定义语言"这一档。TMDB 同语言按社区评分降序
+    返回,取该档第一张(评分最高)。"""
+    if not candidates:
+        return None
+    buckets: dict[str | None, list[dict]] = {}
+    for item in candidates:
+        buckets.setdefault(item.get("iso_639_1") or None, []).append(item)
+    for lang in _IMAGE_LANGUAGE_PREFERENCE:
+        if buckets.get(lang):
+            return buckets[lang][0]
+    return candidates[0]
+
+
 def _pick_backdrop(backdrops: list[dict], fallback_path: str | None) -> str | None:
     """从 images.backdrops[] 候选池里挑背景图:
       1. 排除分辨率低于 1920x1080 的;
       2. 横向优先(backdrop 基本都是横的,极少数竖图排掉);
-      3. TMDB 本身按社区评分降序返回,达标里取第一张(评分最高)。
+      3. 同朝向里按语言 日文>中文>未定义>英文(见 _pick_by_language);
+      4. TMDB 本身按社区评分降序返回,同档取第一张(评分最高)。
     候选池里没有任何达标的,就回退到顶层 backdrop_path(TMDB 官网默认图),不至于没图。"""
     qualified = [
         b for b in backdrops
@@ -129,9 +148,9 @@ def _pick_backdrop(backdrops: list[dict], fallback_path: str | None) -> str | No
         and (b.get("height") or 0) >= _BACKDROP_MIN_HEIGHT
     ]
     landscape = [b for b in qualified if (b.get("width") or 0) >= (b.get("height") or 0)]
-    pool = landscape or qualified
-    if pool:
-        return pool[0].get("file_path")
+    pick = _pick_by_language(landscape or qualified)
+    if pick:
+        return pick.get("file_path")
     return fallback_path
 
 
@@ -148,7 +167,7 @@ def _is_horizontal_logo(logo: dict) -> bool:
 def _pick_logo(logos: list[dict]) -> dict | None:
     """LOGO跟背景图相反,就是要带文字的图。挑选优先级:
       1. 朝向:横向 LOGO 整体优先于竖排(竖排标题挤在详情页头部很难看);
-      2. 同朝向里再按语言 日文>中文>英文>随便挑一个有的;
+      2. 同朝向里再按语言 日文>中文>未定义>英文>随便挑一个有的;
       3. TMDB 本身按社区评分降序返回,同朝向同语言下保留靠前那张(评分最高)。
     先在横向集合里按语言找,找不到再在竖排集合里按语言找。"""
     if not logos:
@@ -157,18 +176,7 @@ def _pick_logo(logos: list[dict]) -> dict | None:
     horizontal = [lg for lg in logos if _is_horizontal_logo(lg)]
     vertical = [lg for lg in logos if not _is_horizontal_logo(lg)]
 
-    def by_language(candidates: list[dict]) -> dict | None:
-        if not candidates:
-            return None
-        buckets: dict[str | None, list[dict]] = {}
-        for logo in candidates:
-            buckets.setdefault(logo.get("iso_639_1"), []).append(logo)
-        for lang in _LOGO_LANGUAGE_PREFERENCE:
-            if buckets.get(lang):
-                return buckets[lang][0]
-        return candidates[0]
-
-    return by_language(horizontal) or by_language(vertical)
+    return _pick_by_language(horizontal) or _pick_by_language(vertical)
 
 
 def _pick_content_rating(data: dict) -> str | None:

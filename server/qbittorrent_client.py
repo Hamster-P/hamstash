@@ -12,6 +12,13 @@ _cached_base_url: str | None = None
 _cookie_lock = asyncio.Lock()
 
 
+def _qbit_client(**kwargs) -> httpx.AsyncClient:
+    """本地 qBittorrent 连接绝不走代理:trust_env=False 屏蔽 HTTP_PROXY/ALL_PROXY 等
+    环境变量,避免开了系统级代理 / VPN 客户端往环境写了代理变量时连不上本地 qbit。
+    外部站点的代理走 services/proxy.py::get_proxy_url,跟这里无关。"""
+    return httpx.AsyncClient(trust_env=False, **kwargs)
+
+
 def _get_qbit_settings() -> tuple[str, int, str, str]:
     """从数据库读取qBittorrent连接信息(host/port/账号/密码)。
     开一个短生命周期的SessionLocal,不依赖FastAPI的请求级session注入
@@ -31,7 +38,7 @@ async def login_with(host: str, port: int, username: str, password: str) -> str:
     """用指定的凭据登录一次,返回session cookie字符串。不读/不写缓存——
     给引导向导"保存前先测试这份待保存的凭据"用,不影响当前已保存/已缓存的那份。"""
     base_url = f"http://{host}:{port}"
-    async with httpx.AsyncClient() as client:
+    async with _qbit_client() as client:
         resp = await client.post(
             f"{base_url}/api/v2/auth/login",
             data={"username": username, "password": password},
@@ -89,12 +96,12 @@ async def _request(method: str, path: str, **kwargs) -> httpx.Response:
     强制刷新一次再重试一次。其余状态码原样把Response返回给调用方自行处理
     (比如很多接口把409/404当成功忽略)。"""
     cookie, base_url = await _get_session()
-    async with httpx.AsyncClient(headers={"Cookie": cookie}) as client:
+    async with _qbit_client(headers={"Cookie": cookie}) as client:
         resp = await client.request(method, f"{base_url}{path}", **kwargs)
 
     if resp.status_code == 403:
         cookie, base_url = await _get_session(force_refresh=True)
-        async with httpx.AsyncClient(headers={"Cookie": cookie}) as client:
+        async with _qbit_client(headers={"Cookie": cookie}) as client:
             resp = await client.request(method, f"{base_url}{path}", **kwargs)
 
     return resp
@@ -102,7 +109,7 @@ async def _request(method: str, path: str, **kwargs) -> httpx.Response:
 
 async def get_preferences(base_url: str, cookie: str) -> dict:
     """查询当前qBittorrent WebUI偏好设置,给引导向导展示现状用(RSS处理开没开等)。"""
-    async with httpx.AsyncClient(headers={"Cookie": cookie}) as client:
+    async with _qbit_client(headers={"Cookie": cookie}) as client:
         resp = await client.get(f"{base_url}/api/v2/app/preferences")
         resp.raise_for_status()
         return resp.json()
@@ -110,7 +117,7 @@ async def get_preferences(base_url: str, cookie: str) -> dict:
 
 async def set_preferences(base_url: str, cookie: str, prefs: dict) -> None:
     """修改qBittorrent WebUI偏好设置,给引导向导"应用推荐设置"用。"""
-    async with httpx.AsyncClient(headers={"Cookie": cookie}) as client:
+    async with _qbit_client(headers={"Cookie": cookie}) as client:
         resp = await client.post(
             f"{base_url}/api/v2/app/setPreferences",
             data={"json": json.dumps(prefs)},

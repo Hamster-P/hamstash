@@ -32,7 +32,8 @@ MAX_RETRY_ATTEMPTS = 10
 #   1 = 最初版
 #   2 = LOGO 挑选改为 横向优先,同朝向里再按 日文>中文>英文(见 tmdb_client._pick_logo)
 #   3 = 背景图改为从候选池按 分辨率≥1920x1080 + 横向 + 评分 挑(见 tmdb_client._pick_backdrop)
-META_RESOLVER_VERSION = 3
+#   4 = 背景图/LOGO 语言优先级统一为 日文>中文>未定义>英文(见 tmdb_client._pick_by_language)
+META_RESOLVER_VERSION = 4
 _RESOLVER_VERSION_SETTING_KEY = "meta_resolver_version"
 
 
