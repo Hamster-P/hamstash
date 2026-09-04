@@ -18,7 +18,11 @@ import qbittorrent_client
 import rename_engine
 from database import SessionLocal
 from models import AnimeFamilyCache, AnimeFolder, LocalMedia, RenamedFile
-from services.bgm_series_cache import build_season_episode_table, resolve_tv_season_ordinal_cached
+from services.bgm_series_cache import (
+    build_season_episode_table,
+    resolve_tv_season_ordinal_cached,
+    season_context_for_ordinal,
+)
 from services.common import get_setting
 from services.staging import (
     ORGANIZE_TAG,
@@ -98,15 +102,24 @@ async def _organize_completed_torrents() -> None:
         db.close()
 
 
-def _invalidate_episode_count(db: Session, folder_name: str) -> None:
-    """新文件整理进这个文件夹了,"未看集数"角标缓存的集数不再准。不在这里精确±算——
-    版本冲突/替换/跳过这些语义混在一起,从外面猜"这次到底净增了几个文件"容易算错;
-    直接置空,交给下次GET /library/scan的后台补课,或用户下次打开这部番详情页时
-    顺手重新扫一遍(见routers/library.py)。"""
-    media = db.query(LocalMedia).filter(LocalMedia.folder_name == folder_name).first()
-    if media and media.episode_file_count is not None:
-        media.episode_file_count = None
-        db.commit()
+def _refresh_episode_count(db: Session, folder_name: str) -> None:
+    """新文件整理进这个文件夹了,当场重算"未看集数"角标的两列——不再只是置 NULL 等
+    /library/scan 后台补课或用户进详情页,那样 RSS 追更下了新一集角标半天不更新。
+
+    重算要走一次媒体库目录的 scandir+walk(可能是网络共享),organize 本就是后台常驻
+    循环、这步在打标签结束之前,可接受;真失败(网络共享断开等)兜底置空,交给下次补课。
+    从外面精确 ±1 算不了——版本冲突/替换/跳过语义混在一起,直接重算最稳。"""
+    try:
+        from routers.library import recompute_episode_counts  # 延迟 import,避免加载期循环
+        recompute_episode_counts(db, folder_name)
+    except Exception as e:
+        print(f"[ORGANIZE] 重算未看集数角标失败,置空交给下次补课: {folder_name}: {e}")
+        db.rollback()
+        media = db.query(LocalMedia).filter(LocalMedia.folder_name == folder_name).first()
+        if media and (media.episode_file_count is not None or media.watched_episode_count is not None):
+            media.episode_file_count = None
+            media.watched_episode_count = None
+            db.commit()
 
 
 def _anime_target_root(library_root: str, folder: AnimeFolder) -> str:
@@ -242,17 +255,34 @@ def _preview_files_for_organize(
             continue
 
         file_name = video_path.rsplit("/", 1)[-1]
+
+        # 多季混合合集包(如 VCB「S1+S2」大合集):文件夹级 season_context 只有一个季度,
+        # 但包里既有 S1 又有 S2 的文件。这里按**每个文件名自己**解析出的 anime_season,
+        # 命中家族缓存里另一季就用那一季的 context——否则 S2 文件也会被算成 S01Exx 跟 S1 撞车。
+        ctx = season_context
+        file_ordinal = rename_engine.parse_file_season(file_name)
+        if (
+            folder.main_bgm_id
+            and file_ordinal
+            and file_ordinal != season_context.get("season_ordinal")
+        ):
+            alt = season_context_for_ordinal(
+                db, folder.main_bgm_id, file_ordinal, season_context.get("season_hint")
+            )
+            if alt:
+                ctx = alt
+
         preview = rename_engine.preview_rename_file(
             anime_title=folder.anime_title,
             file_name=file_name,
             torrent_title=torrent.get("name", ""),
             library_root=library_root,
             bgm_id=folder.main_bgm_id,
-            season_hint=season_context["season_hint"],
-            episode_offset=season_context["episode_offset"],
-            season_total_eps=season_context["season_total_eps"],
-            season_ordinal=season_context["season_ordinal"],
-            platform=season_context["platform"],
+            season_hint=ctx["season_hint"],
+            episode_offset=ctx["episode_offset"],
+            season_total_eps=ctx["season_total_eps"],
+            season_ordinal=ctx["season_ordinal"],
+            platform=ctx["platform"],
         )
         # 上面按original_path的判重在"这个文件已经被我们自己改过名"之后会失效
         # (qB返回的是改名后的新路径,done记录里存的是改名前的原始路径),
@@ -654,7 +684,7 @@ async def _organize_single_torrent(db: Session, torrent: dict) -> None:
         if not await _move_to_library(torrent_hash, target_root, context["already_at_target"]):
             print(f"[ORGANIZE] 搬家未确认生效(未改名模式),留到下一轮重试: hash={torrent_hash}")
             return
-        _invalidate_episode_count(db, os.path.basename(target_root.replace("\\", "/").rstrip("/")))
+        _refresh_episode_count(db, os.path.basename(target_root.replace("\\", "/").rstrip("/")))
         await _finish_torrent(torrent_hash, staging_folder_path)
         return
 
@@ -704,7 +734,7 @@ async def _organize_single_torrent(db: Session, torrent: dict) -> None:
     await _apply_organize_plan(
         db, torrent_hash, all_paths, plans, library_folder, folder.season_bgm_id, folder.main_bgm_id
     )
-    _invalidate_episode_count(db, library_folder)
+    _refresh_episode_count(db, library_folder)
 
     # 不管有没有文件失败,都打标签结束这一轮——失败文件的状态已经记进RenamedFile表,
     # 不会无限重试刷日志;后续要重跑,可以手动清掉这个标签(或者以后加个"重试"按钮)。

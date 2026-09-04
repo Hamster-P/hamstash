@@ -10,7 +10,7 @@ MOVIE_MARKERS = ["剧场版", "劇場版", "movie", "gekijouban"]
 # 避免跟普通单词里偶然出现的"m+数字"片段(比如某些编码标签)混淆。
 _MOVIE_NUMBER_TAG = re.compile(r"\[m\d{1,3}\]", re.IGNORECASE)
 OVA_MARKERS = ["ova", "oad", "特典", "特别篇", "番外篇", "sp", "总集篇", "回顾篇", ".5", "激活解说"]
-EXTRA_MARKERS = ["op", "ed", "ncop", "nced", "opening", "ending", "pv", "预告",
+EXTRA_MARKERS = ["op", "ed", "ncop", "nced", "opening", "ending", "pv", "preview", "预告",
                   "menu", "cm", "sample", "logo", "credit", "trailer", "teaser",
                   "interview", "spot", "bonus", "tokuten"]
 # EXTRA_MARKERS里的短标记(op/ed/pv/cm等)朴素子串匹配容易误伤普通单词内部的字母组合
@@ -19,11 +19,16 @@ EXTRA_MARKERS = ["op", "ed", "ncop", "nced", "opening", "ending", "pv", "预告"
 # tokuten是"特典"的罗马字写法——BD花絮盘经常只在文件名里写罗马字,中文"特典"
 # 关键词(见OVA_MARKERS)只出现在种子内的父目录名里,传到这里的裸文件名根本看不到,
 # 漏了这个词会导致特典视频被当成正片走S03Exx编号,详见rename_engine相关bug记录。
+# preview:VCB/Nekomoe这类合集包固定用"[Preview01]..[PreviewNN]"放每集的下集预告片,
+# 漏了它会把30秒预告片当成正片改成SxxEyy(实测『想要成为影之实力者!』合集包)。
 _EXTRA_PATTERN = re.compile(
-    r"(?<![a-z0-9])(op|ed|ncop|nced|opening|ending|pv|menu|cm|sample|logo|credit|"
+    r"(?<![a-z0-9])(op|ed|ncop|nced|opening|ending|pv|preview|menu|cm|sample|logo|credit|"
     r"trailer|teaser|interview|spot|bonus|tokuten)\d{0,2}(?![a-z0-9])|预告",
     re.IGNORECASE,
 )
+# 合集包里"[SP01]..[SPNN]"这种"方括号包裹+序号"的基本都是特典短片(菜单/CM/预告集锦),
+# 不是独立OVA条目。单独的"SP"(无方括号,如"某番 SP.mkv")仍走OVA_MARKERS的OVA分支不变。
+_BRACKET_SP_TAG = re.compile(r"\[sp\d+\]", re.IGNORECASE)
 
 def classify_media_type(torrent_title: str, platform: str | None = None) -> str:
     """
@@ -41,7 +46,7 @@ def classify_media_type(torrent_title: str, platform: str | None = None) -> str:
     if platform == "OVA":
         return "ova"
     lowered = torrent_title.lower()
-    if _EXTRA_PATTERN.search(lowered):
+    if _EXTRA_PATTERN.search(lowered) or _BRACKET_SP_TAG.search(lowered):
         return "extra"
     if _MOVIE_NUMBER_TAG.search(lowered) or any(marker in lowered for marker in MOVIE_MARKERS):
         return "movie"
@@ -296,6 +301,24 @@ def find_sibling_subtitles(video_path: str, all_paths: list[str]) -> list[str]:
         if ext in SUBTITLE_EXTS and p_dir == video_dir and p_name.startswith(video_stem):
             matches.append(p)
     return matches
+
+
+def parse_file_season(file_name: str) -> str | None:
+    """从单个文件名里解析出它自己属于第几季,返回两位数序号字符串("00"/"01"/"02"/...)或 None。
+    给"多季混合合集包"用:S1 文件名通常不带季度标记(→None,走文件夹级季度),
+    S2 文件名带 "S2"/"第二季"/"2nd Season" 之类(→"02"),SP/特典常写 "S00"(→"00")。
+    只信 anitopy 的结构化解析,不做额外文本猜测。"""
+    parsed = anitopy.parse(file_name) or {}
+    season = parsed.get("anime_season")
+    if isinstance(season, list):
+        season = season[0] if season else None
+    if season is None:
+        return None
+    try:
+        n = int(str(season).strip())
+    except (ValueError, TypeError):
+        return None
+    return f"{n:02d}" if n >= 0 else None
 
 
 def _normalize_absolute_episode(

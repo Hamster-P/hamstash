@@ -132,6 +132,11 @@ class LocalMedia(Base):
     # 不在/library/animes请求路径里现扫——由/library/scan顺手补NULL行、以及详情页/删除/
     # 调整归属/自动整理入库几个"本来就精确知道数字该怎么变"的时机顺手维护,见library.py。
     episode_file_count = Column(Integer, nullable=True)
+    # "未看集数"角标的已看分子:上面那个正片桶集合里,已看的文件数。跟 episode_file_count
+    # 同一次扫描(_count_episode_files)算出、成对维护/成对失效——不能再用"不分桶的全局
+    # PlaybackRecord 计数"当分子,不然看过总集篇/SP(落在 Other/Specials/Others)会把
+    # 分子抬过分母,角标被 max(...,0) 压成 0 直接消失。None=还没扫过。
+    watched_episode_count = Column(Integer, nullable=True)
     episode_count_updated_at = Column(DateTime(timezone=True), nullable=True)
     # 上次扫出episode_file_count时的目录签名(_folder_structure_signature序列化后的字符串)。
     # /library/scan每次都会用一次廉价scandir重新算当前签名,跟这列不一致就说明目录内容

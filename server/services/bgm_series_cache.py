@@ -365,6 +365,26 @@ def build_season_episode_table(db: Session, main_bgm_id: int) -> dict[str, dict]
     return table
 
 
+def season_context_for_ordinal(
+    db: Session, main_bgm_id: int, ordinal: str, fallback_hint: str | None = None
+) -> dict | None:
+    """多季混合合集包专用:某个文件名自带 anime_season、跟文件夹级季度不一致时,
+    给这个文件单独算一份季度上下文(season_ordinal / season_hint / platform /
+    episode_offset / season_total_eps),纯读 AnimeFamilyCache,不发网络。
+    这个季度不在家族缓存里 → 返回 None,调用方退回文件夹级 context。
+    organize.py 整理、library_repair.py 修复媒体库两处共用。"""
+    info = build_season_episode_table(db, main_bgm_id).get(ordinal)
+    if not info:
+        return None
+    return {
+        "season_ordinal": ordinal,
+        "season_hint": info.get("name") or fallback_hint,
+        "platform": info.get("platform"),
+        "episode_offset": info.get("episode_offset", 0),
+        "season_total_eps": info.get("eps"),
+    }
+
+
 async def resolve_tv_season_ordinal_cached(
     db: Session, season_bgm_id: int | None, main_bgm_id: int | None
 ) -> str | None:

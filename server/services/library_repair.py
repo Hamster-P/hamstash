@@ -28,7 +28,12 @@ from sqlalchemy.orm import Session
 import config_store
 import models
 import rename_engine
-from routers.library import VIDEO_EXTENSIONS, get_library_root, scan_local_folder_structure
+from routers.library import (
+    VIDEO_EXTENSIONS,
+    _bucket_name_for_subdir,
+    get_library_root,
+    scan_local_folder_structure,
+)
 from services import bgm_series_cache
 from services.common import get_setting
 
@@ -465,6 +470,50 @@ def _bucket_recompute_args(bucket_name: str, extra_buckets: set[str] | None = No
     return None
 
 
+def _folder_torrent_hashes(db: Session, folder_name: str) -> set[str]:
+    """这个库文件夹里的文件当初来自哪些种子——按已落地(target 在这个文件夹下)的
+    RenamedFile 反查。给"整理失败、还躺在种子原始子目录里"的文件找权威来源用。"""
+    prefix = folder_name.replace("\\", "/").rstrip("/") + "/"
+    hashes: set[str] = set()
+    for th, trp in db.query(
+        models.RenamedFile.torrent_hash, models.RenamedFile.target_relative_path
+    ).filter(
+        models.RenamedFile.target_relative_path.isnot(None),
+        models.RenamedFile.torrent_hash.isnot(None),
+    ):
+        if (trp or "").replace("\\", "/").startswith(prefix):
+            hashes.add(th)
+    return hashes
+
+
+def _original_path_index(db: Session, torrent_hashes: set[str]) -> dict[str, "models.RenamedFile"]:
+    """{种子内原始相对路径(归一化小写正斜杠) -> RenamedFile 行},含 status='failed' 的行。
+    整理失败的文件还在种子原始目录结构里(_move_to_library 把整包搬进了番剧文件夹),
+    磁盘相对路径 = 番剧文件夹名 + '/' + 这个 key,拿它能反查回权威的原始文件名。"""
+    idx: dict[str, "models.RenamedFile"] = {}
+    if not torrent_hashes:
+        return idx
+    for row in db.query(models.RenamedFile).filter(
+        models.RenamedFile.torrent_hash.in_(torrent_hashes)
+    ):
+        key = (row.original_path or "").replace("\\", "/").strip("/").lower()
+        if key:
+            idx[key] = row
+    return idx
+
+
+def _member_season_ordinal(db: Session, bgm_id: int | None) -> str | None:
+    """这个 bgm_id 在家族缓存里的 season_ordinal（"01"/"02"/…），拿不到返回 None。"""
+    if not bgm_id:
+        return None
+    row = (
+        db.query(models.AnimeFamilyCache)
+        .filter(models.AnimeFamilyCache.bgm_id == bgm_id)
+        .first()
+    )
+    return row.season_ordinal if row else None
+
+
 async def scan_rename_mismatches(
     db: Session, only_folders: set[str] | None = None
 ) -> list[dict]:
@@ -557,7 +606,18 @@ async def scan_rename_mismatches(
 
                 season_hint = bucket_season_hint
                 file_args = args
-                if _is_work_title_bucket(bucket_name, extra_buckets):
+
+                # 花絮被塞错桶的兜底(最高优先):原始文件名(权威输入)一看就是
+                # NCOP/Preview/CM/[SP##] 这类花絮,却落在 Season NN / OVA 桶里
+                # (典型:多季合集包整理时 [SPxx]/[Previewxx] 被误判成正片/OVA)。
+                # 按原始名重新分类 → 走 Other 桶,不再受"这个文件躺在哪个桶下"误导。
+                if (
+                    bucket_name != "Other"
+                    and rename_engine.classify_media_type(source_file_name) == "extra"
+                ):
+                    season_hint = None
+                    file_args = _non_season_args()
+                elif _is_work_title_bucket(bucket_name, extra_buckets):
                     # 这些桶的文件名靠"这一部作品自己的标题"拼,不是靠家族标题。
                     # 解析不出来就跳过这个文件——回退成anime_title会把副标题抹掉,
                     # 是不可逆的错误改名,宁可少提一条建议。
@@ -590,7 +650,11 @@ async def scan_rename_mismatches(
                     season_total_eps=file_args["season_total_eps"],
                 )
                 target_full_path = preview.get("target_full_path")
-                if not target_full_path or preview.get("parsed_episode") == "??":
+                # 剧场版/OVA/花絮(extra)本来就不靠集数拼文件名,解析不出集数是正常的,
+                # 不能拿"parsed_episode == ??"把它们拦下来(跟 organize._apply_organize_plan
+                # 同一口径)。
+                episode_required = preview.get("media_type") not in ("movie", "ova", "extra")
+                if not target_full_path or (episode_required and preview.get("parsed_episode") == "??"):
                     continue
 
                 proposed_path = Path(target_full_path)
@@ -605,7 +669,18 @@ async def scan_rename_mismatches(
                 blocked = False
                 block_reason = None
                 key = _normcase(proposed_path)
-                if proposed_path.exists() and _normcase(proposed_path) != _normcase(current_full_path):
+                # 目标位置被占,但占用它的那个文件本身也在这次的搬走名单里(典型:合集包
+                # 修复时,先把占着 S01E01 的预告片挪去 Other,S01E01 就腾出来给真正片了)
+                # ——不算冲突,交给 apply_rename_fixes 按 results 顺序先挪占用者。
+                occupant_being_moved = any(
+                    not r["blocked"] and _normcase(library_root / r["current_relative_path"]) == key
+                    for r in results
+                )
+                if (
+                    proposed_path.exists()
+                    and _normcase(proposed_path) != _normcase(current_full_path)
+                    and not occupant_being_moved
+                ):
                     blocked = True
                     block_reason = "目标位置已存在另一个文件,为避免覆盖不自动处理"
                 elif key in proposed_targets_seen:
@@ -624,6 +699,104 @@ async def scan_rename_mismatches(
                     "blocked": blocked,
                     "block_reason": block_reason,
                 })
+
+        # ---- 孤儿正片回收:整理失败、还躺在种子原始子目录里的文件 ----
+        # 典型:多季合集包(VCB「S1+S2」大合集)整理时,正片因为跟花絮撞目标路径全 failed,
+        # _move_to_library 又把整个原始包搬进了番剧文件夹 → 真正片埋在
+        # `<番剧>/[VCB-Studio] xxx/.../[01].mkv` 这类深层目录里,归 Specials/Others 桶被跳过。
+        # 这里按 RenamedFile 的权威原始文件名重算,把它们提回 Season NN(按文件名自带的
+        # anime_season 逐个定季,支持多季混合)。
+        folder_prefix = media.folder_name.replace("\\", "/").rstrip("/") + "/"
+        orig_idx = _original_path_index(db, _folder_torrent_hashes(db, media.folder_name))
+        default_ord = _member_season_ordinal(db, media.bgm_id)
+        handled_current = {r["current_relative_path"] for r in results}
+        for rel_path in all_rel_paths:
+            if (library_root / rel_path).suffix.lower() not in VIDEO_EXTENSIONS:
+                continue
+            if not rel_path.startswith(folder_prefix) or rel_path in handled_current:
+                continue
+            inner = rel_path[len(folder_prefix):]
+            segs = inner.split("/")
+            if len(segs) < 2:
+                continue  # 直接堆在番剧根目录的,不在这一分支范围
+            # 只处理"没落进任何已知正片桶"的深层文件——已知桶里的由上面的 bucket 循环负责
+            if (
+                _bucket_name_for_subdir(segs[0], extra_buckets) not in _SKIPPED_BUCKETS
+                and len(segs) == 2
+            ):
+                continue
+            row = orig_idx.get(inner.lower())
+            if row is None:
+                continue  # 没有权威来源,不猜(可能是用户手动拖进来的原盘目录)
+
+            basename = segs[-1]
+            # SP/特典/花絮子目录里的、或文件名写着 S00 的,不往真季度桶塞——
+            # season_ordinal 交空,让 preview_rename_file 按内容分流到 Season 00 / Other。
+            in_specials_dir = any(
+                s.strip().lower() in {"sp", "sps", "specials", "special", "extras",
+                                      "extra", "scans", "scan", "cds", "cd", "bonus", "menu"}
+                for s in segs[:-1]
+            )
+            file_ord = rename_engine.parse_file_season(basename)
+            if file_ord == "00" or in_specials_dir:
+                so = None
+            else:
+                file_ord = file_ord or default_ord
+                so = (
+                    bgm_series_cache.season_context_for_ordinal(
+                        db, family_root, file_ord, anime_title
+                    )
+                    if file_ord
+                    else None
+                )
+            preview = rename_engine.preview_rename_file(
+                anime_title=anime_title,
+                file_name=basename,
+                torrent_title=basename,
+                library_root=str(library_root),
+                bgm_id=media.bgm_id,
+                season_hint=(so["season_hint"] if so else anime_title),
+                season_ordinal=(so["season_ordinal"] if so else None),
+                platform=(so["platform"] if so else None),
+                episode_offset=(so["episode_offset"] if so else 0),
+                season_total_eps=(so["season_total_eps"] if so else None),
+            )
+            tfp = preview.get("target_full_path")
+            if not tfp or not preview.get("relative_path"):
+                continue
+            episode_required = preview.get("media_type") not in ("movie", "ova", "extra")
+            if episode_required and preview.get("parsed_episode") == "??":
+                continue
+
+            proposed_path = Path(tfp)
+            cur_full = library_root / rel_path
+            if _normcase(cur_full) == _normcase(proposed_path):
+                continue
+            if not _is_within(proposed_path, library_root):
+                continue
+            proposed_rel = str(proposed_path.relative_to(library_root)).replace("\\", "/")
+
+            key = _normcase(proposed_path)
+            blocked, block_reason = False, None
+            occupant_being_moved = any(
+                not r["blocked"] and _normcase(library_root / r["current_relative_path"]) == key
+                for r in results
+            )
+            if proposed_path.exists() and not occupant_being_moved:
+                blocked, block_reason = True, "目标位置已存在另一个文件,为避免覆盖不自动处理"
+            elif key in proposed_targets_seen:
+                blocked, block_reason = True, f"跟同一批次里的另一条改名建议目标冲突({proposed_targets_seen[key]})"
+            else:
+                proposed_targets_seen[key] = rel_path
+
+            results.append({
+                "folder_name": media.folder_name,
+                "current_relative_path": rel_path,
+                "proposed_relative_path": proposed_rel,
+                "sibling_subtitles": rename_engine.find_sibling_subtitles(rel_path, all_rel_paths),
+                "blocked": blocked,
+                "block_reason": block_reason,
+            })
 
     return results
 
@@ -1033,8 +1206,29 @@ def move_media_file_with_sync(
             ))
             .first()
         )
+    if row is None:
+        # 孤儿正片回收:文件此刻还在种子原始子目录里(target_relative_path 为空的
+        # failed 行),按"种子内部原始相对路径"反查——current_rel 去掉番剧文件夹名那一段
+        # 就是 RenamedFile.original_path。
+        inner = _same_relpath(current_rel).split("/", 1)
+        if len(inner) == 2:
+            want = inner[1].lower()
+            row = next(
+                (
+                    r
+                    for r in db.query(models.RenamedFile).filter(
+                        models.RenamedFile.original_path.isnot(None),
+                        models.RenamedFile.target_relative_path.is_(None),
+                    )
+                    if (r.original_path or "").replace("\\", "/").strip("/").lower() == want
+                ),
+                None,
+            )
     if row:
         row.target_relative_path = _to_db_relpath(proposed_rel)
+        if row.status != "done":
+            row.status = "done"
+            row.error = None
 
     _migrate_playback_record(db, current_rel, proposed_rel)
 
@@ -1097,7 +1291,30 @@ async def apply_rename_fixes(
             db.rollback()
             failed.append({"path": current_rel, "error": str(e)})
 
+    # 搬完之后清理被掏空的中间目录(合集包那种 `番剧/[VCB-Studio] xxx/.../` 深层壳):
+    # 只 rmdir 真正空的目录,非空(还留着 CDs/Scans 之类)的原样不动。
+    _prune_empty_dirs(library_root, {s["from"] for s in succeeded})
+
     return {"succeeded": succeeded, "skipped": skipped, "failed": failed}
+
+
+def _prune_empty_dirs(library_root: Path, moved_from_rel_paths: set[str]) -> None:
+    """把 moved_from 各文件曾经所在的目录链,自底向上逐级 rmdir(仅限空目录),
+    到番剧文件夹那一层为止。失败(非空/权限)静默跳过。"""
+    seen: set[Path] = set()
+    for rel in moved_from_rel_paths:
+        parts = rel.replace("\\", "/").split("/")
+        # parts[0] 是番剧文件夹名,保底不删;从文件的父目录往上删到 parts[1]
+        for depth in range(len(parts) - 1, 1, -1):
+            d = library_root.joinpath(*parts[:depth])
+            if d in seen:
+                continue
+            seen.add(d)
+            try:
+                if d.is_dir() and not any(d.iterdir()):
+                    d.rmdir()
+            except OSError:
+                pass
 
 
 def apply_orphan_cleanup(db: Session, categories: dict) -> dict:

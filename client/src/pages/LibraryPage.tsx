@@ -225,14 +225,18 @@ function sortAnimes(list: LibraryAnime[], mode: SortMode): LibraryAnime[] {
 function parseLibraryPath(
   fullPath: string,
   libraryRoot: string,
-): { folderName: string; filename: string } | null {
+): { folderName: string; filename: string; relPath: string } | null {
   const normalizedRoot = libraryRoot.replace(/[/\\]$/, "").replace(/\//g, "\\").toLowerCase();
   const normalizedFull = fullPath.replace(/\//g, "\\");
   if (!normalizedFull.toLowerCase().startsWith(normalizedRoot)) return null;
   const rel = normalizedFull.slice(normalizedRoot.length).replace(/^\\/, "");
   const parts = rel.split("\\");
   if (parts.length < 2) return null;
-  return { folderName: parts[0], filename: parts[parts.length - 1] };
+  return {
+    folderName: parts[0],
+    filename: parts[parts.length - 1],
+    relPath: parts.join("/"), // 相对 library_root 的正斜杠路径,给后端角标增量判断桶用
+  };
 }
 
 export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContainerRef, movieOnly = false }: LibraryPageProps) {
@@ -295,6 +299,8 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
   // 改用保存的补番一览滚动位置,只生效一次。
   const restoringRelatedRef = useRef(false);
   const restoreScrollTop = useRef(0);
+  // 这次进详情页期间标记过"已看"——返回网格时静默重拉一次列表,让角标反映后端增量结果
+  const watchedInDetailRef = useRef(false);
   // 吸顶头部(封面+简介+分季快捷按钮)的实际高度,用来给每个分季区块留出滚动余量,
   // 避免点快捷按钮跳转后,区块顶部被吸顶头部盖住
   const headerRef = useRef<HTMLDivElement>(null);
@@ -317,7 +323,12 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
     if (movieOnly) return;
     fetchAnimes();
     fetch(`${API_BASE}/library/scan`)
-      .then(() => fetchAnimes(true))
+      .then(() => {
+        fetchAnimes(true);
+        // /library/scan 的"未看集数"补课是后端 background task,上面这次 fetchAnimes
+        // 多半比它先返回、拿到的还是旧值——3 秒后再静默补一次,兜住这个窗口。
+        setTimeout(() => fetchAnimes(true), 3000);
+      })
       .catch(() => {});
 
     // 从 DetailPage 返回:还原"补番一览"(原番 + 关联作品列表 + 滚动位置)。
@@ -559,7 +570,7 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
     if (isPlayingRef.current) return;
     isPlayingRef.current = true;
     try {
-      markWatched(item.library_folder, item.filename);
+      markWatched(item.library_folder, item.filename, item.rel_path);
       const cleanRoot = settings.library_root.replace(/[/\\]$/, "");
       const localVideoPath = `${cleanRoot}\\${item.rel_path.replace(/\//g, "\\")}`;
       if (await isTauri()) {
@@ -722,6 +733,7 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
   const handleSelectAnime = (anime: LibraryAnime) => {
     // 先同步记下当前网格滚动量,返回列表时恢复
     gridScrollTop.current = scrollContainerRef?.current?.scrollTop ?? 0;
+    watchedInDetailRef.current = false;
     setSelectedAnime(anime);
     setDetailLoading(true);
     // 管理模式/删除确认态/补番列表都是详情页局部状态,不能带着上一部番的状态进新一部的详情页
@@ -753,12 +765,16 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
     setRelatedAnime([]);
     setRelatedError(null);
 
-    // 返回列表时,若存在"已匹配bgm但封面还没补上"的番(通常是新加入/移动后
-    // Bangumi详情刚由后台补全,见list_library_animes的懒加载补全),静默重拉一次
-    // 把封面补上;没有待补的就不发请求。未匹配(无bgm_id)的番不算待补。
-    if (animes.some((a) => a.bgm_id != null && !a.cover_url)) {
+    // 返回列表时静默重拉一次的两种情况:
+    // 1) 这次在详情页标记过已看 → 让网格角标落到后端刚增量好的准确值(乐观 -1 已先顶上)
+    // 2) 存在"已匹配bgm但封面还没补上"的番(后台补全中)→ 把封面补上
+    if (
+      watchedInDetailRef.current ||
+      animes.some((a) => a.bgm_id != null && !a.cover_url)
+    ) {
       fetchAnimes(true);
     }
+    watchedInDetailRef.current = false;
   };
 
   // 删除整部番:磁盘文件夹+LocalMedia记录一起删,播放记录保留。
@@ -902,14 +918,26 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
   // 标记已看:乐观标记,不等真的播完——点开/切到这一集就算。
   // folderName来自调用方各自的上下文(选中的番,或者从mpv上报路径反推出来的),
   // 不用同一个"当前选中番"假设,因为mpv连播时用户可能已经切走界面。
-  const markWatched = (folderName: string, filename: string) => {
+  const markWatched = (folderName: string, filename: string, relPath?: string) => {
     fetch(`${API_BASE}/library/watch`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ folder_name: folderName, filename }),
+      body: JSON.stringify({ folder_name: folderName, filename, rel_path: relPath ?? null }),
     }).catch((err: any) => console.error("标记进度失败", err));
+    // 返回网格时静默重拉一次,让角标落到后端刚增量好的准确值(见 handleBack)
+    watchedInDetailRef.current = true;
 
     const nowStr = new Date().toLocaleString("zh-CN", { hour12: false }).replace(/\//g, "-");
+    // 这一集之前在详情里是不是"没看过"、且落在正片桶(非 Other/Specials/Others)——
+    // 用来决定要不要乐观把网格角标 -1。从当前 detail 快照直接判,不依赖 setState 的时序。
+    const wasUnwatchedRealEp =
+      !!detail &&
+      detail.folder_name === folderName &&
+      Object.entries(detail.seasons).some(
+        ([season, eps]) =>
+          !/^other$|^specials\/others$/i.test(season) &&
+          eps.some((e) => e.filename === filename && !e.is_watched),
+      );
     setDetail((prev) => {
       if (!prev || prev.folder_name !== folderName) return prev;
       const newSeasons = { ...prev.seasons };
@@ -930,7 +958,16 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
     const nowIso = new Date().toISOString();
     setAnimes((prev) =>
       prev.map((a) =>
-        a.folder_name === folderName ? { ...a, last_watched_at: nowIso } : a,
+        a.folder_name === folderName
+          ? {
+              ...a,
+              last_watched_at: nowIso,
+              // 乐观 -1,即时反馈;后端 backfill 稍后会校准成准确值
+              unwatched_count: wasUnwatchedRealEp
+                ? Math.max(a.unwatched_count - 1, 0)
+                : a.unwatched_count,
+            }
+          : a,
       ),
     );
   };
@@ -1059,7 +1096,7 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
     const onEpisodeStarted = (event: { payload: { path: string } }) => {
       const parsed = parseLibraryPath(event.payload.path, settings.library_root);
       if (!parsed) return;
-      markWatched(parsed.folderName, parsed.filename);
+      markWatched(parsed.folderName, parsed.filename, parsed.relPath);
     };
 
     for (const eventName of ["mpv-episode-started", "external-episode-started"]) {
@@ -1089,7 +1126,7 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
 
       // 乐观标记:点开/切到这一集就算已看,内置mpv和外置播放器统一行为,
       // 不做"播到多少才算看完"这种判断。
-      markWatched(selectedAnime.folder_name, ep.filename);
+      markWatched(selectedAnime.folder_name, ep.filename, ep.rel_path);
 
       if (settings.player_mode === "builtin") {
         // 内置mpv:把从这一集开始的剩余集数整季喂给它连播;自动连播切到的后续集数
