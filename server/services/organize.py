@@ -289,7 +289,14 @@ def _preview_files_for_organize(
         # 再按目标位置判一次,避免把自己的产物当成新文件重复处理一遍。
         if has_done_record_at_target(db, torrent_hash, preview["target_relative_path"]):
             continue
-        plans.append({"video_path": video_path, "preview": preview})
+        # torrent_title跟着plan一路带到落地登记:改名结果里的"[字幕组][分辨率]"
+        # 是从种子标题解析出来的,library_repair重算时必须拿同一个标题才能算出
+        # 一样的名字(见models.py::RenamedFile.torrent_title)。
+        plans.append({
+            "video_path": video_path,
+            "preview": preview,
+            "torrent_title": torrent.get("name", ""),
+        })
     return _guard_target_path_collisions(plans)
 
 
@@ -494,6 +501,7 @@ async def _apply_organize_plan(
                 db, torrent_hash, video_path, status="done",
                 target=preview["target_relative_path"],
                 release_version=max(recorded_version, this_version),
+                torrent_title=item.get("torrent_title"),
             )
             print(f"[ORGANIZE] 文件已在目标位置,补记完成状态: hash={torrent_hash} file={video_path}")
             continue
@@ -556,6 +564,7 @@ async def _apply_organize_plan(
             upsert_renamed_file(
                 db, torrent_hash, video_path, status="done",
                 target=preview["target_relative_path"], release_version=this_version,
+                torrent_title=item.get("torrent_title"),
             )
             # 剧场版/OVA:登记进"剧场版模式"列表,封面尽量用这一部自己的bgm_id
             # (不是无条件用下载时选的条目,见_resolve_standalone_bgm_id说明)。

@@ -70,10 +70,15 @@ def upsert_renamed_file(
     target: str | None = None,
     error: str | None = None,
     release_version: int = 1,
+    torrent_title: str | None = None,
 ) -> None:
     """target是相对library_root的相对路径(不含盘符前缀),不是绝对路径——
     这样library_root搬到别的盘/目录时,历史记录不会因为焊死了旧盘符而失效
     (见models.py::RenamedFile.target_relative_path的说明)。
+
+    torrent_title是当初整理时用的种子标题,给library_repair重算目标路径时复现
+    同一份输入用(见models.py::RenamedFile.torrent_title)。传None时**不覆盖**
+    已有值——失败重试之类的路径没必要也没义务把它带上。
     """
     row = (
         db.query(RenamedFile)
@@ -88,6 +93,8 @@ def upsert_renamed_file(
         row.target_relative_path = target
         row.error = error
         row.release_version = release_version
+        if torrent_title:
+            row.torrent_title = torrent_title
     else:
         row = RenamedFile(
             torrent_hash=torrent_hash,
@@ -96,6 +103,7 @@ def upsert_renamed_file(
             target_relative_path=target,
             error=error,
             release_version=release_version,
+            torrent_title=torrent_title,
         )
         db.add(row)
     db.commit()

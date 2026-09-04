@@ -83,23 +83,29 @@ def _list_all_relpaths(anime_path: Path, library_root: Path) -> list[str]:
     return paths
 
 
-def _source_file_name_lookup(db: Session) -> dict[str, str]:
-    """target_relative_path(归一化)-> 原始种子内文件名(basename)。
+def _source_file_name_lookup(db: Session) -> dict[str, tuple[str, str]]:
+    """target_relative_path(归一化)-> (原始种子内文件名basename, 当初的种子标题)。
 
     整理成功(status="done")的文件都有RenamedFile记录,original_path就是当初
     下载完成时真正用来算出改名结果的原始输入——重算时应该用它,不要重新解析
     磁盘上已经是本程序自己产出的文件名(见模块顶部说明,那样对番名本身带书名号/
     方括号一类标点的番剧不安全)。没有RenamedFile记录的文件不会出现在这份表里,
     调用方应该直接跳过,不去猜它该叫什么名字。
+
+    种子标题一并带回来:改名结果里的"[字幕组][分辨率]"是从种子标题解析的,合集包
+    里的文件名常常很裸("01.mkv"),这些元数据只在种子标题里。重算时不喂回同一个
+    标题,算出来的名字就会比当初落地的少一截后缀、被判成mismatch,于是"修复媒体库"
+    对这些文件永远提议改名、永不收敛。升级前落地的老行这一列为空,退回用原始文件名
+    当种子标题(即本次修复之前的行为)。
     """
-    lookup: dict[str, str] = {}
+    lookup: dict[str, tuple[str, str]] = {}
     for row in (
         db.query(models.RenamedFile)
         .filter(models.RenamedFile.target_relative_path.isnot(None), models.RenamedFile.status == "done")
         .all()
     ):
         basename = row.original_path.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-        lookup[_same_relpath(row.target_relative_path)] = basename
+        lookup[_same_relpath(row.target_relative_path)] = (basename, row.torrent_title or basename)
     return lookup
 
 
@@ -598,11 +604,12 @@ async def scan_rename_mismatches(
                     continue
 
                 current_rel = str(current_full_path.relative_to(library_root)).replace("\\", "/")
-                source_file_name = source_lookup.get(_same_relpath(current_rel))
-                if source_file_name is None:
+                source_entry = source_lookup.get(_same_relpath(current_rel))
+                if source_entry is None:
                     # 没有RenamedFile记录(用户手动拖进库、从未走过整理流程)——
                     # 没有权威的原始输入可用,不猜它该叫什么名字,直接跳过。
                     continue
+                source_file_name, source_torrent_title = source_entry
 
                 season_hint = bucket_season_hint
                 file_args = args
@@ -640,7 +647,9 @@ async def scan_rename_mismatches(
                 preview = rename_engine.preview_rename_file(
                     anime_title=anime_title,
                     file_name=source_file_name,
-                    torrent_title=source_file_name,
+                    # 用当初落地时那个种子标题,不是文件名——否则合集包裸文件名
+                    # 场景下会丢掉"[字幕组][分辨率]"后缀,算出跟落地结果不一样的名字。
+                    torrent_title=source_torrent_title,
                     library_root=str(library_root),
                     bgm_id=media.bgm_id,
                     season_hint=season_hint,
@@ -935,11 +944,12 @@ async def scan_family_folder_merges(db: Session) -> list[dict]:
                         continue
 
                     current_rel = str(current_full_path.relative_to(library_root)).replace("\\", "/")
-                    source_file_name = source_lookup.get(_same_relpath(current_rel))
-                    if source_file_name is None:
+                    source_entry = source_lookup.get(_same_relpath(current_rel))
+                    if source_entry is None:
                         # 没有RenamedFile记录(用户手动拖进库、从未走过整理流程)——
                         # 没有权威的原始输入可用,不猜它该叫什么名字,直接跳过。
                         continue
+                    source_file_name, source_torrent_title = source_entry
 
                     # 剧场版/OVA条目拿不到season_ordinal(它们本来就不是TV季),
                     # info必然是None,season_hint会塌缩成家族标题、抹掉副标题——
@@ -957,7 +967,8 @@ async def scan_family_folder_merges(db: Session) -> list[dict]:
                     preview = rename_engine.preview_rename_file(
                         anime_title=anime_title,
                         file_name=source_file_name,
-                        torrent_title=source_file_name,
+                        # 同上:用落地时那个种子标题复现当初的输入。
+                        torrent_title=source_torrent_title,
                         library_root=str(library_root),
                         bgm_id=main_bgm_id,
                         season_hint=season_hint,

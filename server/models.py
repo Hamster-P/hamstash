@@ -108,6 +108,13 @@ class RenamedFile(Base):
     # 现读现拼library_root+这个字段就能拿到当前有效的绝对路径,不会像target_full_path那样
     # 因为焊死了旧盘符导致版本冲突判断(get_current_version_at_target)对不上历史记录。
     error = Column(String, nullable=True)
+    # 当初整理这个文件时用的种子标题(qBittorrent里的种子名)。
+    # 改名结果里的"[字幕组][分辨率]"后缀是从种子标题解析来的,合集包里的文件名常常
+    # 很裸("01.mkv"),这些元数据只存在于种子标题里。services/library_repair.py重算
+    # 目标路径时必须把同一个标题喂回去,否则算出来的名字会比当初落地的少一截后缀、
+    # 被判成mismatch,"修复媒体库"就会对这些文件永远提议改名、永不收敛。
+    # 升级前落地的老行为空,重算时退回用原始文件名当种子标题(即修复前的行为)。
+    torrent_title = Column(String, nullable=True)
     processed_at = Column(DateTime(timezone=True), server_default=func.now())
 
 

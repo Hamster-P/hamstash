@@ -4,12 +4,60 @@ import anitopy
 # 关键词定义
 SUBTITLE_EXTS = {"ass", "srt", "ssa", "vtt", "sup"}
 VIDEO_EXTS = {"mkv", "mp4", "ts", "avi", "flv", "mov", "wmv", "m2ts", "m2t", "webm", "rmvb", "m4v"}
-MOVIE_MARKERS = ["剧场版", "劇場版", "movie", "gekijouban"]
 # 柯南/哆啦A梦这类长篇剧场版系列,字幕组常用"[M28]"这种方括号包住的数字编号
 # 标记"剧场版第28部",不含"movie"/"剧场版"这类文本关键词——要求方括号包住,
 # 避免跟普通单词里偶然出现的"m+数字"片段(比如某些编码标签)混淆。
 _MOVIE_NUMBER_TAG = re.compile(r"\[m\d{1,3}\]", re.IGNORECASE)
-OVA_MARKERS = ["ova", "oad", "特典", "特别篇", "番外篇", "sp", "总集篇", "回顾篇", ".5", "激活解说"]
+
+# 内容类型marker一律用带边界的正则,不用朴素子串匹配——字幕组名和剧名里出现
+# "movie"/"sp"/"special"是常态,实测朴素匹配会把这些全判成剧场版/OVA:
+#   [Sakurato] SPY x FAMILY      -> "sp" 命中 SPY
+#   [Group] Sports Anime         -> "sp" 命中 Sports
+#   [LoliHouse] ... Spice and Wolf -> "sp" 命中 Spice
+#   [Movie-Fan] Ordinary Anime   -> "movie" 在字幕组名里
+#   [Group] Anime [1080p][85.5 MB] -> ".5" 命中文件大小
+# 同文件的_EXTRA_PATTERN(op/ed/pv)本来就用了单词边界,这里是把口径拉齐。
+_MOVIE_CJK = re.compile(r"剧场版|劇場版|电影版|電影版")
+_MOVIE_ROMAJI = re.compile(r"(?<![a-z0-9])gekijouban(?![a-z0-9])", re.IGNORECASE)
+_MOVIE_EN = re.compile(r"(?<![a-z0-9])movie(?![a-z0-9])", re.IGNORECASE)
+_SPECIAL_EN = re.compile(r"(?<![a-z0-9])special(?![a-z0-9])", re.IGNORECASE)
+# OVA/OAD/SP:允许紧跟编号(OVA01/SP02),但不能被更长的单词包住。
+_OVA_TAG = re.compile(r"(?<![a-z0-9])(?:ova|oad|sp)\d{0,3}(?![a-z0-9])", re.IGNORECASE)
+_OVA_CJK = re.compile(r"特典|特别篇|特別篇|番外篇|总集篇|總集篇|回顾篇|回顧篇|激活解说")
+
+# 开头的字幕组段。字幕组名不参与内容类型判定——[Movie-Fan]这种组名会让整个
+# 种子被误判成剧场版(Auto_Bangumi靠"group段优先级最高、先被消费掉"达到同样效果)。
+_LEADING_GROUP = re.compile(r"^\s*(?:\[[^\]]*\]|【[^】]*】)")
+
+
+def _strip_group_prefix(text: str) -> str:
+    """剥掉开头那段字幕组名。但"[MOVIE]"/"[劇場版]"这种**整段就是一个marker**的
+    前置标签不是组名,不能剥——剥了就把类型信息弄丢了。"""
+    m = _LEADING_GROUP.match(text)
+    if not m:
+        return text.strip()
+    inner = m.group(0).strip("[]【】 ").strip()
+    if inner and (
+        _MOVIE_CJK.fullmatch(inner)
+        or _MOVIE_EN.fullmatch(inner)
+        or _MOVIE_ROMAJI.fullmatch(inner)
+        or _SPECIAL_EN.fullmatch(inner)
+        or _OVA_TAG.fullmatch(inner)
+    ):
+        return text.strip()
+    return text[m.end():].strip()
+
+
+def _marker_hit(pattern: re.Pattern, text: str) -> bool:
+    """marker后面紧跟字母时不算命中——"The Movie Star"/"Special A"里的
+    Movie/Special是剧名的一部分,不是内容类型标记。判据取自Auto_Bangumi的
+    media.movie-english规则。"""
+    for m in pattern.finditer(text):
+        after = text[m.end():].lstrip()
+        if after and after[0].isalpha():
+            continue
+        return True
+    return False
 EXTRA_MARKERS = ["op", "ed", "ncop", "nced", "opening", "ending", "pv", "preview", "预告",
                   "menu", "cm", "sample", "logo", "credit", "trailer", "teaser",
                   "interview", "spot", "bonus", "tokuten"]
@@ -21,9 +69,11 @@ EXTRA_MARKERS = ["op", "ed", "ncop", "nced", "opening", "ending", "pv", "preview
 # 漏了这个词会导致特典视频被当成正片走S03Exx编号,详见rename_engine相关bug记录。
 # preview:VCB/Nekomoe这类合集包固定用"[Preview01]..[PreviewNN]"放每集的下集预告片,
 # 漏了它会把30秒预告片当成正片改成SxxEyy(实测『想要成为影之实力者!』合集包)。
+# 结尾的(?:v\d{1,2})?:NCOPv2/NCEDv3这类带版本后缀的花絮,漏了会被当成正片。
+# 结尾排除"=":剧名就叫"PV=nRT"时,PV后面跟等号说明它是标题的一部分而不是标记。
 _EXTRA_PATTERN = re.compile(
     r"(?<![a-z0-9])(op|ed|ncop|nced|opening|ending|pv|preview|menu|cm|sample|logo|credit|"
-    r"trailer|teaser|interview|spot|bonus|tokuten)\d{0,2}(?![a-z0-9])|预告",
+    r"trailer|teaser|interview|spot|bonus|tokuten)\d{0,2}(?:v\d{1,2})?(?![a-z0-9=])|预告",
     re.IGNORECASE,
 )
 # 合集包里"[SP01]..[SPNN]"这种"方括号包裹+序号"的基本都是特典短片(菜单/CM/预告集锦),
@@ -45,13 +95,32 @@ def classify_media_type(torrent_title: str, platform: str | None = None) -> str:
         return "movie"
     if platform == "OVA":
         return "ova"
-    lowered = torrent_title.lower()
-    if _EXTRA_PATTERN.search(lowered) or _BRACKET_SP_TAG.search(lowered):
+
+    lowered_full = torrent_title.lower()
+    # 词形marker只在剥掉字幕组段之后的正文里找;方括号标签([M28]/[SP01])是结构化
+    # 写法,位置本来就可能在最前面,仍然对整串匹配。
+    body = _strip_group_prefix(torrent_title)
+    if _EXTRA_PATTERN.search(body.lower()) or _BRACKET_SP_TAG.search(lowered_full):
         return "extra"
-    if _MOVIE_NUMBER_TAG.search(lowered) or any(marker in lowered for marker in MOVIE_MARKERS):
-        return "movie"
-    if any(marker in lowered for marker in OVA_MARKERS):
+
+    # Bangumi官方标注为TV的条目,其文件不可能是剧场版,跳过movie猜测。
+    # 但**保留**OVA/extra判定——合集包里确实可能混着真的OVA/特典/OP。
+    if platform != "TV":
+        if (
+            _MOVIE_NUMBER_TAG.search(lowered_full)
+            or _MOVIE_CJK.search(body)
+            or _MOVIE_ROMAJI.search(body)
+            or _marker_hit(_MOVIE_EN, body)
+        ):
+            return "movie"
+
+    if _OVA_TAG.search(body) or _OVA_CJK.search(body) or _marker_hit(_SPECIAL_EN, body):
         return "ova"
+
+    # 注意:半集(12.5话)**不在这里改判类型**,它就是正片的一部分,跟同季整数集放在
+    # 一起、命名成S01E12.5(小数保留,否则会覆盖同季的E12)。这也是Jellyfin/Plex和
+    # Auto_Bangumi的一致做法。旧版靠在原文里找".5"子串来判半集,会被"[85.5 MB]"
+    # 这类文件大小误伤,已删除,不要加回来。
     return "tv"
 
 
@@ -154,10 +223,36 @@ def build_anime_folder_name(anime_title: str, bgm_id: int | None) -> str:
     return f"{anime_title} [bgm-{bgm_id}]" if bgm_id else anime_title
 
 
-_ZH_SEASON_NUM_MAP = {
-    "一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10,
-    "１": 1, "２": 2, "３": 3, "４": 4, "５": 5, "６": 6, "７": 7, "８": 8, "９": 9, "０": 0,
+_ZH_DIGITS = {
+    "零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+    "五": 5, "六": 6, "七": 7, "八": 8, "九": 9,
 }
+_FULLWIDTH_DIGITS = str.maketrans("０１２３４５６７８９", "0123456789")
+
+
+def _zh_number(value: str) -> int | None:
+    """中文数字转阿拉伯数字,支持"十/百"进位和"两"。
+
+    之前是单字查表,只覆盖一~十:"第十二季"会走到int("十二")抛异常、被吞掉之后
+    退回Season 01,整季落错目录。全角数字("１２")先归一成半角再按整数处理,
+    不能逐字查表(那样会算成1和2两个数)。
+    """
+    value = value.strip().translate(_FULLWIDTH_DIGITS)
+    if not value:
+        return None
+    if value.isdigit():
+        return int(value)
+    if "百" in value:
+        left, _, right = value.partition("百")
+        hundreds = _ZH_DIGITS.get(left, 1) if left else 1
+        return hundreds * 100 + (_zh_number(right) or 0)
+    if "十" in value:
+        left, _, right = value.partition("十")
+        tens = _ZH_DIGITS.get(left, 1) if left else 1
+        return tens * 10 + (_ZH_DIGITS.get(right, 0) if right else 0)
+    if len(value) == 1:
+        return _ZH_DIGITS.get(value)
+    return None
 
 
 def _resolve_season_str(parsed_season, search_text: str) -> str:
@@ -167,10 +262,9 @@ def _resolve_season_str(parsed_season, search_text: str) -> str:
     """
     season_number = parsed_season
     if not season_number:
-        zh_match = re.search(r'第\s*([0-9一二三四五六七八九十１２３４５６７８９０]+)\s*季', search_text)
+        zh_match = re.search(r'第\s*([0-9零〇一二两三四五六七八九十百０-９]+)\s*季', search_text)
         if zh_match:
-            val = zh_match.group(1).strip()
-            season_number = _ZH_SEASON_NUM_MAP.get(val, val)
+            season_number = _zh_number(zh_match.group(1))
         else:
             s_match = re.search(r'[sS](\d+)', search_text)
             season_number = s_match.group(1) if s_match else "1"
@@ -180,37 +274,125 @@ def _resolve_season_str(parsed_season, search_text: str) -> str:
         return "01"
 
 
+_HALF_EPISODE_RE = re.compile(
+    r"(?:第|E|\[|-\s*)(\d{1,3}\.5)(?=\s*(?:话|話|集|\]|\[|$))", re.IGNORECASE
+)
+# 日期标签和文件大小里全是数字,裸数字兜底前先把它们抹掉,不然
+# "[1.2 GiB][2023-01-12]" 会被抓出个集数来。
+_EPISODE_NOISE_RE = re.compile(
+    r"\d{4}[-.]\d{1,2}[-.]\d{1,2}|\d+(?:\.\d+)?\s*[KMGT]i?B", re.IGNORECASE
+)
+# "第05话"/"第12集"——必须带"第",否则"全24话"这类总集数会被当成集数。
+_ZH_EPISODE_RE = re.compile(r"第\s*(\d{1,4})\s*[话話集]")
+# 方括号里单独放集数:"[02话]"/"【22】"/"[747]"。要求括号里除了数字(和可选的
+# 第/话/集)没有别的内容,所以"[1080p]"/"[2023.02.25]"/"[01-12]"都不会命中。
+_BRACKET_EPISODE_RE = re.compile(r"[\[【]\s*(?:第\s*)?(\d{1,4})\s*[话話集]?\s*[\]】]")
+# 裸数字兜底时,紧跟这些量词的数字不是集数。
+_NOT_EPISODE_AFTER = re.compile(r"^\s*[月年季期部卷话話集]")
+
+
 def _episode_fallback_str(search_text: str, generic_fallback: bool = False) -> str:
     """
     结构化集数缺失时,靠正则从文本里兜底提取集数。
     generic_fallback控制是否在专用的".5话"正则都没命中时,再退一步尝试提取任意1-3位数字
     ——种子整体标题场景关掉这个兜底(标题里的数字噪音更多),单文件场景打开。
     """
-    ep_match = re.search(r'(?:第|E|\[)(\d+\.5)(?:话|集|\])?', search_text, re.IGNORECASE)
+    # 半集(12.5话)。收尾必须是"话/集/]/[/串尾",否则"[85.5 MB]"这类文件大小会被
+    # 当成集数(旧版就是"\[(\d+\.5)"直接命中85.5的)。
+    ep_match = _HALF_EPISODE_RE.search(search_text)
     if ep_match:
         return ep_match.group(1)
+    # 中文字幕组的"第05话"/"[02话]"/"【22】"。之前没有这几条,会直接掉进下面的
+    # 裸数字兜底,从"★4月新番"里抓出个4来当集数——静默产出一个看起来合理的
+    # 错误集数,比解析失败更难发现。
+    zh_match = _ZH_EPISODE_RE.search(search_text)
+    if zh_match:
+        return f"{int(zh_match.group(1)):02d}"
+    bracket_match = _BRACKET_EPISODE_RE.search(search_text)
+    if bracket_match:
+        return f"{int(bracket_match.group(1)):02d}"
     if generic_fallback:
         # 两侧都不能贴着字母,否则"10bit"/"1080p"这类分辨率/编码后缀里的数字
         # 会被误当成集数抓取(比如没有真实集数的OVA/PV文件会被错误猜出集数)。
-        generic_match = re.search(r'(?<![a-zA-Z\d])(\d{1,3})(?![a-zA-Z\d])', search_text)
-        if generic_match:
+        masked = _EPISODE_NOISE_RE.sub(lambda m: " " * len(m.group(0)), search_text)
+        for m in re.finditer(r'(?<![a-zA-Z\d.])(\d{1,4})(?![a-zA-Z\d])', masked):
+            value = m.group(1)
+            tail = masked[m.end():]
+            # 中文语境里紧跟量词的数字不是集数:"4月新番"/"第2季"/"全12话"/"上部"
+            if _NOT_EPISODE_AFTER.match(tail):
+                continue
+            # 发布年份(2023.02.25这类日期标签的年份部分)
+            if len(value) == 4 and 1900 <= int(value) <= 2099:
+                continue
+            # 小数的整数部分("85.5"里的85)。必须要求小数点后**跟着数字**——
+            # 否则"01.mkv"这种合集包里最常见的裸编号文件名会被扩展名的点挡掉,
+            # 集数直接解析不出来。
+            if tail[:1] == "." and tail[1:2].isdigit():
+                continue
             # 补零跟结构化解析路径(_extract_release_version等处的:02d)保持一致——
             # 不补零的话,这里抓到的裸数字(比如误从标题季号"3"里抓出来的)跟同一季
             # 正常补零的"03"只差一位,视觉上像是"同一集重复"了,详见相关bug记录。
-            return f"{int(generic_match.group(1)):02d}"
+            return f"{int(value):02d}"
     return "??"
+
+
+def _looks_like_range(value) -> bool:
+    """判断anitopy给出的集数是不是一个"区间"而非单集。
+
+    "[01-12]"这类合集包anitopy返回list(['01','12']),"E01-E12"返回带连接符的字符串。
+    区间描述的是**整个种子**覆盖的范围,不是某一个文件的集数——拿它的起点当单集用,
+    会让种子里所有"文件名自身没有集数"的文件全部拿到01、互相撞名覆盖。
+    """
+    if isinstance(value, list):
+        return True
+    return bool(value) and bool(re.search(r"[-~～]", str(value)))
+
+
+def _looks_like_noise_episode(value, text: str) -> bool:
+    """anitopy有时会把文件大小/日期里的数字当成集数(实测"[85.5 MB]"会解析出85.5,
+    盖过标题里真正的"- 07")。解析值正好落在噪声片段里就不认它,退回文本兜底。"""
+    if not value:
+        return False
+    token = str(value)
+    return any(token in m.group(0) for m in _EPISODE_NOISE_RE.finditer(text))
+
+
+def _episode_value(episode_number) -> float | None:
+    """把anitopy的集数归一成数值;拿不到有效数值返回None(调用方走文本兜底)。
+
+    anitopy偶尔会吐出"1a"这种非数字片段(实测"Ver1.1a"会被当成集数),之前直接
+    str()透传,假集数就写进文件名了。
+    """
+    try:
+        return float(str(episode_number))
+    except (ValueError, TypeError):
+        return None
+
+
+def _format_episode(value: float) -> str:
+    """集数值 -> 文件名里的集数字符串。整数补两位零;半集(12.5/9.5)保留小数、
+    整数部分同样补零(09.5),跟整数集的观感一致。
+
+    半集**不能取整**——12.5取成12就会跟同季真正的第12集撞成同一个文件名、
+    互相覆盖(Auto_Bangumi 的 #667 踩的就是这个坑)。
+    """
+    if float(value).is_integer():
+        return f"{int(value):02d}"
+    whole = int(value)
+    fraction = str(float(value)).split(".", 1)[1]
+    return f"{whole:02d}.{fraction}"
 
 
 def _extract_episode_str(episode_number, search_text: str, generic_fallback: bool = False) -> str:
     """根据anitopy解析出的集数(可能为空/列表)+一段兜底搜索文本,算出集数字符串。"""
-    if isinstance(episode_number, list):
-        episode_number = episode_number[0] if episode_number else None
+    if _looks_like_range(episode_number):
+        episode_number = None
     if not episode_number:
         return _episode_fallback_str(search_text, generic_fallback)
-    try:
-        return f"{int(episode_number):02d}"
-    except (ValueError, TypeError):
-        return str(episode_number)
+    value = _episode_value(episode_number)
+    if value is None:
+        return _episode_fallback_str(search_text, generic_fallback)
+    return _format_episode(value)
 
 
 def _build_meta_suffix(fansub: str, resolution: str) -> str:
@@ -321,9 +503,36 @@ def parse_file_season(file_name: str) -> str | None:
     return f"{n:02d}" if n >= 0 else None
 
 
+# 文件名末尾连续的"[...]"块,就是_build_meta_suffix拼上去的那段。
+_TRAILING_META_RE = re.compile(r"(?:\s*\[[^\]]*\])+$")
+
+
+def _disambiguate(work_title: str, file_name: str) -> str:
+    """给"解析不出集数"的文件名补一段区分后缀。
+
+    同一个种子里多个这样的文件(实测合集包里的 OVA.mkv / 特典映像.mkv)会算出
+    完全相同的目标文件名。services/organize.py::_guard_target_path_collisions
+    这道安全网会拦住撞车、只放行第一个,所以不会真的丢文件——但其余文件会被标记
+    failed 卡在暂存区不动。补一段区分后缀让它们各自都能正常落地。
+
+    用原始文件名主干做区分:它本来就是唯一的。剥掉主干开头的字幕组段和结尾已有的
+    "[字幕组][分辨率]"块(调用方马上会重新拼一遍),避免这些信息重复出现。
+    **必须幂等**——library_repair 会对已经落地的文件重算目标路径,不幂等的话每跑
+    一次修复文件名就长一截;主干已经以 work_title 开头时直接沿用、不重复拼前缀。
+    """
+    stem = file_name.rsplit(".", 1)[0]
+    stem = _sanitize_filename_segment(_strip_group_prefix(stem))
+    stem = _TRAILING_META_RE.sub("", stem).strip()
+    if not stem or stem == work_title:
+        return work_title
+    if stem.startswith(work_title):
+        return stem
+    return f"{work_title} - {stem}"
+
+
 def _normalize_absolute_episode(
-    raw_episode: int, episode_offset: int, season_total_eps: int | None
-) -> int:
+    raw_episode: float, episode_offset: int, season_total_eps: int | None
+) -> float:
     """把"跨季连续的绝对编号"换算成"这一季内部的第几集"。
 
     有些字幕组从第一季结尾接着往下数,不在新一季重新从1开始(实测咒术回战
@@ -336,6 +545,10 @@ def _normalize_absolute_episode(
     正常的季内编号,不能动)。episode_offset/season_total_eps任一为0或缺失时
     (Bangumi没有集数数据、或者这是第一季没有前序)同样原样保留——宁可漏改,
     也不能靠猜把本来正确的编号改坏。
+
+    半集(12.5/48.5)同样走这条换算——实测案例:转生史莱姆第三季发的是48.5,
+    这一季自己没有48集,减掉前序累计才是真实的季内编号。所以入参/返回都是float,
+    不能收窄成int。
     """
     if episode_offset <= 0 or not season_total_eps or season_total_eps <= 0:
         return raw_episode
@@ -399,19 +612,29 @@ def preview_rename_file(
     anime_folder_name = build_anime_folder_name(anime_title, bgm_id)
     anime_root = f"{tv_root}\\{anime_folder_name}"
 
-    episode_number = parsed.get("episode_number") or torrent_parsed.get("episode_number")
-    if isinstance(episode_number, list):
-        episode_number = episode_number[0] if episode_number else None
-    if not episode_number:
+    # 区间(合集包的"[01-12]")不能当作单集回退值:种子里每个"文件名自身没有集数"
+    # 的文件都会拿到区间起点01——既是错误集数,又会让这些文件撞成同一个目标路径
+    # (撞车本身由organize.py的_guard_target_path_collisions兜住不丢文件,但撞上的
+    # 文件会整理失败卡在暂存区)。文件名自带集数的常见场景不受影响——那条路径
+    # 根本不看种子标题。
+    file_episode = parsed.get("episode_number")
+    torrent_episode = torrent_parsed.get("episode_number")
+    if _looks_like_range(file_episode) or _looks_like_noise_episode(file_episode, file_name):
+        file_episode = None
+    if _looks_like_range(torrent_episode) or _looks_like_noise_episode(
+        torrent_episode, torrent_title
+    ):
+        torrent_episode = None
+    episode_number = file_episode or torrent_episode
+
+    episode_value = _episode_value(episode_number) if episode_number else None
+    if episode_value is None:
         episode_str = _episode_fallback_str(file_name, generic_fallback=True)
     else:
-        try:
-            raw_episode = _normalize_absolute_episode(
-                int(episode_number), episode_offset, season_total_eps
-            )
-            episode_str = f"{raw_episode:02d}"
-        except (ValueError, TypeError):
-            episode_str = str(episode_number)
+        normalized = _normalize_absolute_episode(
+            episode_value, episode_offset, season_total_eps
+        )
+        episode_str = _format_episode(normalized)
 
     fansub = parsed.get("release_group") or torrent_parsed.get("release_group", "")
     resolution = parsed.get("video_resolution") or torrent_parsed.get("video_resolution", "")
@@ -457,9 +680,13 @@ def preview_rename_file(
     elif media_type == "ova":
         folder_path = f"{anime_root}\\{folder_bucket}"
         # 只有真正的TV正片季才有"第几季第几集"这个概念——OVA跟剧场版一样,
-        # 是独立的一部作品,不套SxxExx编号,直接用作品自己的标题+字幕组/分辨率,
-        # 更贴合Jellyfin/Plex这类刮削器对"独立特典/OVA条目"的识别方式(标准做法是
-        # 按作品名单独归类,不是塞进某一季的集数序列里)。多集OVA(同一个Bangumi
+        # 是独立的一部作品,不套SxxExx编号,直接用作品自己的标题+字幕组/分辨率。
+        #
+        # 说明:把OVA单独放一个"OVA"目录是**本项目自己的组织偏好**(柯南这类长篇
+        # 一个家族里往往同时有一堆正牌OVA和短篇TV特典,分开放肉眼更好分辨)。
+        # Jellyfin/Plex的**标准**约定其实是把特典放"Season 00"/"Specials"并编成
+        # S00Exx(Auto_Bangumi就是这么做的)——这里是有意偏离,不是在贴合标准。
+        # 以前这段注释写反了,别被它误导。多集OVA(同一个Bangumi
         # 条目内部有好几集)如果同字幕组/分辨率发布,只用work_title拼文件名会
         # 全部撞成同一个文件名,后落地的覆盖先落地的——有解析出真实集数时补一个
         # "- Exx"消歧;真的只有一集、解析不出集数时保持原样干净命名,不硬拼"E??"。
@@ -467,7 +694,7 @@ def preview_rename_file(
         if episode_str != "??":
             filename = f"{work_title} - E{episode_str}{meta_suffix}.{file_ext}"
         else:
-            filename = f"{work_title}{meta_suffix}.{file_ext}"
+            filename = f"{_disambiguate(work_title, file_name)}{meta_suffix}.{file_ext}"
     elif bgm_id is not None and season_ordinal is None:
         # 有Bangumi结构信息但算不出季号的TV条目。桶名由resolve_folder_bucket给出:
         # 拿得到作品名就是以作品名命名的目录,拿不到才退回"Season 00"——判定条件写成
@@ -481,7 +708,7 @@ def preview_rename_file(
         if episode_str != "??":
             filename = f"{work_title} - E{episode_str}{meta_suffix}.{file_ext}"
         else:
-            filename = f"{work_title}{meta_suffix}.{file_ext}"
+            filename = f"{_disambiguate(work_title, file_name)}{meta_suffix}.{file_ext}"
     else:
         if season_ordinal is not None:
             season_str = season_ordinal

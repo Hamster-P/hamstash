@@ -1,0 +1,1122 @@
+{
+ "schema_version": 1,
+ "count": 124,
+ "cases": [
+  {
+   "id": "ab_episode_multilingual_lolihouse",
+   "raw": "[LoliHouse] 葬送的芙莉莲 / Sousou no Frieren - 03 [WebRip 1080p HEVC-10bit AAC][简繁内封字幕][MKV]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "03",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_episode_sxxexx",
+   "raw": "[Group] Anime Title S02E05 [WEB-DL 1080p]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "05",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_episode_season_words",
+   "raw": "[Group] Anime Title Season 2 - 01 [1080p]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "01",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_episode_fractional",
+   "raw": "[Group] Anime Title - 12.5 [1080p]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "12.5",
+   "src": "ab-golden",
+   "known_bug": true
+  },
+  {
+   "id": "ab_episode_versioned",
+   "raw": "[Group] Anime Title - 12v2 [1080p]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "12",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_range_bare",
+   "raw": "[Group] Anime Title [01-12] [BDRip 1080p]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "01",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_range_e_prefix",
+   "raw": "[Group] Anime Title [E01-E12] [BDRip 1080p]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "??",
+   "src": "ab-golden",
+   "known_bug": true
+  },
+  {
+   "id": "ab_batch_complete",
+   "raw": "[VCB-Studio] Violet Evergarden Complete Batch [BDRip 1080p]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "??",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_collection_chinese_heji",
+   "raw": "[Group] 葬送的芙莉莲合集 [BDRip 1080p]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "??",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_collection_chinese_quanji",
+   "raw": "[Group] 葬送的芙莉莲全集 [BDRip 1080p]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "??",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_collection_chinese_summary",
+   "raw": "[Group] 进击的巨人总集篇 [BDRip 1080p]",
+   "platform": null,
+   "media_type": "ova",
+   "episode": "??",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_collection_bonus",
+   "raw": "[Group] Anime Title 特典 [BDRip 1080p]",
+   "platform": null,
+   "media_type": "ova",
+   "episode": "??",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_collection_movie",
+   "raw": "[Group] 剧场版合集 - 进击的巨人 [1080p]",
+   "platform": null,
+   "media_type": "movie",
+   "episode": "??",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_special_ova_numbered",
+   "raw": "[Group] Anime Title OVA01 [BDRip 1080p]",
+   "platform": null,
+   "media_type": "ova",
+   "episode": "01",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_special_oad_numbered",
+   "raw": "[Group] Anime Title OAD 02 [BDRip 1080p]",
+   "platform": null,
+   "media_type": "ova",
+   "episode": "02",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_special_sp_numbered",
+   "raw": "[Group] Anime Title SP03 [BDRip 1080p]",
+   "platform": null,
+   "media_type": "ova",
+   "episode": "03",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_movie_attached_chinese",
+   "raw": "[VCB-Studio]电影版哆啦A梦：大雄的地球交响乐[BDRip 1080p]",
+   "platform": null,
+   "media_type": "movie",
+   "episode": "??",
+   "src": "ab-golden",
+   "known_bug": true
+  },
+  {
+   "id": "ab_movie_attached_japanese",
+   "raw": "[SubGroup]劇場版SPY×FAMILY CODE: White[WEB-DL 1080p]",
+   "platform": null,
+   "media_type": "movie",
+   "episode": "??",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_auxiliary_pv_numbered",
+   "raw": "[Official] Anime Title PV2 [1080p]",
+   "platform": null,
+   "media_type": "extra",
+   "episode": "02",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_auxiliary_ncop",
+   "raw": "[VCB-Studio] Anime Title NCOP [BDRip 1080p]",
+   "platform": null,
+   "media_type": "extra",
+   "episode": "??",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_auxiliary_nced",
+   "raw": "[VCB-Studio] Anime Title NCED [BDRip 1080p]",
+   "platform": null,
+   "media_type": "extra",
+   "episode": "??",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_title_only_english",
+   "raw": "[LoliHouse] Sousou no Frieren [WEB-DL 1080p]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "??",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_title_only_slash",
+   "raw": "[VCB-Studio] Fate/stay night [BDRip 1080p]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "??",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_movie_year_parenthesized",
+   "raw": "[VCB-Studio] Kimi no Na wa. (2016) [BDRip 1080p]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "??",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_negative_only_technical",
+   "raw": "[1080p][HEVC][AAC][MKV]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "??",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_ambiguity_movie_in_group",
+   "raw": "[Movie-Fan] Ordinary Anime - 01 [WEB-DL 1080p]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "01",
+   "src": "ab-golden",
+   "known_bug": true
+  },
+  {
+   "id": "ab_ambiguity_movie_in_episode_title",
+   "raw": "[SubGroup] The Movie Star Next Door - 03 [WEB-DL 1080p]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "03",
+   "src": "ab-golden",
+   "known_bug": true
+  },
+  {
+   "id": "ab_ambiguity_fraction_in_title",
+   "raw": "[SubGroup] Ranma 1/2 - 03 [WEB-DL 1080p]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "03",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_metadata_leading_movie",
+   "raw": "[MOVIE] Anime Title [1080p]",
+   "platform": null,
+   "media_type": "movie",
+   "episode": "??",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_metadata_leading_movie_cjk",
+   "raw": "[劇場版] Anime Title [1080p]",
+   "platform": null,
+   "media_type": "movie",
+   "episode": "??",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_metadata_leading_sxxexx",
+   "raw": "[S02E05] Anime Title [1080p]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "05",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_metadata_leading_season",
+   "raw": "[Season 2] Anime Title - 01 [1080p]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "01",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_metadata_leading_range",
+   "raw": "[E01-E12] Anime Title [1080p]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "??",
+   "src": "ab-golden",
+   "known_bug": true
+  },
+  {
+   "id": "ab_metadata_leading_technical",
+   "raw": "[BDRip 1080p] Anime Title - 01",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "01",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_special_attached_ova",
+   "raw": "[Group] 某作品OVA [1080p]",
+   "platform": null,
+   "media_type": "ova",
+   "episode": "??",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_special_attached_side_story",
+   "raw": "[Group] 某作品番外篇 [1080p]",
+   "platform": null,
+   "media_type": "ova",
+   "episode": "??",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_special_attached_special_chinese",
+   "raw": "[Group] 某作品特别篇 [1080p]",
+   "platform": null,
+   "media_type": "ova",
+   "episode": "??",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_collection_numbered_complete",
+   "raw": "[Group] 迷宫饭 全24话 [1080p]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "??",
+   "src": "ab-golden",
+   "known_bug": true
+  },
+  {
+   "id": "ab_technical_provider_labels",
+   "raw": "[EMBER] Frieren - 12.5 [BDRip 1080p AVC 8bit Dual Audio Multiple Subtitle MKV]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "12.5",
+   "src": "ab-golden",
+   "known_bug": true
+  },
+  {
+   "id": "ab_episode_plex_title",
+   "raw": "Mob Psycho 100 - S03E05 - Divine Tree 2 ~Peace~ [1080p]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "05",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_movie_inline_year",
+   "raw": "The Boy and the Heron 2023 1080p BluRay",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "??",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_ambiguity_pv_in_title",
+   "raw": "[Group] PV=nRT - 01 [1080p]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "01",
+   "src": "ab-golden",
+   "known_bug": true
+  },
+  {
+   "id": "ab_ambiguity_movie_title_only",
+   "raw": "[Group] The Movie Star Next Door [1080p]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "??",
+   "src": "ab-golden",
+   "known_bug": true
+  },
+  {
+   "id": "ab_ambiguity_special_title_only",
+   "raw": "[Group] Special A [1080p]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "??",
+   "src": "ab-golden",
+   "known_bug": true
+  },
+  {
+   "id": "ab_movie_numeric_title_cjk",
+   "raw": "[Group] 劇場版 呪術廻戦 0 [1080p]",
+   "platform": null,
+   "media_type": "movie",
+   "episode": "00",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_movie_numeric_title_romaji",
+   "raw": "[Group] Gekijouban Naruto 3 [1080p]",
+   "platform": null,
+   "media_type": "movie",
+   "episode": "03",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_episode_numeric_title_86",
+   "raw": "[Group] 86 - 01 [1080p]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "01",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_episode_numeric_title_22_7",
+   "raw": "[Group] 22/7 - 01 [1080p]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "01",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_episode_ordinal_season",
+   "raw": "[Group] Dandadan 2nd Season - 01 [1080p]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "01",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_episode_inside_technical_tag",
+   "raw": "[Group] Anime Title [01 1080p HEVC]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "01",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_technical_surround_audio",
+   "raw": "[Group] Anime Title - 01 [Dual Audio][DDP5.1][1080p]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "01",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_legacy_reject_range",
+   "raw": "[Group] Anime [01-12] [1080p]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "01",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_legacy_reject_batch",
+   "raw": "[Group] Anime Complete Batch [1080p]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "??",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_legacy_reject_pv",
+   "raw": "[Group] Anime PV2 [1080p]",
+   "platform": null,
+   "media_type": "extra",
+   "episode": "02",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_legacy_reject_ncop",
+   "raw": "[Group] Anime NCOP [1080p]",
+   "platform": null,
+   "media_type": "extra",
+   "episode": "??",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_legacy_reject_fractional",
+   "raw": "[Group] Anime - 12.5 [1080p]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "12.5",
+   "src": "ab-golden",
+   "known_bug": true
+  },
+  {
+   "id": "ab_episode_mikan_multiline",
+   "raw": "[喵萌奶茶屋&LoliHouse] 鹿乃子乃子乃子虎视眈眈 / Shikanoko Nokonoko Koshitantan\n- 01 [WebRip 1080p HEVC-10bit AAC][简繁内封字幕]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "01",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_episode_fullwidth_brackets",
+   "raw": "【幻樱字幕组】【4月新番】【古见同学有交流障碍症 第二季 Komi-san wa, Komyushou Desu. S02】【22】【GB_MP4】【1920X1080】",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "22",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_episode_chinese_marker",
+   "raw": "【极影字幕社】★4月新番 天国大魔境 Tengoku Daimakyou 第05话 GB 720P MP4（字幕社招人内详）",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "05",
+   "src": "ab-golden",
+   "known_bug": true
+  },
+  {
+   "id": "ab_episode_date_and_size_tags",
+   "raw": "[梦蓝字幕组]New Doraemon 哆啦A梦新番[747][2023.02.25][AVC][1080P][GB_JP][MP4][101.69 MB]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "747",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_episode_file_extension",
+   "raw": "[Lilith-Raws] Otonari no Tenshi-sama - 09 [Baha][WEB-DL][1080p][AVC AAC][CHT][MP4].mkv",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "09",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_episode_pre_release",
+   "raw": "[Group] Anime Title [01Pre] [1080p]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "??",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_episode_atlas_style",
+   "raw": "[Group] Anime Title [04_アニメサブタイトル] [1080p]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "04",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_episode_chinese_season",
+   "raw": "[Group] 某作品 第二季 - 08 [1080p]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "08",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_episode_season_episode_words",
+   "raw": "[Group] Anime Title Season 2 Episode 08 [1080p]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "08",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_auxiliary_ncop_versioned",
+   "raw": "[Group] Anime Title NCOPv2 [1080p]",
+   "platform": null,
+   "media_type": "extra",
+   "episode": "??",
+   "src": "ab-golden",
+   "known_bug": true
+  },
+  {
+   "id": "ab_auxiliary_nced_versioned",
+   "raw": "[Group] Anime Title NCEDv3 [1080p]",
+   "platform": null,
+   "media_type": "extra",
+   "episode": "??",
+   "src": "ab-golden",
+   "known_bug": true
+  },
+  {
+   "id": "ab_auxiliary_cm_numbered",
+   "raw": "[Group] Anime Title CM1 [1080p]",
+   "platform": null,
+   "media_type": "extra",
+   "episode": "??",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_movie_english_marker",
+   "raw": "[Group] Anime Title Movie [1080p]",
+   "platform": null,
+   "media_type": "movie",
+   "episode": "??",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_movie_romaji_marker",
+   "raw": "[Group] Gekijouban Anime Title [1080p]",
+   "platform": null,
+   "media_type": "movie",
+   "episode": "??",
+   "src": "ab-golden",
+   "known_bug": false
+  },
+  {
+   "id": "ab_negative_date_hash_size",
+   "raw": "[A1B2C3D4][1.2 GiB][2023-01-12]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "??",
+   "src": "ab-golden",
+   "known_bug": true
+  },
+  {
+   "id": "issue_00",
+   "raw": "[喵萌奶茶屋&LoliHouse] 鹿乃子乃子乃子虎视眈眈 / Shikanoko Nokonoko Koshitantan\\n- 01 [WebRip 1080p HEVC-10bit AAC][简繁内封字幕]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "01",
+   "src": "ab-issue",
+   "known_bug": false
+  },
+  {
+   "id": "issue_01",
+   "raw": "[LoliHouse] 轮回七次的反派大小姐，在前敌国享受随心所欲的新婚生活\\n / 7th Time Loop - 12 [WebRip 1080p HEVC-10bit AAC][简繁内封字幕][END]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "12",
+   "src": "ab-issue",
+   "known_bug": false
+  },
+  {
+   "id": "issue_03",
+   "raw": "[百冬练习组&LoliHouse] BanG Dream! 少女乐团派对！☆PICO FEVER！ / Garupa Pico: Fever! - 26 [WebRip 1080p HEVC-10bit AAC][简繁内封字幕][END] [101.69 MB]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "26",
+   "src": "ab-issue",
+   "known_bug": false
+  },
+  {
+   "id": "issue_04",
+   "raw": "【喵萌奶茶屋】★04月新番★[夏日重现/Summer Time Rendering][11][1080p][繁日双语][招募翻译]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "11",
+   "src": "ab-issue",
+   "known_bug": false
+  },
+  {
+   "id": "issue_05",
+   "raw": "[Lilith-Raws] 关于我在无意间被隔壁的天使变成废柴这件事 / Otonari no Tenshi-sama - 09 [Baha][WEB-DL][1080p][AVC AAC][CHT][MP4]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "09",
+   "src": "ab-issue",
+   "known_bug": false
+  },
+  {
+   "id": "issue_06",
+   "raw": "[梦蓝字幕组]New Doraemon 哆啦A梦新番[747][2023.02.25][AVC][1080P][GB_JP][MP4]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "747",
+   "src": "ab-issue",
+   "known_bug": false
+  },
+  {
+   "id": "issue_07",
+   "raw": "[织梦字幕组][尼尔：机械纪元 NieR Automata Ver1.1a][02集][1080P][AVC][简日双语]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "02",
+   "src": "ab-issue",
+   "known_bug": true
+  },
+  {
+   "id": "issue_08",
+   "raw": "[MagicStar] 假面骑士Geats / 仮面ライダーギーツ EP33 [WEBDL] [1080p] [TTFC]【生】",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "33",
+   "src": "ab-issue",
+   "known_bug": false
+  },
+  {
+   "id": "issue_10",
+   "raw": "【喵萌奶茶屋】★07月新番★[银砂糖师与黑妖精 ~ Sugar Apple Fairy Tale ~][13][1080p][简日双语][招募翻译]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "13",
+   "src": "ab-issue",
+   "known_bug": false
+  },
+  {
+   "id": "issue_11",
+   "raw": "[ANi]  16bit 的感动 ANOTHER LAYER - 01 [1080P][Baha][WEB-DL][AAC AVC][CHT][MP4]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "01",
+   "src": "ab-issue",
+   "known_bug": false
+  },
+  {
+   "id": "issue_12",
+   "raw": "[LoliHouse] 关于我转生变成史莱姆这档事 第二季 / Tensei shitara Slime Datta Ken 2nd Season - 01 [WebRip 1080p HEVC-10bit AAC][简繁内封字幕]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "01",
+   "src": "ab-issue",
+   "known_bug": false
+  },
+  {
+   "id": "issue_13",
+   "raw": "[NC-Raws] 葬送的芙莉莲 / Sousou no Frieren - 03 [B-Global][WEB-DL][2160p][AVC AAC][Multi Sub][MKV]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "03",
+   "src": "ab-issue",
+   "known_bug": false
+  },
+  {
+   "id": "issue_14",
+   "raw": "[LoliHouse] 狼与香辛料 [Season 2] / Spice and Wolf - 01 [WebRip 1080p HEVC-10bit AAC][简繁内封字幕]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "01",
+   "src": "ab-issue",
+   "known_bug": true
+  },
+  {
+   "id": "issue_15",
+   "raw": "[北宇治字幕组&LoliHouse] 地。-关于地球的运动- / Chi. Chikyuu no Undou ni Tsuite - 03 [WebRip 1080p HEVC-10bit AAC ASSx2][简繁日内封字幕]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "03",
+   "src": "ab-issue",
+   "known_bug": false
+  },
+  {
+   "id": "issue_16",
+   "raw": "[动漫国字幕组&LoliHouse] THE MARGINAL SERVICE - 08 [WebRip 1080p HEVC-10bit AAC][简繁内封字幕]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "08",
+   "src": "ab-issue",
+   "known_bug": false
+  },
+  {
+   "id": "issue_17",
+   "raw": "[ANi] 29 岁单身中坚冒险家的日常 - 07 [1080P][Baha][WEB-DL][AAC AVC][CHT][MP4]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "07",
+   "src": "ab-issue",
+   "known_bug": false
+  },
+  {
+   "id": "issue_18",
+   "raw": "[御坂字幕组] 男女之间存在纯友情吗？（不，不存在!!）-01 [WebRip 1080p HEVC10-bit AAC] [简繁日内封] [急招翻校轴]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "01",
+   "src": "ab-issue",
+   "known_bug": false
+  },
+  {
+   "id": "issue_19",
+   "raw": "[Doomdos] - 白色闪电 - 第02话 - [1080P].mp4",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "02",
+   "src": "ab-issue",
+   "known_bug": false
+  },
+  {
+   "id": "issue_20",
+   "raw": "[Up to 21°C] 鬼灭之刃 柱训练篇 / Kimetsu no Yaiba: Hashira Geiko-hen - 03 (CR 1920x1080 AVC AAC MKV)",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "03",
+   "src": "ab-issue",
+   "known_bug": false
+  },
+  {
+   "id": "issue_21",
+   "raw": "[ANi] 身为 VTuber 的我因为忘记关台而成了传说 - 01 [1080P][Baha][WEB-DL][AAC AVC][CHT][MP4][379.34 MB]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "01",
+   "src": "ab-issue",
+   "known_bug": false
+  },
+  {
+   "id": "issue_22",
+   "raw": "[ANi]  从 Lv2 开始开外挂的前勇者候补过著悠哉异世界生活 - 04 [1080P][Baha][WEB-DL][AAC AVC][CHT][MP4]",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "04",
+   "src": "ab-issue",
+   "known_bug": false
+  },
+  {
+   "id": "issue_23",
+   "raw": "Girls Band Cry S01E05 VOSTFR 1080p WEB x264 AAC -Tsundere-Raws (ADN)",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "05",
+   "src": "ab-issue",
+   "known_bug": false
+  },
+  {
+   "id": "issue_24",
+   "raw": "[Lilith-Raws] 天气之子 / Tenki no Ko 剧场版 [Baha][WEB-DL][1080p][MP4]",
+   "platform": null,
+   "media_type": "movie",
+   "episode": "??",
+   "src": "ab-issue",
+   "known_bug": false
+  },
+  {
+   "id": "issue_25",
+   "raw": "[SubGroup] 某剧场作品 Movie [1080p][MP4]",
+   "platform": null,
+   "media_type": "movie",
+   "episode": "??",
+   "src": "ab-issue",
+   "known_bug": false
+  },
+  {
+   "id": "issue_26",
+   "raw": "[LoliHouse] 鬼灭之刃 / Kimetsu no Yaiba OVA01 [WebRip 1080p HEVC-10bit AAC]",
+   "platform": null,
+   "media_type": "ova",
+   "episode": "01",
+   "src": "ab-issue",
+   "known_bug": false
+  },
+  {
+   "id": "issue_27",
+   "raw": "[SubGroup] 某动画 SP02 [1080p]",
+   "platform": null,
+   "media_type": "ova",
+   "episode": "02",
+   "src": "ab-issue",
+   "known_bug": false
+  },
+  {
+   "id": "issue_28",
+   "raw": "[SubGroup] 某动画 Special [1080p]",
+   "platform": null,
+   "media_type": "ova",
+   "episode": "??",
+   "src": "ab-issue",
+   "known_bug": false
+  },
+  {
+   "id": "issue_29",
+   "raw": "[ANi] 不時輕聲地以俄語遮羞的鄰座艾莉同學 - 02 [1080P][Baha][WEB-DL][AAC AVC][CHT].mp4",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "02",
+   "src": "ab-issue",
+   "known_bug": false
+  },
+  {
+   "id": "issue_30",
+   "raw": "冰之城墙「氷の城壁」The Ramparts of Ice S01E02 1080p 日英双语-多国字幕",
+   "platform": null,
+   "media_type": "tv",
+   "episode": "02",
+   "src": "ab-issue",
+   "known_bug": false
+  },
+  {
+   "id": "neg_spy_family",
+   "raw": "[Sakurato] SPY x FAMILY - 05 [AVC-8bit 1080p AAC][CHS].mkv",
+   "platform": "TV",
+   "media_type": "tv",
+   "episode": "05",
+   "src": "negative",
+   "known_bug": true
+  },
+  {
+   "id": "neg_sports",
+   "raw": "[Group] Sports Anime - 07 [1080p].mkv",
+   "platform": "TV",
+   "media_type": "tv",
+   "episode": "07",
+   "src": "negative",
+   "known_bug": true
+  },
+  {
+   "id": "neg_special_a",
+   "raw": "[Group] Special A - 05 [1080p].mkv",
+   "platform": "TV",
+   "media_type": "tv",
+   "episode": "05",
+   "src": "negative",
+   "known_bug": true
+  },
+  {
+   "id": "neg_movie_group",
+   "raw": "[Movie-Fan] Ordinary Anime - 01 [WEB-DL 1080p].mkv",
+   "platform": "TV",
+   "media_type": "tv",
+   "episode": "01",
+   "src": "negative",
+   "known_bug": true
+  },
+  {
+   "id": "neg_movie_in_title",
+   "raw": "[SubGroup] The Movie Star Next Door - 03 [WEB-DL 1080p].mkv",
+   "platform": "TV",
+   "media_type": "tv",
+   "episode": "03",
+   "src": "negative",
+   "known_bug": true
+  },
+  {
+   "id": "neg_filesize_dot5",
+   "raw": "[Group] Anime - 07 [1080p][85.5 MB].mkv",
+   "platform": "TV",
+   "media_type": "tv",
+   "episode": "07",
+   "src": "negative",
+   "known_bug": true
+  },
+  {
+   "id": "neg_dianyingban",
+   "raw": "[VCB-Studio]电影版哆啦A梦：大雄的地球交响乐[BDRip 1080p].mkv",
+   "platform": null,
+   "media_type": "movie",
+   "episode": "??",
+   "src": "negative",
+   "known_bug": true
+  },
+  {
+   "id": "neg_chinese_ep",
+   "raw": "【极影字幕社】★4月新番 天国大魔境 第05话 GB 720P MP4.mp4",
+   "platform": "TV",
+   "media_type": "tv",
+   "episode": "05",
+   "src": "negative",
+   "known_bug": true
+  },
+  {
+   "id": "neg_bracket_ep",
+   "raw": "【幻樱字幕组】【4月新番】【古见同学】【22】【GB_MP4】.mp4",
+   "platform": "TV",
+   "media_type": "tv",
+   "episode": "22",
+   "src": "negative",
+   "known_bug": true
+  },
+  {
+   "id": "neg_ver_ep",
+   "raw": "[织梦字幕组][尼尔 NieR Automata Ver1.1a][02话][1080P][AVC].mp4",
+   "platform": "TV",
+   "media_type": "tv",
+   "episode": "02",
+   "src": "negative",
+   "known_bug": true
+  },
+  {
+   "id": "neg_true_sp",
+   "raw": "[SubGroup] 某作品 SP02 [1080p].mkv",
+   "platform": null,
+   "media_type": "ova",
+   "episode": "02",
+   "src": "negative",
+   "known_bug": true
+  },
+  {
+   "id": "neg_true_ova",
+   "raw": "[LoliHouse] 鬼灭之刃 / Kimetsu no Yaiba OVA01 [WebRip 1080p].mkv",
+   "platform": null,
+   "media_type": "ova",
+   "episode": "01",
+   "src": "negative",
+   "known_bug": true
+  },
+  {
+   "id": "neg_true_movie",
+   "raw": "[SubGroup] 某剧场作品 Movie [1080p][MP4].mkv",
+   "platform": null,
+   "media_type": "movie",
+   "episode": "??",
+   "src": "negative",
+   "known_bug": true
+  },
+  {
+   "id": "neg_ncop_versioned",
+   "raw": "[VCB-Studio] Anime Title NCOPv2 [BDRip 1080p].mkv",
+   "platform": null,
+   "media_type": "extra",
+   "episode": null,
+   "src": "negative",
+   "known_bug": true
+  },
+  {
+   "id": "pack_bare_01",
+   "raw": "01.mkv",
+   "platform": "TV",
+   "media_type": "tv",
+   "episode": "01",
+   "src": "pack-bare",
+   "known_bug": true
+  },
+  {
+   "id": "pack_bare_02",
+   "raw": "02.mkv",
+   "platform": "TV",
+   "media_type": "tv",
+   "episode": "02",
+   "src": "pack-bare",
+   "known_bug": true
+  },
+  {
+   "id": "pack_bare_12",
+   "raw": "12.mkv",
+   "platform": "TV",
+   "media_type": "tv",
+   "episode": "12",
+   "src": "pack-bare",
+   "known_bug": true
+  },
+  {
+   "id": "pack_bare_1",
+   "raw": "1.mkv",
+   "platform": "TV",
+   "media_type": "tv",
+   "episode": "01",
+   "src": "pack-bare",
+   "known_bug": true
+  },
+  {
+   "id": "pack_bare_mp4",
+   "raw": "05.mp4",
+   "platform": "TV",
+   "media_type": "tv",
+   "episode": "05",
+   "src": "pack-bare",
+   "known_bug": true
+  },
+  {
+   "id": "pack_titled_ep",
+   "raw": "Anime Title - 05.mkv",
+   "platform": "TV",
+   "media_type": "tv",
+   "episode": "05",
+   "src": "pack-bare",
+   "known_bug": true
+  },
+  {
+   "id": "pack_ova_noep",
+   "raw": "OVA.mkv",
+   "platform": "TV",
+   "media_type": "ova",
+   "episode": "??",
+   "src": "pack-bare",
+   "known_bug": true
+  },
+  {
+   "id": "pack_bonus_noep",
+   "raw": "特典映像.mkv",
+   "platform": "TV",
+   "media_type": "ova",
+   "episode": "??",
+   "src": "pack-bare",
+   "known_bug": true
+  },
+  {
+   "id": "pack_half_ep",
+   "raw": "[EMBER] Frieren - 12.5 [BDRip 1080p].mkv",
+   "platform": "TV",
+   "media_type": "tv",
+   "episode": "12.5",
+   "src": "pack-bare",
+   "known_bug": true
+  },
+  {
+   "id": "pack_half_ep_pad",
+   "raw": "[Group] Anime - 9.5 [1080p].mkv",
+   "platform": "TV",
+   "media_type": "tv",
+   "episode": "09.5",
+   "src": "pack-bare",
+   "known_bug": true
+  }
+ ]
+}
