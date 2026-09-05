@@ -915,15 +915,12 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
     });
   };
 
-  // 标记已看:乐观标记,不等真的播完——点开/切到这一集就算。
-  // folderName来自调用方各自的上下文(选中的番,或者从mpv上报路径反推出来的),
-  // 不用同一个"当前选中番"假设,因为mpv连播时用户可能已经切走界面。
-  const markWatched = (folderName: string, filename: string, relPath?: string) => {
-    fetch(`${API_BASE}/library/watch`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ folder_name: folderName, filename, rel_path: relPath ?? null }),
-    }).catch((err: any) => console.error("标记进度失败", err));
+  // 乐观刷新本地状态(详情页勾选 + 网格角标),不等真的播完——点开/切到这一集就算。
+  // folderName来自调用方各自的上下文(选中的番,或者从mpv/PotPlayer上报路径反推出来的),
+  // 不用同一个"当前选中番"假设,因为连播时用户可能已经切走界面。
+  // 纯本地状态更新,不发请求——写库这件事现在由 Rust 后台层(lib.rs::report_episode_started)
+  // 在检测到切集的那一刻直接完成,不依赖这个页面是否还挂载着,自然也不该重复发一遍。
+  const applyWatchedLocally = (folderName: string, filename: string) => {
     // 返回网格时静默重拉一次,让角标落到后端刚增量好的准确值(见 handleBack)
     watchedInDetailRef.current = true;
 
@@ -970,6 +967,19 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
           : a,
       ),
     );
+  };
+
+  // 用户手动点开某一集播放:这一下是前端唯一权威来源(播放器这时候还没启动,
+  // Rust 后台无从得知),既要发请求写库、也要立即刷新本地画面。
+  // 自动连播切到的后续集数走的是下面的 onEpisodeStarted 监听器,不经过这里
+  // ——那部分写库已经由 Rust 后台直接做了,监听器只调 applyWatchedLocally 刷画面。
+  const markWatched = (folderName: string, filename: string, relPath?: string) => {
+    fetch(`${API_BASE}/library/watch`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ folder_name: folderName, filename, rel_path: relPath ?? null }),
+    }).catch((err: any) => console.error("标记进度失败", err));
+    applyWatchedLocally(folderName, filename);
   };
 
   // ---- 归属弹窗 ----
@@ -1096,7 +1106,10 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
     const onEpisodeStarted = (event: { payload: { path: string } }) => {
       const parsed = parseLibraryPath(event.payload.path, settings.library_root);
       if (!parsed) return;
-      markWatched(parsed.folderName, parsed.filename, parsed.relPath);
+      // 写库已经由 Rust 后台(lib.rs::report_episode_started)在检测到切集的那一刻
+      // 直接完成了,不依赖这个页面是否还挂载着;这里只在页面还在场时顺手刷新画面,
+      // 不再重复发请求。
+      applyWatchedLocally(parsed.folderName, parsed.filename);
     };
 
     for (const eventName of ["mpv-episode-started", "external-episode-started"]) {

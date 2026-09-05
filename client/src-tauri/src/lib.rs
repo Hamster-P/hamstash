@@ -185,6 +185,80 @@ async fn fetch_proxy_url() -> Option<String> {
     }
 }
 
+/// 读后端配置的媒体库根目录,给下面 split_library_path 拆路径用。
+async fn fetch_library_root() -> Option<String> {
+    let resp = reqwest::get("http://127.0.0.1:8080/settings").await.ok()?;
+    let data: serde_json::Value = resp.json().await.ok()?;
+    let root = data.get("library_root")?.as_str()?.trim().to_string();
+    if root.is_empty() {
+        None
+    } else {
+        Some(root)
+    }
+}
+
+/// 把播放器上报的绝对路径拆成 {folder_name, filename, rel_path},跟前端
+/// LibraryPage.tsx::parseLibraryPath 同一套口径:分隔符统一成'\\'、前缀比较
+/// 大小写不敏感,但按字符数(不是字节数,CJK路径下按字节切片会崩)从原始大小写
+/// 字符串上切,保留磁盘上文件夹/文件名的真实大小写。不落在 library_root 下、
+/// 或落在 library_root 本身(不含子路径)时返回 None。
+fn split_library_path(full_path: &str, library_root: &str) -> Option<(String, String, String)> {
+    let normalized_root: String = library_root
+        .trim_end_matches(['/', '\\'])
+        .replace('/', "\\")
+        .to_lowercase();
+    let normalized_full: String = full_path.replace('/', "\\");
+    if !normalized_full.to_lowercase().starts_with(&normalized_root) {
+        return None;
+    }
+
+    let root_char_len = normalized_root.chars().count();
+    let rel: String = normalized_full
+        .chars()
+        .skip(root_char_len)
+        .collect::<String>()
+        .trim_start_matches('\\')
+        .to_string();
+
+    let parts: Vec<&str> = rel.split('\\').filter(|p| !p.is_empty()).collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    let folder_name = parts[0].to_string();
+    let filename = parts[parts.len() - 1].to_string();
+    let rel_path = parts.join("/");
+    Some((folder_name, filename, rel_path))
+}
+
+/// 切集这一刻立即调用:后台自己把这次观看直接写进库(不经过前端),同时把消息广播给
+/// 前端——前端如果活着(监听器还在)就借这条消息乐观刷新画面,前端死没死都不影响
+/// 这次写库有没有成功(见 lib.rs 顶部关于 Session 0 / 记录职责的说明)。
+async fn report_episode_started(app: &AppHandle, event_name: &str, full_path: &str) {
+    if let Some(root) = fetch_library_root().await {
+        if let Some((folder_name, filename, rel_path)) = split_library_path(full_path, &root) {
+            let client = reqwest::Client::new();
+            let body = serde_json::json!({
+                "folder_name": folder_name,
+                "filename": filename,
+                "rel_path": rel_path,
+            });
+            if let Err(e) = client
+                .post("http://127.0.0.1:8080/library/watch")
+                .json(&body)
+                .send()
+                .await
+            {
+                eprintln!("[watch-report] 上报已看失败(不影响播放): {}", e);
+            }
+        } else {
+            eprintln!("[watch-report] 路径不在媒体库目录下,跳过上报: {}", full_path);
+        }
+    } else {
+        eprintln!("[watch-report] 读取 library_root 失败,跳过上报: {}", full_path);
+    }
+    let _ = app.emit(event_name, serde_json::json!({ "path": full_path }));
+}
+
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
@@ -372,11 +446,9 @@ async fn run_potplayer_title_watcher(app: AppHandle) {
                 }
             }
 
-            // 负载形状跟mpv那条事件保持一致,前端可以共用同一套处理逻辑
-            let _ = app.emit(
-                "external-episode-started",
-                serde_json::json!({ "path": path.to_string_lossy() }),
-            );
+            // 负载形状跟mpv那条事件保持一致,前端可以共用同一套处理逻辑;写库这一步
+            // 已经在 report_episode_started 内部直接做了,不依赖前端是否还在监听。
+            report_episode_started(&app, "external-episode-started", &path.to_string_lossy()).await;
             break;
         }
     }
@@ -500,7 +572,7 @@ async fn run_mpv_ipc_listener(app: AppHandle, pipe_name: String, video_paths: Ve
                 .unwrap_or_default();
 
             if !path.is_empty() {
-                let _ = app.emit("mpv-episode-started", serde_json::json!({ "path": path }));
+                report_episode_started(&app, "mpv-episode-started", &path).await;
             }
         }
     }
