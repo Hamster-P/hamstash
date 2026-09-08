@@ -17,7 +17,7 @@ interface TorrentFile {
   progress: number; // 0-100
 }
 
-const API_BASE = "http://127.0.0.1:8080";
+import { API_BASE } from "../api";
 const POLL_INTERVAL_MS = 5000;
 const PAGE_SIZE = 20;
 const STATUS_OPTIONS = ["全部", "下载中", "已完成", "已整理", "出错"] as const;

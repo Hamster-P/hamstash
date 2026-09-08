@@ -24,7 +24,7 @@ interface RssMatchedItem {
   matched_at: string;
 }
 
-const API_BASE = "http://127.0.0.1:8080";
+import { API_BASE } from "../api";
 
 function formatDate(iso: string) {
   try {

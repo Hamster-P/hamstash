@@ -3,9 +3,10 @@ services:
     build: ./server
     container_name: hamstash-server
     ports:
-      - "8080:8000"
+      - "17420:17420"
     environment:
       - QBIT_HOST=host.docker.internal  # 让 Docker 镜像能继续读取到这个配置
+      - SERVER_PORT=17420               # 后端监听端口(默认 17420,避开 qBittorrent 的 8080)
     volumes:
       - ./server:/app
       - "D:/AnimeLibrary:/AnimeLibrary"

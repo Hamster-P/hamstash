@@ -12,8 +12,7 @@ import DetailPage from "./pages/DetailPage";
 import QbittorrentSetupPage from "./pages/QbittorrentSetupPage";
 import { ThemeProvider } from "./theme/ThemeContext";
 import "./index.css";
-
-const API_BASE = "http://127.0.0.1:8080";
+import { API_BASE } from "./api";
 
 interface DownloadPrefill {
   keyword: string;

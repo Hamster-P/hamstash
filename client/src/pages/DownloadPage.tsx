@@ -34,7 +34,7 @@ interface DownloadPageProps {
   onBack?: () => void;
 }
 
-const API_BASE = "http://127.0.0.1:8080";
+import { API_BASE } from "../api";
 const QUALITY_OPTIONS = ["不限", "1080p", "720p", "2160p"];
 // 数据源清单不再前端硬编码,改由后端 GET /resources/sources 动态下发(见 sources state),
 // 新增/停用/改地址都在设置页配置,前端只渲染 enabled 的那些。

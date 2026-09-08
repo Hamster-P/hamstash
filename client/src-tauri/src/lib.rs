@@ -1,8 +1,62 @@
 // lib.rs
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+/// 后端服务默认端口(避开 qBittorrent WebUI 默认的 8080)。
+/// 跟 server/config_store.py::DEFAULTS["server_port"] 保持一致。
+const DEFAULT_API_PORT: u16 = 17420;
+
+/// settings.ini 的位置,跟 server/paths.py 的判断一致:
+/// - 打包安装(release):%ProgramData%\hamstash\settings.ini
+/// - 源码/开发(debug):<仓库>/server/data/settings.ini
+fn settings_ini_path() -> PathBuf {
+    if cfg!(debug_assertions) {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../server/data/settings.ini")
+    } else {
+        let program_data =
+            std::env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".to_string());
+        PathBuf::from(program_data).join("hamstash").join("settings.ini")
+    }
+}
+
+/// 后端实际监听的端口。读 settings.ini 里的 `server_port`(手工找那一行,不引 ini 解析库),
+/// 读不到 / 解析失败一律回落默认值。进程内只算一次。
+fn api_port_value() -> u16 {
+    static CACHED: OnceLock<u16> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        let Ok(text) = std::fs::read_to_string(settings_ini_path()) else {
+            return DEFAULT_API_PORT;
+        };
+        for line in text.lines() {
+            let line = line.trim();
+            if let Some(rest) = line.strip_prefix("server_port") {
+                if let Some(v) = rest.trim_start().strip_prefix('=') {
+                    if let Ok(port) = v.trim().parse::<u16>() {
+                        if port >= 1024 {
+                            return port;
+                        }
+                    }
+                }
+            }
+        }
+        DEFAULT_API_PORT
+    })
+}
+
+/// 拼本地后端接口地址,`path` 以 `/` 开头。
+fn api_url(path: &str) -> String {
+    format!("http://127.0.0.1:{}{}", api_port_value(), path)
+}
+
+/// 前端启动时 invoke 一次,拿到后端端口后拼出 API_BASE(见 client/src/api.ts)。
+#[tauri::command]
+fn api_port() -> u16 {
+    api_port_value()
+}
 
 use tauri::webview::PageLoadEvent;
 use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Webview, WebviewBuilder, WebviewUrl};
@@ -28,7 +82,7 @@ struct BgmEmbedState(tokio::sync::Mutex<Option<BgmEmbed>>);
 
 /// 在详情页里"内嵌"打开Bangumi详情页,用的是Tauri的"子webview"机制
 /// (window.add_child,而不是新开一个独立窗口)——子webview可以单独设代理(.proxy_url),
-/// 只影响这一个子webview,不会连累主窗口(承载React应用、访问本地后端127.0.0.1:8080)。
+/// 只影响这一个子webview,不会连累主窗口(承载React应用、访问本地后端 127.0.0.1:<后端端口>)。
 /// 子webview在父窗口里的位置/大小由前端传入(对应详情页里那块占位div在屏幕上的实际位置),
 /// 视觉上就是"内嵌"在页面布局里的效果。
 ///
@@ -173,9 +227,7 @@ async fn close_bgm_webview(state: tauri::State<'_, BgmEmbedState>) -> Result<(),
 /// (见server/services/common.py的_detect_system_proxy)。读proxy_url的话,
 /// 用户明明开着系统代理却没在设置页填过,这里就会拿到空值、白白降级成直连。
 async fn fetch_proxy_url() -> Option<String> {
-    let resp = reqwest::get("http://127.0.0.1:8080/settings")
-        .await
-        .ok()?;
+    let resp = reqwest::get(api_url("/settings")).await.ok()?;
     let data: serde_json::Value = resp.json().await.ok()?;
     let proxy = data.get("effective_proxy_url")?.as_str()?.trim().to_string();
     if proxy.is_empty() {
@@ -187,7 +239,7 @@ async fn fetch_proxy_url() -> Option<String> {
 
 /// 读后端配置的媒体库根目录,给下面 split_library_path 拆路径用。
 async fn fetch_library_root() -> Option<String> {
-    let resp = reqwest::get("http://127.0.0.1:8080/settings").await.ok()?;
+    let resp = reqwest::get(api_url("/settings")).await.ok()?;
     let data: serde_json::Value = resp.json().await.ok()?;
     let root = data.get("library_root")?.as_str()?.trim().to_string();
     if root.is_empty() {
@@ -243,7 +295,7 @@ async fn report_episode_started(app: &AppHandle, event_name: &str, full_path: &s
                 "rel_path": rel_path,
             });
             if let Err(e) = client
-                .post("http://127.0.0.1:8080/library/watch")
+                .post(api_url("/library/watch"))
                 .json(&body)
                 .send()
                 .await
@@ -599,6 +651,7 @@ pub fn run() {
             embed_bgm_webview,
             resize_bgm_webview,
             close_bgm_webview,
+            api_port,
             greet
         ])
         .run(tauri::generate_context!())

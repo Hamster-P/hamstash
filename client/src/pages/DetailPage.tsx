@@ -26,7 +26,7 @@ interface DetailPageProps {
   onConfirmMatch?: (bgmId: number) => void;
 }
 
-const API_BASE = "http://127.0.0.1:8080";
+import { API_BASE } from "../api";
 
 // 内嵌webview多久没报告"页面加载完成"就认为加载不出来。给得比较宽松,
 // 因为走代理连bgm.tv本来就慢,不能刚过几秒就误报。

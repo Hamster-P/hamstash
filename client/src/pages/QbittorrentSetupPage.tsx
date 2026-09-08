@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { CheckCircle2, XCircle, Loader2 } from "lucide-react";
 
-const API_BASE = "http://127.0.0.1:8080";
+import { API_BASE } from "../api";
 
 type Branch = "has_webui" | "installed_no_webui" | "not_installed" | null;
 

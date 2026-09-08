@@ -71,6 +71,7 @@ def get_settings(db: Session = Depends(get_db)):
         "library_unwatched_badge_enabled": get_setting(
             db, "library_unwatched_badge_enabled", config_store.DEFAULTS["library_unwatched_badge_enabled"]
         ) == "true",
+        "server_port": int(get_setting(db, "server_port", config_store.DEFAULTS["server_port"])),
         # 只读:实际生效的代理地址(手填留空时是探测到的系统代理)。跟proxy_url分开返回,
         # 不能把探测值回填进设置页输入框——那样用户一点保存就把探测结果固化成手动配置了。
         # 客户端Rust侧创建内嵌webview时读的是这个值(见src-tauri/src/lib.rs)。
@@ -105,6 +106,7 @@ def update_settings(payload: SettingsUpdate, db: Session = Depends(get_db)):
     old_cover_strategy = get_setting(
         db, "library_cover_strategy", config_store.DEFAULTS["library_cover_strategy"]
     )
+    old_server_port = get_setting(db, "server_port", config_store.DEFAULTS["server_port"])
 
     values = {
         "download_root": payload.download_root,
@@ -121,6 +123,9 @@ def update_settings(payload: SettingsUpdate, db: Session = Depends(get_db)):
         "download_sources": payload.download_sources,
         "library_cover_strategy": payload.library_cover_strategy,
         "library_unwatched_badge_enabled": str(payload.library_unwatched_badge_enabled).lower(),
+        # 必须放进这个 values dict:write_ini 会整段重写 INI 的 [settings] 段,漏了就每次
+        # 保存别的设置都把端口冲回默认。run_service.py 和 Rust 侧都从 INI 读这个值。
+        "server_port": str(payload.server_port),
     }
     for key, value in values.items():
         upsert_setting(db, key, value)
@@ -138,7 +143,9 @@ def update_settings(payload: SettingsUpdate, db: Session = Depends(get_db)):
     # 库目录变了:数据库要挪到新目录下,但这是进程启动时才做的引导逻辑(见database.py),
     # 不在这里做运行中途的热搬运,提示前端需要重启应用才会真正生效。
     restart_required = payload.library_root != old_library_root
-    return {**values, "restart_required": restart_required}
+    # 端口变了:run_service.py 只在进程启动时读一次 INI,要重启 HamStashServer 服务才生效。
+    port_changed = str(payload.server_port) != str(old_server_port)
+    return {**values, "restart_required": restart_required, "port_changed": port_changed}
 
 
 async def _probe(client: httpx.AsyncClient, name: str, url: str, note: str) -> dict:

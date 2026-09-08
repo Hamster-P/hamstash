@@ -92,11 +92,20 @@ class SettingsUpdate(BaseModel):
     library_cover_strategy: str = "latest_tv"
     # 媒体库卡片"未看集数"角标开关
     library_unwatched_badge_enabled: bool = True
+    # 后端服务监听端口(见 config_store.DEFAULTS['server_port'])。改了要重启 HamStashServer 服务才生效。
+    server_port: int = 17420
 
     @field_validator("proxy_url")
     @classmethod
     def validate_proxy_url(cls, value: str) -> str:
         return validate_proxy_url_value(value)
+
+    @field_validator("server_port")
+    @classmethod
+    def validate_server_port(cls, value: int) -> int:
+        if not (1024 <= value <= 65535):
+            raise ValueError("后端端口必须在 1024–65535 之间")
+        return value
 
     @field_validator("download_sources")
     @classmethod

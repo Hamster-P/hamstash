@@ -9,7 +9,7 @@ interface SearchPageProps {
   onCancelManualMatch?: () => void;
 }
 
-const API_BASE = "http://127.0.0.1:8080";
+import { API_BASE } from "../api";
 
 // 搜索页从追更/搜索点进详情页时会整个卸载(App.tsx用selectedBgmId整页切换出DetailPage),
 // 回来就是重新mount——关键词、年份/季度筛选、结果列表、翻页状态都要整体存起来一起恢复,

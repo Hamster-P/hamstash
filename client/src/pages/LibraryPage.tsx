@@ -129,7 +129,7 @@ function cleanTitleFromFilename(filename: string): string {
     .trim();
 }
 
-const API_BASE = "http://127.0.0.1:8080";
+import { API_BASE } from "../api";
 
 // 从"补番一览"点某部关联作品会跳到顶层 DetailPage(见 App.tsx 的 selectedBgmId 分支),
 // 整个 LibraryPage 被卸载,组件内 state / useRef 全部销毁。要在 DetailPage「返回」后

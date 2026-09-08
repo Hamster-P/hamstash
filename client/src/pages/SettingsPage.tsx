@@ -14,7 +14,7 @@ import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { useTheme } from "../theme/ThemeContext";
 
-const API_BASE = "http://127.0.0.1:8080";
+import { API_BASE } from "../api";
 const POLL_MINUTES_MIN = 1;
 const POLL_MINUTES_MAX = 1440; // 24小时,防呆用的合理上限
 
@@ -114,6 +114,7 @@ interface SavedSnapshot {
   coverStrategy: string;
   unwatchedBadgeEnabled: boolean;
   proxyUrl: string;
+  serverPort: number; // 后端服务端口,改了要重启 HamStashServer 服务才生效
   sourcesJson: string; // serializeSources 的结果,做 dirty 比较
 }
 
@@ -135,6 +136,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
   // 媒体库卡片"未看集数"角标开关
   const [unwatchedBadgeEnabled, setUnwatchedBadgeEnabled] = useState(true);
   const [proxyUrl, setProxyUrl] = useState("");
+  const [serverPort, setServerPort] = useState(17420);
   const [pollMinutes, setPollMinutes] = useState(5);
   const [rssPollMinutes, setRssPollMinutes] = useState(30);
   const [saving, setSaving] = useState(false);
@@ -197,6 +199,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
             : "latest_tv",
           unwatchedBadgeEnabled: data.library_unwatched_badge_enabled !== false,
           proxyUrl: data.proxy_url ?? "",
+          serverPort: Number(data.server_port) || 17420,
           sourcesJson,
         };
         setDownloadRoot(next.downloadRoot);
@@ -210,6 +213,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
         setCoverStrategy(next.coverStrategy);
         setUnwatchedBadgeEnabled(next.unwatchedBadgeEnabled);
         setProxyUrl(next.proxyUrl);
+        setServerPort(next.serverPort);
         setSavedSnapshot(next);
       })
       .catch(() => {});
@@ -230,6 +234,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
       coverStrategy !== savedSnapshot.coverStrategy ||
       unwatchedBadgeEnabled !== savedSnapshot.unwatchedBadgeEnabled ||
       proxyUrl !== savedSnapshot.proxyUrl ||
+      serverPort !== savedSnapshot.serverPort ||
       serializeSources(sourceConfigs) !== savedSnapshot.sourcesJson);
 
   const checkQbStatus = () => {
@@ -305,6 +310,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
           library_unwatched_badge_enabled: unwatchedBadgeEnabled,
           proxy_url: proxyUrl.trim(),
           download_sources: serializeSources(sourceConfigs),
+          server_port: serverPort,
         }),
       });
       if (!res.ok) {
@@ -313,9 +319,11 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
       }
       const data = await res.json();
       setSaveMessage(
-        data.restart_required
-          ? "已保存 — 媒体库目录已变更,请重启程序以完成数据库迁移"
-          : "已保存",
+        data.port_changed
+          ? "已保存 — 后端端口已变更,请重启 HamStashServer 服务(或重启电脑)后生效"
+          : data.restart_required
+            ? "已保存 — 媒体库目录已变更,请重启程序以完成数据库迁移"
+            : "已保存",
       );
       setSavedSnapshot({
         downloadRoot,
@@ -329,6 +337,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
         coverStrategy,
         unwatchedBadgeEnabled,
         proxyUrl: proxyUrl.trim(),
+        serverPort,
         sourcesJson: serializeSources(sourceConfigs),
       });
     } catch (err) {
@@ -665,6 +674,37 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
         <ProxyTestSection
           proxyUrl={proxyUrl}
           sourceIds={sourceConfigs.filter((s) => s.enabled).map((s) => s.id)}
+        />
+      </div>
+
+      {/* 后端服务(HamStashServer)监听的本地端口。默认 17420,避开 qBittorrent WebUI 默认的 8080 */}
+      <div className="mb-6 rounded-md border border-border bg-surface p-4">
+        <div className="mb-1 text-sm">后端服务端口</div>
+        <p className="mb-3 font-mono text-[11px] text-muted">
+          本机 HamStashServer 服务监听的端口(1024~65535),默认 17420。
+          一般不用改,只有跟本机其他软件端口冲突时才需要。
+          <span className="text-vermillion">修改后需重启 HamStashServer 服务(或重启电脑)才会生效。</span>
+        </p>
+        <input
+          type="number"
+          inputMode="numeric"
+          min={1024}
+          max={65535}
+          step={1}
+          value={serverPort}
+          onKeyDown={(e) => {
+            if (["e", "E", "+", "-", "."].includes(e.key)) e.preventDefault();
+          }}
+          onChange={(e) => {
+            const digitsOnly = e.target.value.replace(/[^0-9]/g, "");
+            setServerPort(digitsOnly === "" ? 0 : Math.min(Number(digitsOnly), 65535));
+          }}
+          onBlur={() => {
+            if (serverPort < 1024 || serverPort > 65535) {
+              setServerPort(savedSnapshot?.serverPort ?? 17420);
+            }
+          }}
+          className="w-40 rounded border border-border bg-ink px-3 py-2 text-sm text-paper outline-none focus:border-vermillion focus:ring-1 focus:ring-vermillion"
         />
       </div>
         </>

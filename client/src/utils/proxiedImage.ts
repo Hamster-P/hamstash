@@ -1,4 +1,4 @@
-const API_BASE = "http://127.0.0.1:8080";
+import { API_BASE } from "../api";
 
 // Bangumi封面图走后端/media/image-proxy转发,而不是<img>直连图床——
 // WebView的<img>请求是前端自己发的,不经过后端,吃不到设置里配的网络代理,

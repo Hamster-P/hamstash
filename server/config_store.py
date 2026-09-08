@@ -29,6 +29,10 @@ DEFAULTS = {
     # http://127.0.0.1:8000(Clash等工具的本地混合端口)。留空=直连,不走代理。
     # 只影响这几个外部站点的请求,不影响本地qBittorrent连接。
     "proxy_url": "",
+    # 后端 FastAPI 服务监听的本地端口。默认 17420(避开 qBittorrent WebUI 默认的 8080)。
+    # run_service.py 启动时读这里;Rust 侧(src-tauri/src/lib.rs)也直接读同一个 INI 文件,
+    # 前端通过 Tauri 命令 api_port 拿。改了要重启 HamStashServer 服务才生效。
+    "server_port": os.getenv("SERVER_PORT", "17420"),
     "qbit_host": os.getenv("QBIT_HOST", "127.0.0.1"),
     "qbit_port": os.getenv("QBIT_PORT", "8080"),
     "qbit_username": os.getenv("QBIT_USERNAME", "admin"),

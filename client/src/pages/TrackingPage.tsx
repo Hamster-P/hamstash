@@ -14,7 +14,7 @@ interface TrackingPageProps {
   onSelectAnime: (bgmId: number) => void;
 }
 
-const API_BASE = "http://127.0.0.1:8080";
+import { API_BASE } from "../api";
 const days = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
 
 // v3:过滤国漫的判断依据从name/name_cn启发式换成Bangumi官方meta_tags产地标签,
