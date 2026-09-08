@@ -665,7 +665,6 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
           留空时会自动沿用系统代理(Windows"设置-网络和Internet-代理"里配的那个);
           按进程分流(比如Proxifier)或TUN/增强模式探测不到,前者需要在这里手动填,
           后者本来就是透明转发、留空直连即可。
-          注:详情页内嵌的 Bangumi 页面暂不支持 socks4,该项走代理需用 http/socks5,否则用「在浏览器打开」。
         </p>
         <input
           value={proxyUrl}

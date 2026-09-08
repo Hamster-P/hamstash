@@ -155,16 +155,37 @@ async fn embed_bgm_webview(
         });
 
     if let Some(proxy) = &proxy_url {
-        match proxy.parse() {
+        match proxy.parse::<tauri::Url>() {
             Ok(parsed) => {
-                builder = builder.proxy_url(parsed);
-                // wry是把代理拼成--proxy-server=塞进WebView2 environment的
-                // AdditionalBrowserArguments里的,而environment按data_directory复用。
-                // 不单独指定目录的话这个子webview会跟主窗口共用同一个用户数据目录,
-                // 但WebView2要求同一个用户数据目录下的browser arguments必须一致——
-                // 结果就是上面这行proxy_url要么让创建直接失败,要么被静默忽略、
-                // 沿用主窗口那份(没有代理)。给它一个自己的目录才能拿到独立的
-                // environment,proxy_url才真正生效。
+                let scheme = parsed.scheme().to_ascii_lowercase();
+                if scheme == "http" || scheme == "socks5" {
+                    // http / socks5 走 Tauri 原生 proxy_url。
+                    builder = builder.proxy_url(parsed);
+                } else if scheme == "socks4" || scheme == "socks4a" {
+                    // tauri-runtime-wry 的 parse_proxy_url 只认 http/socks5,socks4 会
+                    // 直接 Err(InvalidProxyUrl) 让 add_child 整个失败。绕过它:
+                    // WebView2 底层是 Chromium,--proxy-server 原生支持 socks4://,
+                    // 用 additional_browser_args 直喂(会覆盖 wry 默认参数,所以把
+                    // 默认那串 --disable-features 也一并带上)。socks4a 的远程 DNS
+                    // 语义 Chromium 的 socks4:// 已默认按 4a 处理,不用区分。
+                    let (host, port) = (
+                        parsed.host_str().unwrap_or("127.0.0.1"),
+                        parsed.port().unwrap_or(1080),
+                    );
+                    builder = builder.additional_browser_args(&format!(
+                        "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection \
+                         --proxy-server=socks4://{host}:{port}"
+                    ));
+                } else {
+                    eprintln!("[embed_bgm_webview] 不支持的代理协议,内嵌页直连: {}", proxy);
+                }
+
+                // wry 把代理(不管走哪条路)塞进 WebView2 environment 的
+                // AdditionalBrowserArguments,而 environment 按 data_directory 复用。
+                // 不单独指定目录的话这个子 webview 会跟主窗口共用用户数据目录,而
+                // WebView2 要求同一目录下 browser arguments 必须一致 —— 结果就是代理
+                // 要么让创建直接失败,要么被静默忽略、沿用主窗口那份(没代理)。
+                // 给它自己的目录才能拿到独立 environment,代理才真正生效。
                 match app.path().app_local_data_dir() {
                     Ok(dir) => builder = builder.data_directory(dir.join("bgm-embed")),
                     Err(e) => eprintln!(

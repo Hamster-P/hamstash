@@ -1,6 +1,7 @@
 # Changelog
 ## [未发布]
-- **网络代理新增支持 SOCKS4 / SOCKS4a**（此前只支持 http/https/socks5）。部分国内加速器（如 Anycast VPN）只提供本地 SOCKS4 代理，现在在设置页填 `socks4a://127.0.0.1:端口` 即可让追更 / 搜索 / 媒体库元数据走代理。注意：详情页内嵌的 Bangumi 页面暂不支持 socks4，可用「在浏览器打开」
+- **网络代理新增支持 SOCKS4 / SOCKS4a**（此前只支持 http/https/socks5）。部分国内加速器（如 Anycast VPN）只提供本地 SOCKS4 代理，现在在设置页填 `socks4a://127.0.0.1:端口` 即可让追更 / 搜索 / 媒体库元数据、以及详情页内嵌的 Bangumi 页面都走代理
+- 修复**填 socks4 代理时，详情页点「Bangumi介绍」直接报「创建内嵌webview失败」**的问题（底层 wry 只认 http/socks5，socks4 会让子窗口创建失败）
 
 ## [0.8.2] - 2026-09-07
 - 修复 PotPlayer/内置播放器**自动连播时，只要切出「影视库」页签，后续集数就不再自动标记已看**的问题
