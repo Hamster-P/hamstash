@@ -1243,19 +1243,27 @@ def move_media_file_with_sync(
 
     _migrate_playback_record(db, current_rel, proposed_rel)
 
-    # 同步"剧场版模式"登记表的路径:改名后旧 rel_path 会失效,这里跟着更新
+    # 同步"剧场版模式"登记表:改名后旧 rel_path 会失效。
     # (本模块相对路径都是正斜杠,与 StandaloneMedia.rel_path 同格式)。
     new_rel = _same_relpath(proposed_rel)
-    db.query(models.StandaloneMedia).filter(
+    new_parts = new_rel.split("/")
+    q = db.query(models.StandaloneMedia).filter(
         models.StandaloneMedia.rel_path == _same_relpath(current_rel)
-    ).update(
-        {
-            models.StandaloneMedia.rel_path: new_rel,
-            models.StandaloneMedia.filename: os.path.basename(new_rel),
-            models.StandaloneMedia.library_folder: new_rel.split("/")[0],
-        },
-        synchronize_session=False,
     )
+    # 文件被重分类成 extra 搬进 Other/杂项兜底桶 —— 已经不是剧场版/OVA,登记行整条删掉,
+    # 不是把它的路径指进 Other 里、继续留在剧场版模式列表(实测:[SPxx] 特典早期误判成
+    # OVA 登记,后来归 extra,这里只改路径没删,17 条脏行一直挂在《影之实力者》卡上)。
+    if len(new_parts) >= 3 and new_parts[1] in ("Other", "Specials", "Others"):
+        q.delete(synchronize_session=False)
+    else:
+        q.update(
+            {
+                models.StandaloneMedia.rel_path: new_rel,
+                models.StandaloneMedia.filename: os.path.basename(new_rel),
+                models.StandaloneMedia.library_folder: new_parts[0],
+            },
+            synchronize_session=False,
+        )
 
 
 async def apply_rename_fixes(

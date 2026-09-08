@@ -307,22 +307,30 @@ def _flag_stale_playback_records(db: Session, folder_name: str, structure: dict)
     """已播放记录里,文件已经不在磁盘上的(重新下载了别的字幕组版本、旧文件被换掉/手动删了)
     打上is_stale——这类记录不物理删除(保留"确实看过"的历史),但从此不再计入"未看集数"
     角标的已看分子,避免把早就不存在的旧文件也算成"占着一个未看名额"或"多算一次已看"。
-    只在调用方已经手头有一份现成structure的地方顺手核对(详情页/badge重扫),不为此单独扫盘。"""
+    只在调用方已经手头有一份现成structure的地方顺手核对(详情页/badge重扫),不为此单独扫盘。
+
+    双向维护:按 filename 精确比对。
+    - filename 不在结构里 → 置 stale(文件真没了)
+    - filename 又回到结构里 → 清 stale(同名文件就在磁盘上,不该再算"没了")
+      修一类顽固不一致:某次扫描抖动/分桶口径变过,把还在的文件误判成 stale 后,
+      详情页仍按"有记录即已看"划线、用户永远不会再去点它,角标就永久卡着 -1。"""
     existing_filenames = {
         ep["filename"] for episodes in structure.values() for ep in episodes
     }
-    stale_records = (
+    # 查该 folder 全部记录(不再只查非 stale),两个方向都要核对
+    records = (
         db.query(models.PlaybackRecord)
-        .filter(
-            models.PlaybackRecord.folder_name == folder_name,
-            models.PlaybackRecord.is_stale.is_(False),
-        )
+        .filter(models.PlaybackRecord.folder_name == folder_name)
         .all()
     )
     changed = False
-    for record in stale_records:
-        if record.filename not in existing_filenames:
+    for record in records:
+        present = record.filename in existing_filenames
+        if not present and not record.is_stale:
             record.is_stale = True
+            changed = True
+        elif present and record.is_stale:
+            record.is_stale = False
             changed = True
     if changed:
         db.commit()
@@ -766,6 +774,26 @@ async def list_standalone_media(background_tasks: BackgroundTasks, db: Session =
     观看态(PlaybackRecord 按 library_folder+filename)、以及 rel_path 是否还在磁盘(missing)。
     返回扁平行,前端按 bgm_id 分组成卡。"""
     rows = db.query(models.StandaloneMedia).order_by(models.StandaloneMedia.created_at.desc()).all()
+
+    # 自愈历史脏行:早期 [SPxx] 被判成 OVA 登记进来,后来归类改成 extra、「修复媒体库」
+    # 又把文件挪进了 Other 桶,但 move_media_file_with_sync 那会儿只改了 rel_path 没删行
+    # (见 services/library_repair.py)。凡是 rel_path 落在 Other/杂项兜底桶的自动登记行,
+    # 定义上就不是剧场版/OVA,这里顺手删掉;手动加入的(source=manual)以用户意图为准,不动。
+    # 桶名口径跟 rename_engine 落地目录一致:正片会在 Season NN / OVA / 剧场版 / 作品名
+    # 目录下;花絮兜底只会是 Other,老库里也可能是 Specials/Others 两级目录。
+    _misc_bucket_dirs = {"Other", "Specials", "Others"}
+    stale = [
+        r for r in rows
+        if r.source != "manual"
+        and len(_norm_rel(r.rel_path).split("/")) >= 3
+        and _norm_rel(r.rel_path).split("/")[1] in _misc_bucket_dirs
+    ]
+    if stale:
+        for r in stale:
+            db.delete(r)
+        db.commit()
+        rows = [r for r in rows if r not in stale]
+
     if not rows:
         return []
 
