@@ -10,7 +10,7 @@ services/id_mapping_cache.py的快照里拿到anidb_id/mal_id。
 """
 import httpx
 
-from services.proxy import get_proxy_url
+from services.proxy import get_proxy_url, make_client
 
 BASE_URL = "https://arm.haglund.dev/api/v2/ids"
 HEADERS = {
@@ -20,7 +20,7 @@ HEADERS = {
 
 
 async def _query(source: str, id_value: int) -> dict | None:
-    async with httpx.AsyncClient(proxy=get_proxy_url(), follow_redirects=True) as client:
+    async with make_client(get_proxy_url(), follow_redirects=True) as client:
         resp = await client.get(
             BASE_URL, params={"source": source, "id": id_value}, headers=HEADERS, timeout=10.0
         )

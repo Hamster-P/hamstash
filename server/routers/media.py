@@ -18,7 +18,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse, Response
 
 import paths
-from services.proxy import get_proxy_url
+from services.proxy import get_proxy_url, make_client
 
 router = APIRouter(tags=["图片代理"])
 
@@ -115,8 +115,8 @@ async def _get_pooled_client(proxy: str) -> httpx.AsyncClient:
         if _cached_client is None or _cached_client_proxy != proxy:
             if _cached_client is not None:
                 await _cached_client.aclose()
-            _cached_client = httpx.AsyncClient(
-                proxy=proxy,
+            _cached_client = make_client(
+                proxy,
                 timeout=15.0,
                 follow_redirects=True,
                 limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),

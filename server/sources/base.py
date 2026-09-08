@@ -18,7 +18,7 @@ from urllib.parse import quote
 import httpx
 
 import config_store
-from services.proxy import get_proxy_url
+from services.proxy import get_proxy_url, make_client
 
 # 所有源共用的 UA(dmhy 曾经因短时间密集请求被限流,UA 保持低调);代理由
 # services.proxy.get_proxy_url() 统一提供,搜索与 RSS 轮询走同一套代理配置,
@@ -31,8 +31,8 @@ HEADERS = {"User-Agent": "hamstash/0.1 (personal project)"}
 # 保证两条路径在代理环境下完全一致(用户关心的"代理下是否一致"由此保证)。
 # ---------------------------------------------------------------------------
 async def http_get(url: str, params: dict | None = None, *, timeout: float = 15.0) -> httpx.Response:
-    async with httpx.AsyncClient(
-        headers=HEADERS, timeout=timeout, proxy=get_proxy_url(), follow_redirects=True
+    async with make_client(
+        get_proxy_url(), headers=HEADERS, timeout=timeout, follow_redirects=True
     ) as client:
         resp = await client.get(url, params=params)
         resp.raise_for_status()
@@ -53,8 +53,8 @@ async def probe_source_reachable(adapter: "SourceAdapter", *, timeout: float = 8
     if not url:
         return True  # 没有可探 URL 就不拦,交给原有逐条逻辑
     try:
-        async with httpx.AsyncClient(
-            headers=HEADERS, timeout=timeout, proxy=get_proxy_url(), follow_redirects=True
+        async with make_client(
+            get_proxy_url(), headers=HEADERS, timeout=timeout, follow_redirects=True
         ) as client:
             await client.head(url)  # 不 raise_for_status:拿到任何响应即视为连通
         return True

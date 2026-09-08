@@ -16,7 +16,7 @@ from routers.library import scan_and_update_library
 from schemas import ProxyTestRequest, SettingsUpdate
 from services import bgm_series_cache, changelog, library_health, library_repair
 from services.common import get_setting, upsert_setting
-from services.proxy import get_proxy_url, get_system_proxy, set_proxy_url_cache
+from services.proxy import get_proxy_url, get_system_proxy, make_client, set_proxy_url_cache
 
 router = APIRouter(tags=["设置"])
 
@@ -198,8 +198,8 @@ async def test_proxy(payload: ProxyTestRequest):
         proxy, source = None, "none"
 
     checks: list[dict] = []
-    async with httpx.AsyncClient(
-        proxy=proxy,
+    async with make_client(
+        proxy,
         timeout=PROXY_PROBE_TIMEOUT,
         follow_redirects=True,
         headers={"User-Agent": "hamstash/0.1 (personal project)"},

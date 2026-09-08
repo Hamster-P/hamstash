@@ -3,7 +3,7 @@ import asyncio
 import re
 import unicodedata
 
-from services.proxy import get_proxy_url
+from services.proxy import get_proxy_url, make_client
 
 BASE_URL = "https://api.bgm.tv"
 # Bangumi meta_tags 里的非日本产地标签,命中即判为国漫/他国番剧过滤掉。
@@ -167,7 +167,7 @@ async def search_anime(
     bangumi_total: int | None = None  # Bangumi报告的真实匹配总数,取首页的
     first_raw_page: list[dict] = []   # 首页原始结果,给"零命中兜底"用
 
-    async with httpx.AsyncClient(proxy=get_proxy_url(), follow_redirects=True) as client:
+    async with make_client(get_proxy_url(), follow_redirects=True) as client:
         for _ in range(max_pages):
             response = await client.post(
                 url, json=payload, params={"limit": limit, "offset": page_offset},
@@ -230,7 +230,7 @@ def normalize_bgm_subject(payload: dict) -> dict:
 async def get_subject_detail(bgm_id: int):
     url = f"{BASE_URL}/v0/subjects/{bgm_id}"
 
-    async with httpx.AsyncClient(proxy=get_proxy_url(), follow_redirects=True) as client:
+    async with make_client(get_proxy_url(), follow_redirects=True) as client:
         response = await client.get(url, headers=HEADERS, timeout=10.0)
         response.raise_for_status()
         return response.json()
@@ -254,7 +254,7 @@ async def get_subject_details_batch(bgm_ids: list[int]):
 async def get_calendar():
     """获取 Bangumi 每日放送 API"""
     url = f"{BASE_URL}/calendar"
-    async with httpx.AsyncClient(proxy=get_proxy_url(), follow_redirects=True) as client:
+    async with make_client(get_proxy_url(), follow_redirects=True) as client:
         response = await client.get(url, headers=HEADERS, timeout=15.0)
         response.raise_for_status()
         return response.json()
@@ -265,7 +265,7 @@ async def get_subject_relations(bgm_id: int) -> list[dict]:
     对应 GET /v0/subjects/{subject_id}/subjects
     """
     url = f"{BASE_URL}/v0/subjects/{bgm_id}/subjects"
-    async with httpx.AsyncClient(proxy=get_proxy_url(), follow_redirects=True) as client:
+    async with make_client(get_proxy_url(), follow_redirects=True) as client:
         response = await client.get(url, headers=HEADERS, timeout=10.0)
         response.raise_for_status()
         return response.json()

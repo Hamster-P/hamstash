@@ -10,7 +10,7 @@ Bangumi不提供这些字段(没有横版背景图,也没有分级/标签/工作
 """
 import httpx
 
-from services.proxy import get_proxy_url
+from services.proxy import get_proxy_url, make_client
 
 BASE_URL = "https://api.themoviedb.org/3"
 IMAGE_BASE_URL = "https://image.tmdb.org/t/p"
@@ -44,7 +44,7 @@ _APPEND_MOVIE = "images,keywords,credits,release_dates,external_ids"
 
 async def get_tv_detail(tmdb_id: int, season: int | None = None) -> dict:
     url = f"{BASE_URL}/tv/{tmdb_id}"
-    async with httpx.AsyncClient(proxy=get_proxy_url(), follow_redirects=True) as client:
+    async with make_client(get_proxy_url(), follow_redirects=True) as client:
         resp = await client.get(
             url,
             params={
@@ -64,7 +64,7 @@ async def get_movie_detail(tmdb_id: int) -> dict:
     """剧场版/OVA走这个,不是get_tv_detail——TMDB的TV库和电影库ID命名空间是分开的,
     拿电影ID去请求/tv/{id}会404(实测铃芽之旅案例)。"""
     url = f"{BASE_URL}/movie/{tmdb_id}"
-    async with httpx.AsyncClient(proxy=get_proxy_url(), follow_redirects=True) as client:
+    async with make_client(get_proxy_url(), follow_redirects=True) as client:
         resp = await client.get(
             url,
             params={
@@ -89,7 +89,7 @@ async def search_tv(query: str, year: int | None = None) -> dict | None:
     params = {"api_key": TMDB_API_KEY, "language": "zh-CN", "query": query}
     if year:
         params["first_air_date_year"] = year
-    async with httpx.AsyncClient(proxy=get_proxy_url(), follow_redirects=True) as client:
+    async with make_client(get_proxy_url(), follow_redirects=True) as client:
         resp = await client.get(f"{BASE_URL}/search/tv", params=params, headers=HEADERS, timeout=15.0)
         resp.raise_for_status()
         results = resp.json().get("results") or []
@@ -101,7 +101,7 @@ async def search_movie(query: str, year: int | None = None) -> dict | None:
     params = {"api_key": TMDB_API_KEY, "language": "zh-CN", "query": query}
     if year:
         params["primary_release_year"] = year
-    async with httpx.AsyncClient(proxy=get_proxy_url(), follow_redirects=True) as client:
+    async with make_client(get_proxy_url(), follow_redirects=True) as client:
         resp = await client.get(f"{BASE_URL}/search/movie", params=params, headers=HEADERS, timeout=15.0)
         resp.raise_for_status()
         results = resp.json().get("results") or []

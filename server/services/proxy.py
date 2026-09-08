@@ -7,6 +7,11 @@
 """
 import time
 import urllib.request
+from urllib.parse import urlparse
+
+import httpx
+from httpx_socks import AsyncProxyTransport
+from python_socks import ProxyType
 
 from database import SessionLocal
 from services.common import get_setting
@@ -15,10 +20,48 @@ import config_store
 
 _proxy_url_cache: str | None = None
 
-# httpx能接的代理协议。Windows注册表里代理协议写的是"socks"时,
-# urllib会归一化成socks4://——httpx不支持,必须丢掉,否则构造client时会抛
-# httpx.InvalidURL(它不是httpx.HTTPError的子类,各处的except抓不到,会变成裸500)。
-_SUPPORTED_PROXY_SCHEMES = ("http://", "https://", "socks5://")
+# 能用的代理协议:http/https 走 httpx 原生 proxy=;socks4/4a/5/5h 走 httpx-socks 的
+# 自定义 transport(见 make_client / _socks_transport)。Anycast VPN 这类国内加速器
+# 只提供本地 SOCKS4,所以 socks4 必须支持。scheme 不在这个集合里的一律丢弃当直连,
+# 否则传给 httpx.AsyncClient 会抛 httpx.InvalidURL(不是 HTTPError 子类,到处 except 抓不到)。
+_SUPPORTED_PROXY_SCHEMES = (
+    "http://", "https://", "socks4://", "socks4a://", "socks5://", "socks5h://",
+)
+_SOCKS_SCHEMES = ("socks4://", "socks4a://", "socks5://", "socks5h://")
+
+
+def _socks_transport(proxy: str, limits: "httpx.Limits | None" = None) -> AsyncProxyTransport:
+    """把 socks4/4a/5/5h 地址转成 httpx-socks 的 transport。
+    httpx-socks 的 from_url 只认 socks4:// / socks5://,不认 4a/5h——远程 DNS(rdns)
+    是构造参数不是 scheme,所以这里自己拆 URL:带 a/h 后缀的 → rdns=True(域名交给代理
+    去解析,绕开本地 DNS 污染),不带的 → rdns=False(本地解析,配 DNSCrypt 也够用)。"""
+    u = urlparse(proxy)
+    scheme = u.scheme.lower()
+    proxy_type = ProxyType.SOCKS4 if scheme.startswith("socks4") else ProxyType.SOCKS5
+    kwargs: dict = {
+        "proxy_type": proxy_type,
+        "proxy_host": u.hostname,
+        "proxy_port": u.port,
+        "username": u.username or None,
+        "password": u.password or None,
+        "rdns": scheme in ("socks4a", "socks5h"),
+    }
+    if limits is not None:
+        kwargs["limits"] = limits
+    return AsyncProxyTransport(**kwargs)
+
+
+def make_client(proxy: str | None, **kwargs) -> httpx.AsyncClient:
+    """按代理协议挑构造方式,给所有访问外部站点的地方共用:
+    - socks4/4a/5/5h → httpx-socks 的自定义 transport(httpx 原生不支持 socks4)
+    - None(直连)/ http:// / https:// → httpx 原生 proxy=
+    其余 kwargs(timeout / headers / follow_redirects / limits ...)原样透传给 AsyncClient。
+    注意:client 同时传 transport 和 limits 时 httpx 会忽略 client 级 limits,所以 socks
+    分支把 limits 塞进 transport。"""
+    if proxy and proxy.lower().startswith(_SOCKS_SCHEMES):
+        limits = kwargs.pop("limits", None)
+        return httpx.AsyncClient(transport=_socks_transport(proxy, limits), **kwargs)
+    return httpx.AsyncClient(proxy=proxy, **kwargs)
 
 _SYSTEM_PROXY_TTL_SECONDS = 60.0
 _system_proxy_cache: str | None = None

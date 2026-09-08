@@ -9,7 +9,7 @@ import re
 
 import httpx
 
-from services.proxy import get_proxy_url
+from services.proxy import get_proxy_url, make_client
 
 CHANGELOG_URL = "https://raw.githubusercontent.com/Hamster-P/hamstash/master/CHANGELOG.md"
 
@@ -61,7 +61,7 @@ def _parse_sections(content: str) -> list[dict]:
 
 
 async def _fetch_changelog() -> str:
-    async with httpx.AsyncClient(proxy=get_proxy_url(), follow_redirects=True, timeout=10.0) as client:
+    async with make_client(get_proxy_url(), follow_redirects=True, timeout=10.0) as client:
         resp = await client.get(CHANGELOG_URL)
         resp.raise_for_status()
         return resp.text

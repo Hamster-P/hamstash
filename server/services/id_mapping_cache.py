@@ -14,7 +14,7 @@ import time
 import httpx
 
 import paths
-from services.proxy import get_proxy_url
+from services.proxy import get_proxy_url, make_client
 
 SNAPSHOT_URL = "https://raw.githubusercontent.com/Rhilip/BangumiExtLinker/main/data/anime_map.json"
 
@@ -61,7 +61,7 @@ def _write_to_disk(raw: bytes) -> None:
 
 async def _download() -> dict[int, dict] | None:
     try:
-        async with httpx.AsyncClient(proxy=get_proxy_url(), follow_redirects=True, timeout=30.0) as client:
+        async with make_client(get_proxy_url(), follow_redirects=True, timeout=30.0) as client:
             resp = await client.get(SNAPSHOT_URL)
             resp.raise_for_status()
             raw = resp.content

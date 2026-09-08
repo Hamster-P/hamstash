@@ -659,11 +659,13 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
         <div className="mb-1 text-sm">网络代理</div>
         <p className="mb-3 font-mono text-[11px] text-muted">
           只用于访问Bangumi/dmhy/AnimeGarden/nyaa等外部站点(以及详情页内嵌的Bangumi页面),
-          不影响本地qBittorrent连接。填 HTTP 代理地址,例如
-          http://127.0.0.1:8000(Clash等工具的本地端口)。
+          不影响本地qBittorrent连接。支持 http:// / https:// / socks4:// / socks4a:// / socks5://,
+          例如 http://127.0.0.1:8000(Clash等工具的本地端口)。
+          Anycast VPN 这类只提供本地 SOCKS4 代理的,填 socks4a://127.0.0.1:1080(连不上再试 socks4://)。
           留空时会自动沿用系统代理(Windows"设置-网络和Internet-代理"里配的那个);
           按进程分流(比如Proxifier)或TUN/增强模式探测不到,前者需要在这里手动填,
           后者本来就是透明转发、留空直连即可。
+          注:详情页内嵌的 Bangumi 页面暂不支持 socks4,该项走代理需用 http/socks5,否则用「在浏览器打开」。
         </p>
         <input
           value={proxyUrl}

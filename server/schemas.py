@@ -16,8 +16,10 @@ def validate_proxy_url_value(value: str) -> str:
     value = value.strip()
     if not value:
         return value
-    if not re.match(r"^(https?|socks5)://", value, re.IGNORECASE):
-        raise ValueError("代理地址需要以 http://、https:// 或 socks5:// 开头")
+    if not re.match(r"^(https?|socks(4a?|5h?))://", value, re.IGNORECASE):
+        raise ValueError(
+            "代理地址需要以 http://、https://、socks4://、socks4a:// 或 socks5:// 开头"
+        )
     return value
 
 class AnimeCreate(BaseModel):
