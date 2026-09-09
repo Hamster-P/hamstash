@@ -137,6 +137,93 @@ class TestChineseSeasonNumber(unittest.TestCase):
                 )
 
 
+class TestParseFileEpisode(unittest.TestCase):
+    """parse_file_episode:只信 anitopy 结构化集数,不做文本兜底。"""
+
+    def test_plain_episode(self):
+        self.assertEqual(R.parse_file_episode("Kaifuku Jutsushi no Yarinaoshi - 01 (AT-x 1080p AAC).m2t"), "01")
+        self.assertEqual(R.parse_file_episode("[LoliHouse] 某番 - 12 [1080p].mkv"), "12")
+
+    def test_half_episode(self):
+        self.assertEqual(R.parse_file_episode("Anime - 12.5 (x).mkv"), "12.5")
+
+    def test_range_and_noise_reject(self):
+        self.assertIsNone(R.parse_file_episode("[Group] Anime Title [01-12] [BDRip 1080p]"))
+        self.assertIsNone(R.parse_file_episode("[Group] ★4月新番 XX [1080p].mkv"))
+        self.assertIsNone(R.parse_file_episode("menu.mkv"))
+        self.assertIsNone(R.parse_file_episode("进击的巨人总集篇 [BDRip 1080p].mkv"))
+
+
+class TestClassifyUnknownSubdir(unittest.TestCase):
+    """名字认不出的子目录,靠内容判类型——纯给"详情页分组 + 未看角标口径"用,不动文件。"""
+
+    def setUp(self):
+        from routers.library import _classify_unknown_subdir
+        self.classify = _classify_unknown_subdir
+
+    def test_episode_sequence_promoted_to_season(self):
+        names = [f"Kaifuku Jutsushi no Yarinaoshi - {i:02d} (AT-x 1080p AAC).m2t" for i in range(1, 13)]
+        self.assertEqual(self.classify("Redo of Healer AT-X Broadcast (UNCENSORED)", names), "Season 01")
+
+    def test_single_file_not_promoted(self):
+        self.assertIsNone(self.classify("whatever", ["menu.mkv"]))
+        self.assertIsNone(self.classify("whatever", ["Anime - 01 [x].mkv"]))
+
+    def test_specials_keyword_dir_not_promoted(self):
+        # 目录名摆明是花絮/特典容器,里面就算是能解析出集数的文件也不提升
+        names = [f"Anime - {i:02d} [x].mkv" for i in range(1, 6)]
+        for d in ("Bonus", "Menu", "Scans", "SP", "SPs", "Extras", "Preview", "CDs"):
+            self.assertIsNone(self.classify(d, names), d)
+
+    def test_nc_files_not_counted_as_episodes(self):
+        # 文件级 NCOP/NCED/PV 由 classify_media_type 判为 extra,不计入 ep_like
+        names = ["Anime NCOP01.mkv", "Anime NCED01.mkv", "Anime PV01.mkv"]
+        self.assertIsNone(self.classify("Random Folder Name", names))
+
+    def test_movie_pack_promoted_to_movie_bucket(self):
+        names = ["Gundam Movie 1 [x].mkv", "Gundam Movie 2 [x].mkv", "Gundam Movie 3 [x].mkv"]
+        self.assertEqual(self.classify("Gundam Movie Collection", names), "剧场版/OVA")
+
+    def test_season_number_picked_from_filenames(self):
+        names = [f"[Group] Anime 2nd Season - {i:02d} [1080p].mkv" for i in range(1, 13)]
+        self.assertEqual(self.classify("发布组原盘目录", names), "Season 02")
+
+
+class TestSubdirPromotionGuard(unittest.TestCase):
+    """_bucket_name_for_subdir 的"只对完全没整理过的番才猜"护栏。"""
+
+    def setUp(self):
+        import tempfile
+        from routers.library import _bucket_name_for_subdir
+        self.bucket = _bucket_name_for_subdir
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _mk(self, *rel_files):
+        for rf in rel_files:
+            p = self.root / rf
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(b"x")
+
+    def test_raw_dump_promoted(self):
+        rel = "发布组原盘目录"
+        self._mk(*[f"{rel}/Anime - {i:02d} [x].mkv" for i in range(1, 6)])
+        self.assertEqual(self.bucket(rel, set(), anime_dir=self.root), "Season 01")
+
+    def test_not_promoted_when_season_dir_present(self):
+        self._mk("Season 01/Anime - S01E01 [x].mkv")
+        rel = "发布组原盘目录"
+        self._mk(*[f"{rel}/Anime - {i:02d} [x].mkv" for i in range(1, 6)])
+        self.assertEqual(self.bucket(rel, set(), anime_dir=self.root), "Specials/Others")
+
+    def test_no_anime_dir_no_promotion(self):
+        # 拿不到父目录(理论上不该发生)→ 保守退回兜底
+        self.assertEqual(self.bucket("whatever", set()), "Specials/Others")
+
+
 class TestRangeTorrentFallback(unittest.TestCase):
     """Bug 4: 种子标题是区间包(如 [01-12])时,不许拿区间起点当单集回退值。
 

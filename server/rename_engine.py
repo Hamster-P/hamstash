@@ -485,6 +485,20 @@ def find_sibling_subtitles(video_path: str, all_paths: list[str]) -> list[str]:
     return matches
 
 
+def parse_file_episode(file_name: str) -> str | None:
+    """从单个文件名里解析出集数字符串("01"/"12"/"09.5"),解析不出 / 是区间 → None。
+    只信 anitopy 的结构化解析,不做文本兜底——年份/日期/文件大小/"★4月新番"里的
+    数字不会被当成集数。给"这个杂目录里是不是一串正片"这类识别用,不参与改名。"""
+    parsed = anitopy.parse(file_name) or {}
+    episode_number = parsed.get("episode_number")
+    if _looks_like_range(episode_number) or not episode_number:
+        return None
+    value = _episode_value(episode_number)
+    if value is None:
+        return None
+    return _format_episode(value)
+
+
 def parse_file_season(file_name: str) -> str | None:
     """从单个文件名里解析出它自己属于第几季,返回两位数序号字符串("00"/"01"/"02"/...)或 None。
     给"多季混合合集包"用:S1 文件名通常不带季度标记(→None,走文件夹级季度),

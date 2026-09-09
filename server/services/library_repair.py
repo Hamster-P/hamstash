@@ -728,7 +728,10 @@ async def scan_rename_mismatches(
             segs = inner.split("/")
             if len(segs) < 2:
                 continue  # 直接堆在番剧根目录的,不在这一分支范围
-            # 只处理"没落进任何已知正片桶"的深层文件——已知桶里的由上面的 bucket 循环负责
+            # 只处理"没落进任何已知正片桶"的深层文件——已知桶里的由上面的 bucket 循环负责。
+            # 这里按目录名判断即可(不传 dir_path):名字认不出的目录不管被显示层提升成
+            # "Season 01" 还是维持 "Specials/Others",下面都因为没有 RenamedFile 记录
+            # 而跳过、不提改名建议,结果一致,没必要为此多走一遍盘。
             if (
                 _bucket_name_for_subdir(segs[0], extra_buckets) not in _SKIPPED_BUCKETS
                 and len(segs) == 2

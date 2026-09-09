@@ -99,7 +99,12 @@ def _rel_path_is_real_episode(db: Session, media: "models.LocalMedia | None", re
     if media and media.bgm_id:
         family_root = bgm_series_cache.cached_auto_root(db, media.bgm_id) or media.bgm_id
     extra_buckets = bgm_series_cache.family_work_title_buckets(db, family_root)
-    return _bucket_name_for_subdir(rel_parts[1], extra_buckets) not in _NON_EPISODE_BUCKETS
+    # anime_dir 传进去:名字认不出的子目录靠内容判类型,跟 scan_local_folder_structure
+    # 一个口径,否则角标"扫出来算的"和"删一集时算的"会对不上。
+    anime_dir = get_library_root(db) / rel_parts[0]
+    return _bucket_name_for_subdir(
+        rel_parts[1], extra_buckets, anime_dir=anime_dir
+    ) not in _NON_EPISODE_BUCKETS
 
 
 # ----------------- 播放记录 API -----------------
@@ -182,25 +187,98 @@ def get_library_root(db: Session) -> Path:
     return Path(raw_path)
 
 
-def _bucket_name_for_subdir(dir_name: str, extra_buckets: set[str] | None) -> str:
+# 子目录名带这些词(带词边界、容忍复数 s)= 明确的花絮/特典目录,里面的文件哪怕
+# 能解析出集数也不往正片桶提升。文件级的 NCOP/NCED/PV/CM 标记不在这里管,由下面
+# classify_media_type 逐文件判(命中 extra 就不计入 ep_like)。
+_SPECIALS_DIR_KEYWORDS = (
+    "sp", "special", "extra", "bonus", "menu", "scan", "cd", "preview",
+)
+_SPECIALS_DIR_RE = re.compile(
+    r"(?<![a-z0-9])(?:" + "|".join(_SPECIALS_DIR_KEYWORDS) + r")s?(?![a-z0-9])",
+    re.IGNORECASE,
+)
+_SUBDIR_SCAN_CAP = 80  # 一个杂目录最多看这么多视频文件就够判类型了,别在原盘 dump 上死磕
+
+
+def _classify_unknown_subdir(dir_name: str, video_names: list[str]) -> str | None:
+    """名字认不出的子目录,靠里面的视频文件名判个大概类型 —— 纯给"显示分组 + 未看
+    集数角标口径"用,不移动文件、不改名。
+    返回 "Season NN" / "剧场版/OVA",判不准(单文件 / 花絮目录 / 认不出)→ None
+    (调用方维持 "Specials/Others")。"""
+    if _SPECIALS_DIR_RE.search(dir_name):
+        return None
+    sample = video_names[:_SUBDIR_SCAN_CAP]
+    if len(sample) < 2:
+        return None  # 孤零零一个文件不猜
+    ep_like = 0
+    movie_like = 0
+    for name in sample:
+        mt = rename_engine.classify_media_type(name)
+        if mt in ("movie", "ova"):
+            movie_like += 1
+        elif mt == "tv" and rename_engine.parse_file_episode(name):
+            ep_like += 1
+    if ep_like >= 2 and ep_like >= movie_like:
+        # 季号:文件名/目录名里认出 "2nd Season"/"S2"/"第二季" 就用它,认不出默认 01
+        seasons = {rename_engine.parse_file_season(n) for n in sample} - {None, "00"}
+        ordinal = seasons.pop() if len(seasons) == 1 else None
+        ordinal = ordinal or rename_engine.parse_file_season(dir_name) or "01"
+        return f"Season {ordinal}"
+    if movie_like >= 2 and movie_like > ep_like:
+        return "剧场版/OVA"
+    return None
+
+
+def _is_known_bucket_dir(dir_name: str, extra_buckets: set[str] | None) -> bool:
+    """rename_engine 整理时会产出的子目录名:Season NN / 剧场版 / OVA / Other /
+    算不出季号时的作品名目录(extra_buckets)。季度目录的正则复用 rename_engine 那一份。"""
+    return (
+        bool(rename_engine.SEASON_DIR_PATTERN.match(dir_name))
+        or dir_name in ("剧场版", "劇場版", "Other", "OVA")
+        or dir_name in (extra_buckets or ())
+    )
+
+
+def _bucket_name_for_subdir(
+    dir_name: str,
+    extra_buckets: set[str] | None,
+    anime_dir: "Path | None" = None,
+    video_names: "list[str] | None" = None,
+) -> str:
     """给番剧根目录下某个直接子目录分类,决定它进哪个"桶"。抽出来独立成一个函数
     (而不是只在scan_local_folder_structure内联),因为delete_episode那边做"未看集数"
     角标精确算术更新时,需要用同一套规则单独判断"被删的这个文件在不在正片桶里"
     (只有正片桶才计入角标分母,见_NON_EPISODE_BUCKETS),不能反手再写一份容易跟这边
     分叉的判断逻辑。
 
-    rename_engine.py 实际会创建的子目录名只有这几种:Season NN、Season 00(OVA)、
-    剧场版、Other、以及算不出季号时按作品名命名的目录(extra_buckets)——这几个要保留
-    各自的桶,不能被下面的兜底正则一起归进"Specials/Others"。季度目录的正则用
-    rename_engine那一份,不在这里另写一个:work_title_bucket()要靠同一个正则避开
-    会被误认成季度目录的作品名。"""
-    season_match = rename_engine.SEASON_DIR_PATTERN.match(dir_name)
-    is_known_bucket = (
-        bool(season_match)
-        or dir_name in ("剧场版", "劇場版", "Other", "OVA")
-        or dir_name in (extra_buckets or ())
-    )
-    return dir_name if is_known_bucket else "Specials/Others"
+    anime_dir:给了(且这部番**整个都没被整理过**——没有任何 Season/剧场版/OVA/Other
+    子目录)才启用"看内容猜桶":用户手动拖进库、放在发布组原名目录里的整季正片
+    (没有 RenamedFile 记录、整理流程管不到),据此归到 Season/剧场版桶,让详情页分组
+    和角标数字对上。**只识别,不动文件**。已经部分整理过的番不碰——那种情况下的杂目录
+    多半是残留/重复 rip,提升进去反而跟正片撞集数、把角标撑大。
+    video_names:scan 时已 walk 出来的文件名,省掉重复走盘。"""
+    if _is_known_bucket_dir(dir_name, extra_buckets):
+        return dir_name
+
+    if anime_dir is None:
+        return "Specials/Others"
+    try:
+        siblings = [e.name for e in os.scandir(anime_dir) if e.is_dir()]
+    except OSError:
+        return "Specials/Others"
+    if any(_is_known_bucket_dir(s, extra_buckets) for s in siblings):
+        return "Specials/Others"  # 这部番已经部分整理过,杂目录不猜
+
+    names = video_names
+    if names is None:
+        try:
+            names = [
+                fn for _dp, _dn, fns in os.walk(anime_dir / dir_name) for fn in fns
+                if os.path.splitext(fn)[1].lower() in VIDEO_EXTENSIONS
+            ]
+        except OSError:
+            names = []
+    return _classify_unknown_subdir(dir_name, names or []) or "Specials/Others"
 
 
 def scan_local_folder_structure(anime_path: Path, library_root: Path,
@@ -233,7 +311,6 @@ def scan_local_folder_structure(anime_path: Path, library_root: Path,
     with os.scandir(anime_path) as it:
         for entry in it:
             if entry.is_dir():
-                season_name = _bucket_name_for_subdir(entry.name, extra_buckets)
                 episodes = []
                 for dirpath, _dirnames, filenames in os.walk(entry.path):
                     for fname in filenames:
@@ -243,15 +320,22 @@ def scan_local_folder_structure(anime_path: Path, library_root: Path,
                                 "filename": fname,
                                 "rel_path": to_rel(full),
                             })
+                # 桶名放到 walk 之后算:名字认不出时要看目录内容(是不是一串正片)。
+                season_name = _bucket_name_for_subdir(
+                    entry.name, extra_buckets,
+                    anime_dir=anime_path,
+                    video_names=[ep["filename"] for ep in episodes],
+                )
                 if episodes:
                     # 用extend而不是直接赋值:避免不同子目录被归到同一个桶名时(比如两个都落进
                     # "Specials/Others"兜底桶)后处理的目录把前一个目录的集数覆盖掉
                     structure.setdefault(season_name, []).extend(episodes)
             elif entry.is_file() and is_video(entry.name):
                 # 视频直接堆在番剧根目录(没有Season子目录)时,靠文件名里的关键词
-                # 区分是剧场版/OVA合集还是正常的单季番,不再一律标成"Season 1"
+                # 区分是剧场版/OVA合集还是正常的单季番,不再一律标成 Season。
+                # 桶名用"Season 01"(补零)跟整理产物 / AnimeFamilyCache.folder_bucket 统一。
                 is_movie = re.search(r"剧场版|劇場版|movie|OVA", entry.name, re.IGNORECASE)
-                bucket_name = "剧场版/OVA" if is_movie else "Season 1"
+                bucket_name = "剧场版/OVA" if is_movie else "Season 01"
                 structure.setdefault(bucket_name, []).append({
                     "filename": entry.name,
                     "rel_path": to_rel(entry.path),
@@ -1586,6 +1670,16 @@ def delete_episode(req: EpisodeDeleteRequest, db: Session = Depends(get_db)):
     if not target_path.exists():
         raise HTTPException(status_code=404, detail="Video file not found.")
 
+    # 在删文件**之前**判定它算不算正片桶(名字认不出的子目录要看目录内容——删完再判,
+    # 目录内容就变了)。下面的角标算术用这个结果。
+    _pre_rel_parts = _norm_rel(req.rel_path).split("/")
+    _pre_media = (
+        db.query(models.LocalMedia)
+        .filter(models.LocalMedia.folder_name == _pre_rel_parts[0])
+        .first()
+    )
+    _is_real_episode = _rel_path_is_real_episode(db, _pre_media, req.rel_path)
+
     for sibling in target_path.parent.glob(f"{glob.escape(target_path.stem)}.*"):
         if sibling == target_path:
             continue
@@ -1610,13 +1704,7 @@ def delete_episode(req: EpisodeDeleteRequest, db: Session = Depends(get_db)):
     rel_parts = _norm_rel(req.rel_path).split("/")
     folder_name = rel_parts[0]
     media = db.query(models.LocalMedia).filter(models.LocalMedia.folder_name == folder_name).first()
-    is_real_episode = True
-    if len(rel_parts) >= 3:  # 文件在某个子目录下,不是直接堆在番剧根目录
-        family_root = None
-        if media and media.bgm_id:
-            family_root = bgm_series_cache.cached_auto_root(db, media.bgm_id) or media.bgm_id
-        extra_buckets = bgm_series_cache.family_work_title_buckets(db, family_root)
-        is_real_episode = _bucket_name_for_subdir(rel_parts[1], extra_buckets) not in _NON_EPISODE_BUCKETS
+    is_real_episode = _is_real_episode  # 删文件前就算好的(见上)
     if media and media.episode_file_count is not None and is_real_episode:
         media.episode_file_count = max(media.episode_file_count - 1, 0)
         media.episode_count_updated_at = datetime.now()
