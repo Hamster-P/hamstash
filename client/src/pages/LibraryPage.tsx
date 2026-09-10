@@ -1349,18 +1349,22 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
                 </div>
                 <div className="min-w-0 flex-1">
                   {/* LOGO:有resolved的TMDB LOGO图就用它,否则退化成文字标题——
-                      这不是"缺失"的观感,大多数动画本来就没有专属ClearLogo。 */}
-                  {animeMeta?.status === "resolved" && animeMeta.logo_url ? (
-                    <img
-                      src={proxiedImageUrl(animeMeta.logo_url)}
-                      alt={selectedAnime.display_title || selectedAnime.folder_name}
-                      className="mb-2 max-h-16 max-w-full object-contain object-left [filter:drop-shadow(0_1px_1px_rgba(0,0,0,0.55))_drop-shadow(0_0_7px_rgba(0,0,0,0.6))]"
-                    />
-                  ) : (
-                    <h1 className="mb-2 font-display text-2xl tracking-tight drop-shadow">
-                      {selectedAnime.display_title || selectedAnime.folder_name}
-                    </h1>
-                  )}
+                      这不是"缺失"的观感,大多数动画本来就没有专属ClearLogo。
+                      固定高度槽位(h-16 + items-end):animeMeta 异步解析出来之前先文字、
+                      解析完切图、图片再懒加载,用这个槽位兜住,不让下面的简介上下跳。 */}
+                  <div className="mb-2 flex h-16 items-end">
+                    {animeMeta?.status === "resolved" && animeMeta.logo_url ? (
+                      <img
+                        src={proxiedImageUrl(animeMeta.logo_url)}
+                        alt={selectedAnime.display_title || selectedAnime.folder_name}
+                        className="max-h-16 max-w-full object-contain object-left [filter:drop-shadow(0_1px_1px_rgba(0,0,0,0.55))_drop-shadow(0_0_7px_rgba(0,0,0,0.6))]"
+                      />
+                    ) : (
+                      <h1 className="line-clamp-2 font-display text-2xl leading-tight tracking-tight drop-shadow">
+                        {selectedAnime.display_title || selectedAnime.folder_name}
+                      </h1>
+                    )}
+                  </div>
                   {/* 元数据行:分级/类型/工作室,只在resolved且真有内容时显示,
                       不留空占位——跟其他字段缺失时的克制风格一致。 */}
                   {/* 叠在图上的次要文字之前用text-muted(中灰),对比度不够、糊在图里——
@@ -1731,19 +1735,26 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
                   </div>
                 )}
               </div>
-              <div className="flex min-w-0 flex-1 flex-col">
-                {animeMeta?.status === "resolved" && animeMeta.logo_url ? (
-                  <img
-                    src={proxiedImageUrl(animeMeta.logo_url)}
-                    alt={activeHead.title || activeHead.filename}
-                    className="mb-2 max-h-16 max-w-full object-contain object-left [filter:drop-shadow(0_1px_1px_rgba(0,0,0,0.55))_drop-shadow(0_0_7px_rgba(0,0,0,0.6))]"
-                  />
-                ) : (
-                  <h1 className="mb-2 font-display text-2xl tracking-tight drop-shadow">{activeHead.title || activeHead.filename}</h1>
-                )}
+              {/* 右列强制跟左侧海报等高(h-56),内部再用 flex 分配——简介 flex-1 吃掉
+                  剩余空间并内部滚动,保证整列(含简介下边线)不超出海报范围。 */}
+              <div className="flex h-56 min-w-0 flex-1 flex-col overflow-hidden">
+                {/* LOGO/标题固定占一格 h-16:animeMeta 异步解析出来之前先显示文字标题,
+                    解析完切成 LOGO 图、图片再懒加载——用固定高度的槽位兜住,不让下面的
+                    简介在这几步之间被顶得上下跳。 */}
+                <div className="mb-2 flex h-16 shrink-0 items-end">
+                  {animeMeta?.status === "resolved" && animeMeta.logo_url ? (
+                    <img
+                      src={proxiedImageUrl(animeMeta.logo_url)}
+                      alt={activeHead.title || activeHead.filename}
+                      className="max-h-16 max-w-full object-contain object-left [filter:drop-shadow(0_1px_1px_rgba(0,0,0,0.55))_drop-shadow(0_0_7px_rgba(0,0,0,0.6))]"
+                    />
+                  ) : (
+                    <h1 className="line-clamp-2 font-display text-2xl leading-tight tracking-tight drop-shadow">{activeHead.title || activeHead.filename}</h1>
+                  )}
+                </div>
                 {animeMeta?.status === "resolved" &&
                   (animeMeta.content_rating || (animeMeta.genres?.length ?? 0) > 0 || (animeMeta.studios?.length ?? 0) > 0) && (
-                    <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-paper/90 drop-shadow">
+                    <div className="mb-2 flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-paper/90 drop-shadow">
                       {animeMeta.content_rating && (
                         <span className="rounded border border-border/80 bg-ink/40 px-1.5 py-0.5">
                           {animeMeta.content_rating}
@@ -1753,14 +1764,11 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
                       {(animeMeta.studios?.length ?? 0) > 0 && <span>{animeMeta.studios!.join(" / ")}</span>}
                     </div>
                   )}
-                {/* 之前用flex-1+overflow-y-auto指望flex拉伸出高度上限,但这一列的父行
-                    没有强制等高(内容比海报高就把整行撑高),导致简介一直不触发滚动、
-                    往下无限撑。改成跟详情页头部一样直接给max-h硬顶。 */}
-                <p className="max-h-32 max-w-2xl overflow-y-auto font-mono text-xs leading-relaxed text-paper/90 drop-shadow">
+                <p className="min-h-0 max-w-2xl flex-1 overflow-y-auto font-mono text-xs leading-relaxed text-paper/90 drop-shadow">
                   {activeHead.summary || "暂无简介"}
                 </p>
                 {movieManage && (
-                  <div className="mt-3 flex items-center gap-2 font-mono text-xs">
+                  <div className="mt-3 flex shrink-0 items-center gap-2 font-mono text-xs">
                     <button
                       onClick={() => openPickerForRegroup(activeItems)}
                       className="flex items-center gap-1.5 rounded-md border border-border bg-ink/60 px-3 py-1.5 text-muted backdrop-blur transition-colors hover:border-vermillion hover:text-vermillion"
