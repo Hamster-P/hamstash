@@ -8,7 +8,7 @@ import {
 import { AlertTriangle, CheckCircle2, XCircle, Loader2, Moon, Sun } from "lucide-react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { writeFile } from "@tauri-apps/plugin-fs";
-import { isTauri } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
@@ -113,6 +113,7 @@ interface SavedSnapshot {
   defaultHomeView: DefaultHomeView;
   coverStrategy: string;
   unwatchedBadgeEnabled: boolean;
+  closeToTray: boolean;
   proxyUrl: string;
   serverPort: number; // 后端服务端口,改了要重启 HamStashServer 服务才生效
   sourcesJson: string; // serializeSources 的结果,做 dirty 比较
@@ -135,6 +136,8 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
   const [coverStrategy, setCoverStrategy] = useState<string>("latest_tv");
   // 媒体库卡片"未看集数"角标开关
   const [unwatchedBadgeEnabled, setUnwatchedBadgeEnabled] = useState(true);
+  // 点窗口×时缩到系统托盘(默认)还是直接退出客户端
+  const [closeToTray, setCloseToTray] = useState(true);
   const [proxyUrl, setProxyUrl] = useState("");
   const [serverPort, setServerPort] = useState(17420);
   const [pollMinutes, setPollMinutes] = useState(5);
@@ -198,6 +201,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
             ? data.library_cover_strategy
             : "latest_tv",
           unwatchedBadgeEnabled: data.library_unwatched_badge_enabled !== false,
+          closeToTray: data.close_to_tray !== false,
           proxyUrl: data.proxy_url ?? "",
           serverPort: Number(data.server_port) || 17420,
           sourcesJson,
@@ -212,6 +216,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
         setDefaultHomeView(next.defaultHomeView);
         setCoverStrategy(next.coverStrategy);
         setUnwatchedBadgeEnabled(next.unwatchedBadgeEnabled);
+        setCloseToTray(next.closeToTray);
         setProxyUrl(next.proxyUrl);
         setServerPort(next.serverPort);
         setSavedSnapshot(next);
@@ -233,6 +238,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
       defaultHomeView !== savedSnapshot.defaultHomeView ||
       coverStrategy !== savedSnapshot.coverStrategy ||
       unwatchedBadgeEnabled !== savedSnapshot.unwatchedBadgeEnabled ||
+      closeToTray !== savedSnapshot.closeToTray ||
       proxyUrl !== savedSnapshot.proxyUrl ||
       serverPort !== savedSnapshot.serverPort ||
       serializeSources(sourceConfigs) !== savedSnapshot.sourcesJson);
@@ -308,6 +314,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
           default_home_view: defaultHomeView,
           library_cover_strategy: coverStrategy,
           library_unwatched_badge_enabled: unwatchedBadgeEnabled,
+          close_to_tray: closeToTray,
           proxy_url: proxyUrl.trim(),
           download_sources: serializeSources(sourceConfigs),
           server_port: serverPort,
@@ -318,6 +325,10 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
         throw new Error(extractValidationMessage(errorBody) ?? `HTTP ${res.status}`);
       }
       const data = await res.json();
+      // 关闭行为的实际拦截在客户端Rust侧,保存成功后同步过去,立即生效不用重启
+      if (await isTauri()) {
+        invoke("set_close_to_tray", { enabled: closeToTray }).catch(() => {});
+      }
       setSaveMessage(
         data.port_changed
           ? "已保存 — 后端端口已变更,请重启 HamStashServer 服务(或重启电脑)后生效"
@@ -336,6 +347,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
         defaultHomeView,
         coverStrategy,
         unwatchedBadgeEnabled,
+        closeToTray,
         proxyUrl: proxyUrl.trim(),
         serverPort,
         sourcesJson: serializeSources(sourceConfigs),
@@ -472,6 +484,24 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
           <option value="library">媒体库页面</option>
           <option value="movieLibrary">剧场版页面</option>
         </select>
+      </div>
+
+      {/* 关闭行为:点窗口×时缩到右下角托盘还是直接退出 */}
+      <div className="mb-6 rounded-md border border-border bg-surface p-4">
+        <div className="mb-1 text-sm">关闭窗口时</div>
+        <p className="mb-3 font-mono text-[11px] text-muted">
+          开启后点窗口右上角 × 会缩到右下角系统托盘继续在后台运行,左键托盘图标还原窗口,
+          右键托盘图标选「退出」才真正关闭;关闭后点 × 直接退出客户端。
+        </p>
+        <label className="flex items-center gap-2 font-mono text-xs">
+          <input
+            type="checkbox"
+            checked={closeToTray}
+            onChange={(e) => setCloseToTray(e.target.checked)}
+            className="accent-vermillion"
+          />
+          最小化到系统托盘
+        </label>
       </div>
 
       <BackupSection />

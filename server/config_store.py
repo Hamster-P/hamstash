@@ -54,6 +54,9 @@ DEFAULTS = {
     # 媒体库卡片右上角"未看集数"角标开关。关闭时前端不显示角标,后端也不再借
     # /library/scan顺手补扫集数(见routers/library.py::_backfill_missing_episode_counts)。
     "library_unwatched_badge_enabled": "true",
+    # 点窗口右上角×时:true=缩到右下角系统托盘继续后台运行 / false=直接退出客户端。
+    # 实际拦截在客户端Rust侧(lib.rs的on_window_event),前端启动/保存时把这个值同步过去。
+    "close_to_tray": "true",
 }
 
 

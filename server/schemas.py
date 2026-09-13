@@ -94,6 +94,7 @@ class SettingsUpdate(BaseModel):
     library_cover_strategy: str = "latest_tv"
     # 媒体库卡片"未看集数"角标开关
     library_unwatched_badge_enabled: bool = True
+    close_to_tray: bool = True  # 点×时缩到系统托盘(true)还是直接退出客户端(false)
     # 后端服务监听端口(见 config_store.DEFAULTS['server_port'])。改了要重启 HamStashServer 服务才生效。
     server_port: int = 17420
 

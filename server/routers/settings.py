@@ -71,6 +71,9 @@ def get_settings(db: Session = Depends(get_db)):
         "library_unwatched_badge_enabled": get_setting(
             db, "library_unwatched_badge_enabled", config_store.DEFAULTS["library_unwatched_badge_enabled"]
         ) == "true",
+        "close_to_tray": get_setting(
+            db, "close_to_tray", config_store.DEFAULTS["close_to_tray"]
+        ) == "true",
         "server_port": int(get_setting(db, "server_port", config_store.DEFAULTS["server_port"])),
         # 只读:实际生效的代理地址(手填留空时是探测到的系统代理)。跟proxy_url分开返回,
         # 不能把探测值回填进设置页输入框——那样用户一点保存就把探测结果固化成手动配置了。
@@ -123,6 +126,7 @@ def update_settings(payload: SettingsUpdate, db: Session = Depends(get_db)):
         "download_sources": payload.download_sources,
         "library_cover_strategy": payload.library_cover_strategy,
         "library_unwatched_badge_enabled": str(payload.library_unwatched_badge_enabled).lower(),
+        "close_to_tray": str(payload.close_to_tray).lower(),
         # 必须放进这个 values dict:write_ini 会整段重写 INI 的 [settings] 段,漏了就每次
         # 保存别的设置都把端口冲回默认。run_service.py 和 Rust 侧都从 INI 读这个值。
         "server_port": str(payload.server_port),

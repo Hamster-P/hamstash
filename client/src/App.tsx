@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import Sidebar, { type View } from "./components/Sidebar";
 import TrackingPage from "./pages/TrackingPage";
 import SearchPage from "./pages/SearchPage";
@@ -82,6 +83,10 @@ function AppContent() {
           )
         ) {
           setView(data.default_home_view as View);
+        }
+        // 关闭窗口时缩到托盘的开关:实际拦截在Rust侧,启动时把设置同步过去
+        if (await isTauri()) {
+          invoke("set_close_to_tray", { enabled: data.close_to_tray !== false }).catch(() => {});
         }
         setQbitSetupCompleted(Boolean(data.qbit_setup_completed)); // 就绪:退出等待态
       } catch {

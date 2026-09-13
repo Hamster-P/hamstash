@@ -59,7 +59,11 @@ fn api_port() -> u16 {
 }
 
 use tauri::webview::PageLoadEvent;
+use std::sync::atomic::{AtomicBool, Ordering};
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Webview, WebviewBuilder, WebviewUrl};
+use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 use tauri_plugin_shell::ShellExt;
 use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::windows::named_pipe::ClientOptions;
@@ -651,9 +655,78 @@ async fn run_mpv_ipc_listener(app: AppHandle, pipe_name: String, video_paths: Ve
     }
 }
 
+/// 关闭主窗口时是缩到托盘(true)还是真正退出(false)。
+/// 初值true:前端还没加载完、没来得及把设置同步过来之前,也按默认行为缩到托盘。
+/// 前端启动时和设置页保存后会调set_close_to_tray更新它。
+struct CloseToTray(AtomicBool);
+
+#[tauri::command]
+fn set_close_to_tray(state: tauri::State<CloseToTray>, enabled: bool) {
+    state.0.store(enabled, Ordering::Relaxed);
+}
+
+/// 把主窗口从最小化/隐藏(托盘)状态还原并置顶。
+/// 单实例回调、托盘左键、托盘菜单「显示主界面」三处共用。
+fn show_main_window(app: &AppHandle) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let _ = window.unminimize();
+    let _ = window.show();
+    // Windows限制后台进程抢焦点,单独set_focus有时只会让任务栏图标闪烁;
+    // 短暂置顶一下再取消,保证窗口真的浮到最前。
+    let _ = window.set_always_on_top(true);
+    let _ = window.set_focus();
+    let _ = window.set_always_on_top(false);
+}
+
+/// 保存窗口位置/大小后退出。托盘菜单「退出」用。
+fn quit_app(app: &AppHandle) {
+    let _ = app.save_window_state(StateFlags::all());
+    app.exit(0);
+}
+
+/// 右下角系统托盘:左键还原主窗口,右键菜单「显示主界面 / 退出」。
+fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
+    let show = MenuItem::with_id(app, "show", "显示主界面", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show, &quit])?;
+
+    let mut builder = TrayIconBuilder::with_id("main-tray")
+        .tooltip("HamStash · 囤番鼠")
+        .menu(&menu)
+        // 左键直接还原窗口,菜单只在右键时弹出
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "show" => show_main_window(app),
+            "quit" => quit_app(app),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main_window(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon() {
+        builder = builder.icon(icon.clone());
+    }
+    builder.build(app)?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // 单实例必须第一个注册:第二个进程一启动就交接给已有实例并立刻退出,
+        // 不会先把后面的插件初始化一遍。已有实例这边负责把窗口还原到最前。
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            show_main_window(app);
+        }))
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
@@ -666,7 +739,29 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .manage(BgmEmbedState(tokio::sync::Mutex::new(None)))
+        .manage(CloseToTray(AtomicBool::new(true)))
+        .setup(|app| {
+            setup_tray(app)?;
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            // 只拦主窗口的关闭;嵌进来的Bangumi页面是主窗口上的子Webview,跟着一起隐藏。
+            if window.label() != "main" {
+                return;
+            }
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let to_tray = window.state::<CloseToTray>().0.load(Ordering::Relaxed);
+                if to_tray {
+                    api.prevent_close();
+                    // 隐藏前先存窗口状态:托盘常驻时用户可能直接关机,进程被系统结束时
+                    // window-state插件来不及自己保存。
+                    let _ = window.app_handle().save_window_state(StateFlags::all());
+                    let _ = window.hide();
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
+            set_close_to_tray,
             open_external_player,
             open_builtin_player,
             embed_bgm_webview,
