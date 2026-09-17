@@ -125,7 +125,12 @@ async def poll_subscription(db: Session, rule: SubscriptionRule, download_root: 
             .filter(RssMatchedItem.subscription_id == rule.id, RssMatchedItem.guid == item.guid)
             .first()
         )
-        if already or not matches_criteria(item, criteria):
+        # 只有真正处理完毕(推送成功added、或判定为重复收录skipped_duplicate)才算
+        # 跳过;failed是"这一集其实没下载到"的半途状态,留到下一轮轮询重试,直到
+        # qBittorrent 恢复连接为止——不然一次偶发的连接失败就会永远漏掉这一集。
+        if already and already.download_status != "failed":
+            continue
+        if not already and not matches_criteria(item, criteria):
             continue
 
         # 标题去重:guid/磁力链接不能覆盖"同一集内容被不同上游站点各自收录一次"
@@ -143,11 +148,17 @@ async def poll_subscription(db: Session, rule: SubscriptionRule, download_root: 
             .first()
         )
         if duplicate_title:
-            db.add(RssMatchedItem(
-                subscription_id=rule.id, guid=item.guid, info_hash=item.info_hash,
-                title=item.title, magnet=item.magnet, download_status="skipped_duplicate",
-                error="标题与已下载资源完全一致,判定为同一集内容的重复收录,未重复下载",
-            ))
+            if already:
+                already.info_hash, already.magnet = item.info_hash, item.magnet
+                already.download_status = "skipped_duplicate"
+                already.error = "标题与已下载资源完全一致,判定为同一集内容的重复收录,未重复下载"
+                already.matched_at = datetime.now()
+            else:
+                db.add(RssMatchedItem(
+                    subscription_id=rule.id, guid=item.guid, info_hash=item.info_hash,
+                    title=item.title, magnet=item.magnet, download_status="skipped_duplicate",
+                    error="标题与已下载资源完全一致,判定为同一集内容的重复收录,未重复下载",
+                ))
             db.commit()
             continue
 
@@ -156,15 +167,25 @@ async def poll_subscription(db: Session, rule: SubscriptionRule, download_root: 
                 db, staging_folder_path, folder_title, main_bgm_id, rule.bgm_id, rule.auto_rename
             )
             await qbittorrent_client.add_torrent(magnet=item.magnet, save_path=staging_folder_path)
-            db.add(RssMatchedItem(
-                subscription_id=rule.id, guid=item.guid, info_hash=item.info_hash,
-                title=item.title, magnet=item.magnet, download_status="added",
-            ))
+            if already:
+                already.info_hash, already.magnet = item.info_hash, item.magnet
+                already.download_status, already.error = "added", None
+                already.matched_at = datetime.now()
+            else:
+                db.add(RssMatchedItem(
+                    subscription_id=rule.id, guid=item.guid, info_hash=item.info_hash,
+                    title=item.title, magnet=item.magnet, download_status="added",
+                ))
         except Exception as e:
-            db.add(RssMatchedItem(
-                subscription_id=rule.id, guid=item.guid, info_hash=item.info_hash,
-                title=item.title, magnet=item.magnet, download_status="failed", error=str(e),
-            ))
+            if already:
+                already.info_hash, already.magnet = item.info_hash, item.magnet
+                already.download_status, already.error = "failed", str(e)
+                already.matched_at = datetime.now()
+            else:
+                db.add(RssMatchedItem(
+                    subscription_id=rule.id, guid=item.guid, info_hash=item.info_hash,
+                    title=item.title, magnet=item.magnet, download_status="failed", error=str(e),
+                ))
         db.commit()
 
 
