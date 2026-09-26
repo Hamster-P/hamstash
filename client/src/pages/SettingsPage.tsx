@@ -1247,7 +1247,7 @@ function UpdateSection() {
           </div>
           {releaseNotes && (
             <p className="mt-1.5 max-h-56 overflow-y-auto whitespace-pre-wrap font-mono text-[11px] leading-snug text-muted">
-              {releaseNotes}
+              <BoldText text={releaseNotes} />
             </p>
           )}
         </div>
@@ -1336,13 +1336,31 @@ function VersionHistoryModal({ onClose }: { onClose: () => void }) {
                   {v.date && <span className="ml-2 text-muted">{v.date}</span>}
                 </div>
                 <p className="whitespace-pre-wrap font-mono text-[11px] leading-snug text-muted">
-                  {v.body}
+                  <BoldText text={v.body} />
                 </p>
               </div>
             ))}
         </div>
       </div>
     </div>
+  );
+}
+
+// 更新说明里的 **加粗** 渲染成 <strong>,其余保持纯文本(不引入markdown库)。
+// split用带捕获组的正则,奇数下标的片段就是被 ** 包住的内容。
+function BoldText({ text }: { text: string }) {
+  return (
+    <>
+      {text.split(/\*\*(.+?)\*\*/g).map((part, i) =>
+        i % 2 === 1 ? (
+          <strong key={i} className="font-bold text-paper">
+            {part}
+          </strong>
+        ) : (
+          part
+        )
+      )}
+    </>
   );
 }
 
