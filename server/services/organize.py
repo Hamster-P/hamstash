@@ -90,14 +90,24 @@ async def _organize_completed_torrents() -> None:
         torrents = await qbittorrent_client.get_completed_torrents(
             "anime-hub", ORGANIZE_TAG, UNKNOWN_TAG
         )
-        for torrent in torrents:
-            try:
-                await _organize_single_torrent(db, torrent)
-            except Exception as e:
-                # 回滚会话:上面任何一步的数据库错误都会让Session进入需要rollback
-                # 的状态,不清掉的话本轮后面所有种子的查询都会连带失败。
-                db.rollback()
-                print(f"[ORGANIZE] 处理种子失败 hash={torrent.get('hash')}: {e}")
+        if not torrents:
+            return
+        # 本轮所有种子作为一个整体任务:期间挡住后台角标补算(它会读到搬到一半的目录、
+        # 把偏小的数写回去盖掉每个种子整理完刚重算好的精确值),结束时 generation +1
+        # 让读盘跨过本轮的补算结果作废。
+        from routers.library import _count_task_begin, _count_task_end  # 延迟 import,避免加载期循环
+        _count_task_begin()
+        try:
+            for torrent in torrents:
+                try:
+                    await _organize_single_torrent(db, torrent)
+                except Exception as e:
+                    # 回滚会话:上面任何一步的数据库错误都会让Session进入需要rollback
+                    # 的状态,不清掉的话本轮后面所有种子的查询都会连带失败。
+                    db.rollback()
+                    print(f"[ORGANIZE] 处理种子失败 hash={torrent.get('hash')}: {e}")
+        finally:
+            _count_task_end()
     finally:
         db.close()
 

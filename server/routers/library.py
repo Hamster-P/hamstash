@@ -5,6 +5,7 @@ import glob
 import platform
 import asyncio
 import shutil
+import threading
 from pathlib import Path
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import FileResponse
@@ -468,6 +469,28 @@ def recompute_episode_counts(db: Session, folder_name: str) -> None:
     db.commit()
 
 
+# 角标"批量搬家"保护:regroup 这类会搬一大批文件的任务开始时 +1 进行中计数,结束
+# (最后同步重算完角标)时 generation +1、计数 -1。后台补算(_backfill_...)在任务
+# 进行中直接跳过,并且如果它读盘期间发生过搬家任务(generation 变了),丢弃自己的
+# 写回结果——否则它读到的"搬到一半"的旧数会盖掉任务结束时的精确重算值。
+_count_task_lock = threading.Lock()
+_count_task_running = 0
+_count_generation = 0
+
+
+def _count_task_begin() -> None:
+    global _count_task_running
+    with _count_task_lock:
+        _count_task_running += 1
+
+
+def _count_task_end() -> None:
+    global _count_task_running, _count_generation
+    with _count_task_lock:
+        _count_task_running = max(_count_task_running - 1, 0)
+        _count_generation += 1
+
+
 def _backfill_missing_episode_counts(library_root: Path) -> None:
     """后台任务(不阻塞调用方):刷新"未看集数"角标要用的episode_file_count缓存列。
     不是只补NULL行——如果只看NULL,一个文件夹只要曾经被扫过一次,之后哪怕手动往里面
@@ -477,6 +500,11 @@ def _backfill_missing_episode_counts(library_root: Path) -> None:
     才会被丢进线程池真正重扫;签名没变的行直接跳过,不产生额外磁盘IO。
     每个线程各开一个session,互不干扰,扫完统一在主线程里落库。"""
     from concurrent.futures import ThreadPoolExecutor
+
+    with _count_task_lock:
+        if _count_task_running:
+            return  # 有搬家任务在进行,等它结束后自己会精确重算,下一次扫描再补
+        start_generation = _count_generation
 
     db = SessionLocal()
     try:
@@ -518,6 +546,9 @@ def _backfill_missing_episode_counts(library_root: Path) -> None:
     with ThreadPoolExecutor(max_workers=12) as pool:
         results = list(pool.map(_scan_one, stale_ids))
 
+    with _count_task_lock:
+        if _count_task_running or _count_generation != start_generation:
+            return  # 读盘期间发生过搬家任务,这批结果可能是搬到一半的旧数,丢弃
     db = SessionLocal()
     try:
         for media_id, result in results:
@@ -1069,6 +1100,14 @@ def _title_for_bgm_id(db: Session, bgm_id: int, fallback: str) -> str:
 
 @router.post("/library/regroup")
 async def regroup_media(req: RegroupRequest, db: Session = Depends(get_db)):
+    _count_task_begin()
+    try:
+        return await _regroup_media_impl(req, db)
+    finally:
+        _count_task_end()
+
+
+async def _regroup_media_impl(req: RegroupRequest, db: Session):
     """拆成独立一部 / 合并到另一部:写归属覆盖 + 把文件搬到新文件夹 + 同步数据库,
     最后按新归属把名字和季度目录一并重排好,用户不需要再手动跑一次"修复媒体库"。
 
@@ -1196,38 +1235,20 @@ async def regroup_media(req: RegroupRequest, db: Session = Depends(get_db)):
             print(f"[REGROUP] 自动重排失败 folder={new_folder}: {e}")
             renamed = {"succeeded": [], "skipped": [], "failed": [{"error": str(e)}]}
 
-    # "未看集数"角标:这批移动精确知道从哪个文件夹搬出多少个视频文件、搬进新文件夹
-    # 多少个,直接算术调整,不用等下次扫描——文件已经在磁盘上挪好、数字在同一个请求
-    # 里一起改完,不会有"文件挪了但数字没跟上"的窗口。
+    # "未看集数"角标:整个搬家任务(搬文件 + 重排)全部结束后,对目标和所有受影响的源
+    # 文件夹按磁盘最终状态同步重算——不做"搬了几个就 ±几"的推算(不分桶、会和后台补算
+    # 抢写、分批搬时误差累加)。任务进行期间后台补算被 _count_task_* 挡住不会插进来。
     if moved:
-        moved_out_by_folder: dict[str, int] = {}
-        for m in moved:
-            src_folder = m["from"].split("/", 1)[0]
-            moved_out_by_folder[src_folder] = moved_out_by_folder.get(src_folder, 0) + 1
-        for src_folder, n in moved_out_by_folder.items():
-            if src_folder == new_folder or src_folder in removed_folders:
-                continue  # 搬空删掉的文件夹LocalMedia行已经没了,不用调
-            src_media = db.query(models.LocalMedia).filter(models.LocalMedia.folder_name == src_folder).first()
-            if src_media and src_media.episode_file_count is not None:
-                src_media.episode_file_count = max(src_media.episode_file_count - n, 0)
-                # 已看分子没法在这里精确加减(要知道搬走的那几个各自看没看),置 None
-                # 交给下次 backfill / 详情页按新结构重算;在那之前这个文件夹不显示角标。
-                src_media.watched_episode_count = None
-                src_media.episode_count_updated_at = datetime.now()
-        dest_media = db.query(models.LocalMedia).filter(models.LocalMedia.folder_name == new_folder).first()
-        if dest_media:
-            if dest_media.episode_file_count is not None:
-                dest_media.episode_file_count += len(moved)
-                dest_media.watched_episode_count = None
-                dest_media.episode_count_updated_at = datetime.now()
-            elif target_media is None:
-                # target_media是上面"新文件夹要有自己的LocalMedia行"那段判断出的:这次是
-                # 全新建的文件夹,搬进来的就是它现在拥有的全部文件,可以当准确初始值。
-                # 已有文件夹但之前没扫过(target_media非None)则不猜,留None交给下次扫描/详情页补。
-                dest_media.episode_file_count = len(moved)
-                dest_media.watched_episode_count = None
-                dest_media.episode_count_updated_at = datetime.now()
-        db.commit()
+        affected = {new_folder}
+        affected.update(m["from"].split("/", 1)[0] for m in moved)
+        for folder_name in affected:
+            if folder_name in removed_folders:
+                continue  # 搬空删掉的文件夹LocalMedia行已经没了
+            try:
+                recompute_episode_counts(db, folder_name)
+            except Exception as e:
+                db.rollback()
+                print(f"[REGROUP] 重算未看集数角标失败 folder={folder_name}: {e}")
 
     _detail_structure_cache.clear()  # 目录结构变了,详情页缓存整体失效
     return {
