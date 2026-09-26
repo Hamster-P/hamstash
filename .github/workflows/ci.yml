@@ -1,0 +1,88 @@
+name: CI
+
+# 日常检查:PR 和推送分支时跑,不碰任何 Secret,所以来自 fork 的 PR 也能正常跑完。
+# 发版构建是另一个 workflow(release.yml),只在推 v* 标签时触发,两者互不重叠。
+on:
+  pull_request: # 任何分支/fork 提来的 PR
+  push:
+    branches:
+      - master # 只在主干推送时跑
+      # 特性分支不在这里列:它们走 PR 触发。两边都配会让同仓库的 PR 跑两遍。
+      # 标签(v*)天然不匹配 branches,由 release.yml 单独负责,不会重复触发。
+
+# 同一分支上连续推送时,取消还没跑完的旧任务,省额度
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # 后端跑 windows-latest 而不是 ubuntu:database.py 在**导入期**就会解析数据库路径,
+  # 默认 library_root 是 D:\AnimeLibrary 这种 Windows 路径;应用本身也只支持 Windows。
+  # 放 Linux 上跑等于在测一个根本不存在的运行环境。
+  backend:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12" # 跟 release.yml 保持一致
+          cache: pip
+          cache-dependency-path: server/requirements.txt
+
+      - name: Install deps
+        working-directory: server
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Unit tests
+        working-directory: server
+        run: python -m unittest discover -s tests -v
+
+      # 导入冒烟:能抓到语法错误、循环 import、以及 db_migrate 建表/补列的回归。
+      - name: Import smoke test
+        working-directory: server
+        run: python -c "import main"
+
+  frontend:
+    runs-on: ubuntu-latest # 纯 node + tsc,跟平台无关
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24 # 跟 release.yml 保持一致
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Install deps
+        working-directory: client
+        run: npm ci
+
+      # npm 12 起安装脚本默认不执行,靠 package.json 的 allowScripts 白名单放行。
+      # esbuild 的平台二进制就是 postinstall 装的,装不上这里会直接报错。
+      - name: Verify esbuild binary installed
+        working-directory: client
+        run: npx esbuild --version
+
+      - name: Type check
+        working-directory: client
+        run: npx tsc --noEmit
+
+  # lib.rs 里有 cfg(windows) 的 windows-sys 代码,必须在 Windows 上编。
+  # 实测 cargo check 不需要 client/dist 存在,所以这里不跑前端构建。
+  rust:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: client/src-tauri
+
+      - name: Cargo check
+        working-directory: client/src-tauri
+        run: cargo check

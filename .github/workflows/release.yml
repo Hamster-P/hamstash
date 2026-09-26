@@ -46,10 +46,13 @@ jobs:
           Copy-Item "$env:TEMP\nssm-extract\nssm-2.24\win64\nssm.exe" "client/src-tauri/backend/nssm.exe"
 
       # 3/3 前端依赖 + Rust 工具链 + tauri build/签名/发布
+      # Node 20 已于 2026-04-30 EOL,不再有安全补丁,固定到当前 LTS。
+      # Node 24 可能自带 npm 12(安装脚本默认不执行),client/package.json 的
+      # allowScripts 已经批准过 esbuild,下面那步会验证二进制真的装上了。
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -62,6 +65,12 @@ jobs:
       - name: Install frontend deps
         working-directory: client
         run: npm ci
+
+      # esbuild 的平台二进制靠 postinstall 安装;npm 12 起安装脚本默认被拦,
+      # 装不上会让后面的 vite build 产出坏包。在这里提前炸掉,别等发出去才发现。
+      - name: Verify esbuild binary installed
+        working-directory: client
+        run: npx esbuild --version
 
       # 从 CHANGELOG.md 抽取当前版本那一段作为发布说明,喂给 tauri-action。
       # 它会同时写进 latest.json 的 notes(App 更新弹窗读的就是这个)和 Release 网页说明。

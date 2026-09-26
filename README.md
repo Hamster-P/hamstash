@@ -71,6 +71,60 @@ powershell -ExecutionPolicy Bypass -File scripts\build-release.ps1
 
 会依次：用 PyInstaller 打包后端 → 下载/准备 NSSM → 用 Tauri 打出 NSIS/MSI 安装包，产物在 `client\src-tauri\target\release\bundle\` 下。
 
+## Fork 指南
+
+**原仓库不需要为你开任何权限。** Fork 出去就是你自己的仓库，用你自己的 Actions 额度和 Secrets —— 原仓库的 Secrets 不会随 fork 带走（GitHub 的设计），必须自己配一份。
+
+日常改动的 CI（`.github/workflows/ci.yml`，跑后端单元测试 + 前端类型检查 + Rust 编译检查）不依赖任何 Secret，fork 后开 PR 就能直接跑。真正需要自己动手的是**发版**这条链路：
+
+1. **签名密钥（不配会直接构建失败）**
+   `client/src-tauri/tauri.conf.json` 的 `createUpdaterArtifacts: true` 要求对安装包签名。
+   自己生成一对：
+   ```powershell
+   cd client
+   npm run tauri signer generate -- -w hamstash.key
+   ```
+   - 私钥文件的**完整内容** → 你仓库的 `Settings > Secrets and variables > Actions`，名为 `TAURI_SIGNING_PRIVATE_KEY`
+   - 生成时设的密码 → 同处，名为 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
+   - 公钥 → 替换 `tauri.conf.json` 里 `plugins.updater.pubkey`
+   - **私钥不要提交进仓库**
+
+2. **更新端点**
+   `client/src-tauri/tauri.conf.json` 的 `plugins.updater.endpoints` 默认指向本仓库的 Releases。
+   不改的话，你 fork 构建出来的客户端会跑到**原仓库**去检查更新、并装上原仓库的包。
+
+3. **更新日志源**
+   `server/services/changelog.py` 的 `CHANGELOG_URL` 同理，默认拉的是原仓库的 `CHANGELOG.md`。
+
+4. **TMDB API Key**
+   `server/tmdb_client.py` 的 `TMDB_API_KEY` 是本项目申请的共享 key（用于背景图/LOGO/分级等）。
+   建议去 [TMDB](https://www.themoviedb.org/settings/api) 免费申请一个换掉，避免大家共用一个配额被限流。
+
+5. **只支持 Windows**
+   捆绑了 nssm（注册后台服务）、vulkan-1.dll、mpv，`release.yml` 固定 `windows-latest`，没有跨平台构建。
+
+6. **GPL-3.0**
+   衍生项目同样必须以 GPL-3.0 开源。
+
+### 维护提醒：npm 的安装脚本白名单
+
+npm 12 起，`npm install` 默认**不再执行**依赖的安装脚本，需要显式批准。本仓库 `client/package.json` 里的
+
+```json
+"allowScripts": { "esbuild@0.28.1": true }
+```
+
+就是这个白名单 —— esbuild 的平台二进制靠 postinstall 安装，不放行会导致前端构建产出坏包。
+
+注意这个 key 是**精确版本号**。将来升级 vite / esbuild、重新生成 `package-lock.json` 之后版本号对不上，脚本会重新被拦，需要再跑一次：
+
+```powershell
+cd client
+npm approve-scripts
+```
+
+CI 的 `npx esbuild --version` 那一步就是用来提前发现这种情况的。
+
 ## 数据存储
 
 数据库（观看记录、订阅规则、下载任务等）默认在系统未配置媒体库目录前存于 `%ProgramData%\hamstash\`；一旦在设置页配置了媒体库目录，会自动迁移到该目录下的隐藏文件 `.anime_hub.db`，保证换电脑/重装系统时只要媒体库所在盘还在，数据就跟着找得回来。
