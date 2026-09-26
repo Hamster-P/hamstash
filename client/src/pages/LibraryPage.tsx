@@ -1,6 +1,6 @@
 // pages/LibraryPage.tsx
 import { useEffect, useLayoutEffect, useMemo, useState, useRef } from "react";
-import { Play, FolderOpen, ArrowLeft, CheckCircle2, Trash2, Loader2, Users, Info, Settings2, Move, RefreshCcw, FolderMinus } from "lucide-react";
+import { Play, FolderOpen, ArrowLeft, CheckCircle2, Trash2, Loader2, Users, Info, Settings2, Move, RefreshCcw, FolderMinus, ImageIcon, Type } from "lucide-react";
 import { invoke } from '@tauri-apps/api/core';
 import { isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -95,6 +95,8 @@ interface AnimeMeta {
   tmdb_id?: number | null;
   backdrop_url?: string | null;
   logo_url?: string | null;
+  backdrop_custom?: boolean; // 当前背景图是用户手选的
+  logo_custom?: boolean;     // 当前LOGO是用户手选的
   content_rating?: string | null;
   genres?: string[];
   tags?: string[];
@@ -278,6 +280,16 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
   const [introPickerOpen, setIntroPickerOpen] = useState(false);
   const [introChecking, setIntroChecking] = useState(false); // 正在拉候选,防重复点击
 
+  // "调整背景图/LOGO"选择框:候选来自TMDB,选中后存后端(不会被挑图规则升级覆盖)
+  const [imagePicker, setImagePicker] = useState<{
+    kind: "backdrop" | "logo";
+    bgmId: number;
+    candidates: { url: string; thumb: string; width?: number; height?: number; lang?: string | null }[];
+    loading: boolean;
+    busy: boolean;
+    error: string | null;
+  } | null>(null);
+
   // 剧场版模式独立成 movieOnly 页面(见 movieOnly prop),不再用 viewMode toggle。
   const [standalones, setStandalones] = useState<StandaloneItem[]>([]);
   const [standaloneLoading, setStandaloneLoading] = useState(false);
@@ -431,6 +443,41 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
       .then((data) => setCoverCandidates(sortCandidates(data?.data ?? [])))
       .catch(() => setCoverCandidates([]))
       .finally(() => setCoverLoading(false));
+  };
+
+  // 打开背景图/LOGO选择框:实时拉TMDB候选
+  const openImagePicker = async (kind: "backdrop" | "logo", bgmId: number) => {
+    setImagePicker({ kind, bgmId, candidates: [], loading: true, busy: false, error: null });
+    try {
+      const res = await fetch(`${API_BASE}/anime-meta/${bgmId}/image-candidates`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const list = kind === "backdrop" ? data.backdrops : data.logos;
+      setImagePicker((p) => (p ? { ...p, candidates: list ?? [], loading: false } : p));
+    } catch (err) {
+      console.error("获取图片候选失败", err);
+      setImagePicker((p) => (p ? { ...p, loading: false, error: "获取候选图片失败,请检查网络/代理后重试" } : p));
+    }
+  };
+
+  // 选中一张(url=null 即恢复自动挑选),成功后刷新头部元数据
+  const applyImagePick = async (url: string | null) => {
+    if (!imagePicker) return;
+    const { kind, bgmId } = imagePicker;
+    setImagePicker((p) => (p ? { ...p, busy: true, error: null } : p));
+    try {
+      const res = await fetch(`${API_BASE}/anime-meta/${bgmId}/custom-image`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind, url }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setImagePicker(null);
+      fetchAnimeMeta(bgmId);
+    } catch (err) {
+      console.error("保存图片选择失败", err);
+      setImagePicker((p) => (p ? { ...p, busy: false, error: "保存失败,请重试" } : p));
+    }
   };
 
   const closeCoverPicker = () => {
@@ -1258,11 +1305,22 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
                 多露出一截)。标题/分级/简介不再挪到图片下面单独一段,而是叠回图片底部——
                 跟下面内容层用同一个minHeight对齐,再配一层由下往上的暗化渐变保证可读。 */}
             {animeMeta?.status === "resolved" && animeMeta.backdrop_url && (
-              <div className="absolute inset-x-0 top-0 overflow-hidden" style={{ height: HERO_BANNER_HEIGHT }}>
+              <div
+                className="absolute inset-x-0 top-0 flex justify-end overflow-hidden"
+                style={{ height: HERO_BANNER_HEIGHT }}
+              >
+                {/* 保持原图比例、靠右摆放,不再被迫铺满全宽:
+                    - 窗口够宽(如4K最大化):宽=高×原图比例,整张图完整显示;
+                    - 窗口较窄:max-w-full 卡住宽度,退回 cover 裁切(跟以前一样);
+                    - 左边缘渐隐,融进底层同一张图的模糊版,不出现硬边。 */}
                 <img
                   src={proxiedImageUrl(animeMeta.backdrop_url)}
                   alt=""
-                  className="h-full w-full object-cover object-top opacity-80"
+                  className="h-full w-auto max-w-full object-cover object-top opacity-80"
+                  style={{
+                    maskImage: "linear-gradient(to right, transparent, black 35%)",
+                    WebkitMaskImage: "linear-gradient(to right, transparent, black 35%)",
+                  }}
                 />
                 {/* 暗化渐变加深(via-ink/30→via-ink/70,顶部也从全透明改成留一点底色):
                     之前文字直接叠在鲜艳的原图上对比度不够,标题还好(带drop-shadow),
@@ -1339,6 +1397,25 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
                   >
                     <Move size={14} /> 调整归属…
                   </button>
+                )}
+                {/* 背景图/LOGO 手动指定:仅在已解析出 TMDB 信息时才有候选可选 */}
+                {episodeManageMode && selectedAnime.bgm_id && animeMeta?.status === "resolved" && (
+                  <>
+                    <button
+                      onClick={() => openImagePicker("backdrop", selectedAnime.bgm_id!)}
+                      title="调整海报图片"
+                      className="flex items-center gap-1.5 rounded-md border border-border bg-ink/60 px-3 py-1.5 font-mono text-xs text-muted backdrop-blur transition-colors hover:border-vermillion hover:text-vermillion"
+                    >
+                      <ImageIcon size={14} /> 调整海报图片
+                    </button>
+                    <button
+                      onClick={() => openImagePicker("logo", selectedAnime.bgm_id!)}
+                      title="调整logo图片"
+                      className="flex items-center gap-1.5 rounded-md border border-border bg-ink/60 px-3 py-1.5 font-mono text-xs text-muted backdrop-blur transition-colors hover:border-vermillion hover:text-vermillion"
+                    >
+                      <Type size={14} /> 调整logo图片
+                    </button>
+                  </>
                 )}
                 {episodeDeleteError && (
                   <span className="font-mono text-[11px] text-vermillion">
@@ -2243,6 +2320,88 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
             {regroupNotice && (
               <div className="mt-3 rounded border border-vermillion/40 bg-ink p-3 font-mono text-[11px] text-vermillion">
                 {regroupNotice}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* 背景图/LOGO 选择框:TMDB 候选网格,点一张即记住;"恢复默认"回到自动挑选 */}
+      {imagePicker && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-ink/70 p-6"
+          onClick={() => setImagePicker(null)}
+        >
+          <div
+            className="flex max-h-[80vh] w-full max-w-4xl flex-col rounded-md border border-border bg-surface p-5"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-3 flex items-center justify-between">
+              <div className="text-sm">{imagePicker.kind === "backdrop" ? "选择海报图片(背景图)" : "选择 LOGO 图片"}</div>
+              <div className="flex items-center gap-2 font-mono text-[11px]">
+                <button
+                  onClick={() => applyImagePick(null)}
+                  disabled={imagePicker.busy}
+                  className="rounded border border-border px-2 py-1 text-muted transition-colors hover:border-vermillion hover:text-vermillion disabled:opacity-40"
+                >
+                  恢复默认
+                </button>
+                <button
+                  onClick={() => setImagePicker(null)}
+                  className="rounded border border-border px-2 py-1 text-muted transition-colors hover:text-paper"
+                >
+                  关闭
+                </button>
+              </div>
+            </div>
+            <p className="mb-3 font-mono text-[11px] text-muted">
+              选中后会被记住,之后图片规则升级也不会覆盖;“恢复默认”回到自动挑选。
+            </p>
+            {imagePicker.error && (
+              <div className="mb-3 rounded border border-vermillion/40 bg-ink p-2 font-mono text-[11px] text-vermillion">
+                {imagePicker.error}
+              </div>
+            )}
+            {imagePicker.loading ? (
+              <div className="py-10 text-center font-mono text-xs text-muted">正在加载候选图片...</div>
+            ) : imagePicker.candidates.length === 0 ? (
+              <div className="py-10 text-center font-mono text-xs text-muted">没有可选的图片。</div>
+            ) : (
+              <div
+                className={`grid gap-3 overflow-y-auto ${
+                  imagePicker.kind === "backdrop"
+                    ? "grid-cols-[repeat(auto-fill,minmax(220px,1fr))]"
+                    : "grid-cols-[repeat(auto-fill,minmax(150px,1fr))]"
+                }`}
+              >
+                {imagePicker.candidates.map((c) => {
+                  const current = imagePicker.kind === "backdrop" ? animeMeta?.backdrop_url : animeMeta?.logo_url;
+                  return (
+                    <button
+                      key={c.url}
+                      onClick={() => applyImagePick(c.url)}
+                      disabled={imagePicker.busy}
+                      className="group flex flex-col gap-1 text-left disabled:opacity-50"
+                    >
+                      <div
+                        className={`relative overflow-hidden rounded border bg-ink transition-colors group-hover:border-vermillion ${
+                          imagePicker.kind === "backdrop" ? "aspect-video" : "flex aspect-[3/2] items-center justify-center p-2"
+                        } ${current === c.url ? "border-vermillion" : "border-border"}`}
+                      >
+                        <img
+                          src={proxiedImageUrl(c.thumb)}
+                          alt=""
+                          className={imagePicker.kind === "backdrop" ? "h-full w-full object-cover" : "max-h-full max-w-full object-contain"}
+                        />
+                      </div>
+                      <div className="font-mono text-[10px] text-muted group-hover:text-vermillion">
+                        {c.width}×{c.height}
+                        {c.lang ? ` · ${c.lang}` : ""}
+                        {current === c.url ? " · 当前" : ""}
+                      </div>
+                    </button>
+                  );
+                })}
               </div>
             )}
           </div>

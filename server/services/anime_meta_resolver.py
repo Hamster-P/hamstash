@@ -33,7 +33,8 @@ MAX_RETRY_ATTEMPTS = 10
 #   2 = LOGO 挑选改为 横向优先,同朝向里再按 日文>中文>英文(见 tmdb_client._pick_logo)
 #   3 = 背景图改为从候选池按 分辨率≥1920x1080 + 横向 + 评分 挑(见 tmdb_client._pick_backdrop)
 #   4 = 背景图/LOGO 语言优先级统一为 日文>中文>未定义>英文(见 tmdb_client._pick_by_language)
-META_RESOLVER_VERSION = 4
+#   5 = 背景图优先取 TMDB 官方默认 backdrop_path,宽度不足 1280 才走候选池(见 tmdb_client._pick_backdrop)
+META_RESOLVER_VERSION = 5
 _RESOLVER_VERSION_SETTING_KEY = "meta_resolver_version"
 
 
@@ -78,13 +79,15 @@ def _discard_replaced_images(
     new_backdrop: str | None,
     old_logo: str | None,
     new_logo: str | None,
+    keep: tuple[str | None, ...] = (),
 ) -> None:
     """刷新后挑到了跟原来不同的图,把旧URL的本地图片缓存清掉。
+    keep:用户手动选中的图,即使不再是自动挑的图也不能清(它还在被使用)。
     延迟import避免routers<->services循环依赖。"""
     from routers import media
 
     for old, new in ((old_backdrop, new_backdrop), (old_logo, new_logo)):
-        if old and old != new:
+        if old and old != new and old not in keep:
             media.discard_cached_image(old)
 
 _SNAPSHOT_TMDB_ID_RE = re.compile(r"^(tv|movie)/(\d+)(?:/season/(\d+))?")
@@ -261,5 +264,6 @@ async def resolve_one(db: Session, bgm_id: int, *, is_refresh: bool = False) -> 
     # 按新逻辑挑到了跟原来不同的背景图/LOGO时,清掉旧URL的孤儿图片缓存。
     if is_refresh:
         _discard_replaced_images(
-            old_backdrop_url, row.backdrop_url, old_logo_url, row.logo_url
+            old_backdrop_url, row.backdrop_url, old_logo_url, row.logo_url,
+            keep=(row.custom_backdrop_url, row.custom_logo_url),
         )

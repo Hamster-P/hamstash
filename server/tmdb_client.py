@@ -118,6 +118,8 @@ def _image_url(file_path: str | None, size: str) -> str | None:
 # 头部会糊,直接排除。候选池里没有达标的再回退顶层 backdrop_path。
 _BACKDROP_MIN_WIDTH = 1920
 _BACKDROP_MIN_HEIGHT = 1080
+# 官方默认图的宽度下限(前端取 w1280 尺寸,原图更窄就会被拉伸变糊)
+_BACKDROP_DEFAULT_MIN_WIDTH = 1280
 
 
 def _pick_by_language(candidates: list[dict]) -> dict | None:
@@ -136,12 +138,20 @@ def _pick_by_language(candidates: list[dict]) -> dict | None:
 
 
 def _pick_backdrop(backdrops: list[dict], fallback_path: str | None) -> str | None:
-    """从 images.backdrops[] 候选池里挑背景图:
+    """挑背景图:
+      0. 优先用顶层 backdrop_path(TMDB 官网头部展示的社区默认图,观感最好);
+         但它在候选池里宽度 < 1280 时会糊,放弃;池里查不到该图则直接信任。
+    默认图缺失/不达标时,从 images.backdrops[] 候选池里挑:
       1. 排除分辨率低于 1920x1080 的;
       2. 横向优先(backdrop 基本都是横的,极少数竖图排掉);
       3. 同朝向里按语言 日文>中文>未定义>英文(见 _pick_by_language);
       4. TMDB 本身按社区评分降序返回,同档取第一张(评分最高)。
-    候选池里没有任何达标的,就回退到顶层 backdrop_path(TMDB 官网默认图),不至于没图。"""
+    候选池里没有任何达标的,最后仍回退到顶层 backdrop_path,不至于没图。"""
+    if fallback_path:
+        default_meta = next((b for b in backdrops if b.get("file_path") == fallback_path), None)
+        if default_meta is None or (default_meta.get("width") or 0) >= _BACKDROP_DEFAULT_MIN_WIDTH:
+            return fallback_path
+
     qualified = [
         b for b in backdrops
         if (b.get("width") or 0) >= _BACKDROP_MIN_WIDTH
@@ -152,6 +162,31 @@ def _pick_backdrop(backdrops: list[dict], fallback_path: str | None) -> str | No
     if pick:
         return pick.get("file_path")
     return fallback_path
+
+
+def list_image_candidates(data: dict) -> dict:
+    """给"调整背景图/LOGO"选择框用:把TMDB详情里的全部背景图/LOGO候选列出来。
+    url的尺寸必须跟normalize_tmdb_*落库时一致(背景图w1280、LOGO w500),
+    这样用户选中的url可以直接存,跟自动挑出来的图走同一套图片缓存;thumb只用于选择框预览。"""
+    images = data.get("images") or {}
+
+    def _build(items: list[dict], size: str, thumb_size: str) -> list[dict]:
+        return [
+            {
+                "url": _image_url(i["file_path"], size),
+                "thumb": _image_url(i["file_path"], thumb_size),
+                "width": i.get("width"),
+                "height": i.get("height"),
+                "lang": i.get("iso_639_1") or None,
+            }
+            for i in items
+            if i.get("file_path")
+        ]
+
+    return {
+        "backdrops": _build(images.get("backdrops") or [], "w1280", "w780"),
+        "logos": _build(images.get("logos") or [], "w500", "w300"),
+    }
 
 
 def _is_horizontal_logo(logo: dict) -> bool:

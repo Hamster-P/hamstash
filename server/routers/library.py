@@ -19,6 +19,7 @@ import config_store
 from database import SessionLocal, get_db
 from services.common import get_setting, upsert_setting
 from services import bgm_series_cache, anime_meta_resolver
+import tmdb_client
 from bangumi_client import get_subject_detail, normalize_bgm_subject, get_subject_details_batch
 from datetime import datetime, timedelta, timezone
 
@@ -1615,14 +1616,56 @@ def get_anime_meta(bgm_id: int, background_tasks: BackgroundTasks, db: Session =
         "bgm_id": bgm_id,
         "status": row.status,
         "tmdb_id": row.tmdb_id,
-        "backdrop_url": row.backdrop_url,
-        "logo_url": row.logo_url,
+        # 用户手动选的图优先,没选才用自动挑的
+        "backdrop_url": row.custom_backdrop_url or row.backdrop_url,
+        "logo_url": row.custom_logo_url or row.logo_url,
+        "backdrop_custom": bool(row.custom_backdrop_url),
+        "logo_custom": bool(row.custom_logo_url),
         "content_rating": row.content_rating,
         "genres": row.genres.split(",") if row.genres else [],
         "tags": row.tags.split(",") if row.tags else [],
         "studios": row.studios.split(",") if row.studios else [],
         "creators": row.creators.split(",") if row.creators else [],
     }
+
+
+@router.get("/anime-meta/{bgm_id}/image-candidates")
+async def get_anime_meta_image_candidates(bgm_id: int, db: Session = Depends(get_db)):
+    """"调整背景图/LOGO"选择框的候选:实时查一次TMDB,列出该条目全部背景图和LOGO。"""
+    row = db.query(models.AnimeMetaCache).filter(models.AnimeMetaCache.bgm_id == bgm_id).first()
+    if row is None or row.status != "resolved" or not row.tmdb_id:
+        raise HTTPException(status_code=404, detail="该条目还没有解析出TMDB信息")
+    try:
+        if row.media_type == "movie":
+            detail = await tmdb_client.get_movie_detail(row.tmdb_id)
+        else:
+            detail = await tmdb_client.get_tv_detail(row.tmdb_id, row.tmdb_season)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"获取TMDB图片列表失败: {e}")
+    return tmdb_client.list_image_candidates(detail)
+
+
+class CustomImageRequest(BaseModel):
+    kind: str            # "backdrop" | "logo"
+    url: str | None = None  # None=恢复自动挑选
+
+
+@router.put("/anime-meta/{bgm_id}/custom-image")
+def set_anime_meta_custom_image(bgm_id: int, req: CustomImageRequest, db: Session = Depends(get_db)):
+    """记住用户手选的背景图/LOGO。存在独立列里,resolver刷新/版本升级不会覆盖。"""
+    if req.kind not in ("backdrop", "logo"):
+        raise HTTPException(status_code=400, detail="kind只能是backdrop或logo")
+    if req.url is not None and not req.url.startswith(tmdb_client.IMAGE_BASE_URL + "/"):
+        raise HTTPException(status_code=400, detail="只接受TMDB图片地址")
+    row = db.query(models.AnimeMetaCache).filter(models.AnimeMetaCache.bgm_id == bgm_id).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="该条目没有元数据记录")
+    if req.kind == "backdrop":
+        row.custom_backdrop_url = req.url
+    else:
+        row.custom_logo_url = req.url
+    db.commit()
+    return {"ok": True}
 
 
 @router.get("/library/play")

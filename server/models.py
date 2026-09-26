@@ -121,7 +121,7 @@ class RenamedFile(Base):
 class LocalMedia(Base):
     """
     本地媒体库扫描关联表。
-    用于将 D:\AnimeLibrary 下的实体文件夹，与 Bangumi（AnimeCatalog）建立绑定。
+    用于将 AnimeLibrary 下的实体文件夹，与 Bangumi（AnimeCatalog）建立绑定。
     """
     __tablename__ = "local_media"
 
@@ -339,6 +339,10 @@ class AnimeMetaCache(Base):
     # 以下为TMDB详情字段,status=resolved时才有值
     backdrop_url = Column(String, nullable=True)
     logo_url = Column(String, nullable=True)
+    # 用户手动挑的背景图/LOGO。非空时接口优先返回它;resolver刷新(含解析逻辑升级)
+    # 只覆盖上面两列,永远不碰这两列,所以用户的选择不会被新版挑图规则冲掉。
+    custom_backdrop_url = Column(String, nullable=True)
+    custom_logo_url = Column(String, nullable=True)
     content_rating = Column(String, nullable=True)
     genres = Column(String, nullable=True)   # 逗号分隔
     tags = Column(String, nullable=True)     # 逗号分隔
