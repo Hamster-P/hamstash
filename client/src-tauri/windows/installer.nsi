@@ -184,6 +184,7 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
 ; 4. Custom page to ask user if he wants to reinstall/uninstall
 ;    only if a previous installation was detected
 Var ReinstallPageCheck
+Var KeepExistingInstall
 Page custom PageReinstall PageLeaveReinstall
 Function PageReinstall
   ; Uninstall previous WiX installation if exists.
@@ -320,6 +321,11 @@ FunctionEnd
 Function PageLeaveReinstall
   ${NSD_GetState} $R2 $R1
 
+  ; 默认视为"保留已有安装、原地覆盖"(目录页据此锁定安装路径);只有下面走到
+  ; reinst_uninstall(先卸载旧版)时才置 0,此时旧安装已经清掉,可以自由选新路径。
+  ; 否则用户在目录页改路径会在新旧两处各装一份,旧目录变成没有卸载入口的孤儿。
+  StrCpy $KeepExistingInstall 1
+
   ; If migrating from Wix, always uninstall
   ${If} $WixMode = 1
     Goto reinst_uninstall
@@ -355,6 +361,7 @@ Function PageLeaveReinstall
   ${EndIf}
 
   reinst_uninstall:
+    StrCpy $KeepExistingInstall 0
     HideWindow
     ClearErrors
 
@@ -395,7 +402,7 @@ Function PageLeaveReinstall
 FunctionEnd
 
 ; 5. Choose install directory page
-!define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
+!define MUI_PAGE_CUSTOMFUNCTION_PRE SkipDirIfKeepExisting
 !insertmacro MUI_PAGE_DIRECTORY
 
 ; 6. Start menu shortcut page
@@ -912,6 +919,15 @@ FunctionEnd
 
 Function Skip
   Abort
+FunctionEnd
+
+Function SkipDirIfKeepExisting
+  ${IfThen} $PassiveMode = 1 ${|} Abort ${|}
+  ; 已有安装且选择保留(覆盖安装/升级):不允许换路径,直接锁定到已安装位置并跳过目录页
+  ${If} $KeepExistingInstall = 1
+    Call RestorePreviousInstallLocation
+    Abort
+  ${EndIf}
 FunctionEnd
 
 Function SkipIfPassive
