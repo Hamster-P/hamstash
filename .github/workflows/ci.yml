@@ -21,10 +21,15 @@ jobs:
   # 放 Linux 上跑等于在测一个根本不存在的运行环境。
   backend:
     runs-on: windows-latest
+    # Windows 上 Python 的 stdout 默认按 cp1252 编码,代码里 print 的中文会直接
+    # 抛 UnicodeEncodeError 把进程干掉(不是代码 bug,是 CI 环境的编码默认值)。
+    env:
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12" # 跟 release.yml 保持一致
           cache: pip
@@ -48,9 +53,9 @@ jobs:
   frontend:
     runs-on: ubuntu-latest # 纯 node + tsc,跟平台无关
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 24 # 跟 release.yml 保持一致
           cache: npm
@@ -75,13 +80,25 @@ jobs:
   rust:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: client/src-tauri
+
+      # tauri.conf.json 的 bundle.resources 里有 backend/hamstash-server/**/* 和
+      # backend/nssm.exe,它们是 release.yml 里 PyInstaller + 下载 NSSM 生成的,没入库。
+      # tauri 的 build script 匹配不到这个 glob 就直接失败。这里只是做**类型/编译检查**,
+      # 不打包,所以补两个占位文件即可,不必真的跑一遍后端打包(那要一两分钟)。
+      - name: Stub bundle resources (build script 要求这些路径存在)
+        shell: pwsh
+        working-directory: client/src-tauri
+        run: |
+          New-Item -ItemType Directory -Force -Path backend/hamstash-server | Out-Null
+          Set-Content -Path backend/hamstash-server/.ci-stub -Value "" -Encoding utf8
+          Set-Content -Path backend/nssm.exe -Value "" -Encoding utf8
 
       - name: Cargo check
         working-directory: client/src-tauri
