@@ -273,6 +273,10 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
   const [coverCandidates, setCoverCandidates] = useState<CoverCandidate[]>([]);
   const [coverLoading, setCoverLoading] = useState(false);
   const [coverBusy, setCoverBusy] = useState(false);
+  const [coverError, setCoverError] = useState<string | null>(null); // 设置封面失败提示
+  // "Bangumi介绍"选季弹窗:复用封面弹窗的网格,只是点选后改为跳转对应条目的介绍页
+  const [introPickerOpen, setIntroPickerOpen] = useState(false);
+  const [introChecking, setIntroChecking] = useState(false); // 正在拉候选,防重复点击
 
   // 剧场版模式独立成 movieOnly 页面(见 movieOnly prop),不再用 viewMode toggle。
   const [standalones, setStandalones] = useState<StandaloneItem[]>([]);
@@ -414,6 +418,9 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
       });
   };
 
+  // 候选统一按 bgm_id 降序(新作在前),不沿用缓存的默认顺序;封面弹窗和介绍选季共用
+  const sortCandidates = (list: CoverCandidate[]) => [...list].sort((a, b) => b.bgm_id - a.bgm_id);
+
   // 打开"选择图片"弹窗:拉该番所在家族的封面候选(后端缓存优先,缺失才远程补)。
   const openCoverPicker = (folderName: string, bgmId: number) => {
     setCoverPickerFolder(folderName);
@@ -421,20 +428,23 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
     setCoverLoading(true);
     fetch(`${API_BASE}/library/cover-candidates/${bgmId}`)
       .then((res) => res.json())
-      .then((data) => setCoverCandidates(data?.data ?? []))
+      .then((data) => setCoverCandidates(sortCandidates(data?.data ?? [])))
       .catch(() => setCoverCandidates([]))
       .finally(() => setCoverLoading(false));
   };
 
   const closeCoverPicker = () => {
     setCoverPickerFolder(null);
+    setIntroPickerOpen(false);
     setCoverCandidates([]);
+    setCoverError(null);
   };
 
   // 选中某张家族封面 → 标记为该番自定义封面;或"恢复默认"(bgmId=null)清掉自定义。
   const applyCover = async (bgmId: number | null) => {
     if (!coverPickerFolder) return;
     setCoverBusy(true);
+    setCoverError(null);
     try {
       const url = `${API_BASE}/library/${encodeURIComponent(coverPickerFolder)}/cover`;
       const res =
@@ -450,6 +460,7 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
       fetchAnimes(true); // 静默刷新,封面立即更新
     } catch (err) {
       console.error("设置封面失败", err);
+      setCoverError(err instanceof Error ? `设置封面失败:${err.message}` : "设置封面失败,请重试");
     } finally {
       setCoverBusy(false);
     }
@@ -854,8 +865,8 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
   // "Bangumi介绍"按钮:跳到顶层DetailPage看这部番自己的Bangumi简介/内嵌详情页
   // (跟"补番一览点关联作品"跳的是同一个onSelectAnime,同一套session机制,
   // 只是mode="self"——回来时恢复到这部番自己的详情页,而不是补番一览)。
-  const handleOpenBangumiIntro = () => {
-    if (!selectedAnime?.bgm_id) return;
+  const jumpToBangumiIntro = (bgmId: number) => {
+    if (!selectedAnime) return;
     saveLibraryDetailSession({
       anime: selectedAnime,
       relatedAnime,
@@ -863,7 +874,29 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
       relatedScrollTop: scrollContainerRef?.current?.scrollTop ?? 0,
       mode: "self",
     });
-    onSelectAnime?.(selectedAnime.bgm_id);
+    onSelectAnime?.(bgmId);
+  };
+
+  // 点按钮:先拉家族候选;只有一季(或拉取失败)直接跳,多季才弹选择框。
+  const handleOpenBangumiIntro = async () => {
+    if (!selectedAnime?.bgm_id || introChecking) return;
+    const rootId = selectedAnime.bgm_id;
+    setIntroChecking(true);
+    try {
+      const res = await fetch(`${API_BASE}/library/cover-candidates/${rootId}`);
+      const list: CoverCandidate[] = (await res.json())?.data ?? [];
+      if (list.length <= 1) {
+        jumpToBangumiIntro(list[0]?.bgm_id ?? rootId);
+        return;
+      }
+      setCoverCandidates(sortCandidates(list));
+      setCoverLoading(false);
+      setIntroPickerOpen(true);
+    } catch {
+      jumpToBangumiIntro(rootId); // 拉取失败退回原行为
+    } finally {
+      setIntroChecking(false);
+    }
   };
 
   // "补番"按钮:跟管理模式互斥,第一次打开且还没拉过数据时才发请求
@@ -2217,7 +2250,7 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
       )}
 
       {/* "选择图片"弹窗:家族全部作品封面网格,点一张即设为该番封面 */}
-      {coverPickerFolder !== null && (
+      {(coverPickerFolder !== null || introPickerOpen) && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-ink/70 p-6"
           onClick={closeCoverPicker}
@@ -2227,15 +2260,17 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
             onClick={(e) => e.stopPropagation()}
           >
             <div className="mb-3 flex items-center justify-between">
-              <div className="text-sm">选择媒体库封面</div>
+              <div className="text-sm">{introPickerOpen ? "选择要查看的季度 / 作品" : "选择媒体库封面"}</div>
               <div className="flex items-center gap-2 font-mono text-[11px]">
-                <button
-                  onClick={() => applyCover(null)}
-                  disabled={coverBusy}
-                  className="rounded border border-border px-2 py-1 text-muted transition-colors hover:border-vermillion hover:text-vermillion disabled:opacity-40"
-                >
-                  恢复默认
-                </button>
+                {!introPickerOpen && (
+                  <button
+                    onClick={() => applyCover(null)}
+                    disabled={coverBusy}
+                    className="rounded border border-border px-2 py-1 text-muted transition-colors hover:border-vermillion hover:text-vermillion disabled:opacity-40"
+                  >
+                    恢复默认
+                  </button>
+                )}
                 <button
                   onClick={closeCoverPicker}
                   className="rounded border border-border px-2 py-1 text-muted transition-colors hover:text-paper"
@@ -2245,8 +2280,15 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
               </div>
             </div>
             <p className="mb-3 font-mono text-[11px] text-muted">
-              从该系列家族的全部作品里挑一张作为封面;“恢复默认”按设置里的默认封面策略自动选择。
+              {introPickerOpen
+                ? "该系列有多部作品,点选一部查看它的 Bangumi 介绍。"
+                : "从该系列家族的全部作品里挑一张作为封面;“恢复默认”按设置里的默认封面策略自动选择。"}
             </p>
+            {coverError && (
+              <div className="mb-3 rounded border border-vermillion/40 bg-ink p-2 font-mono text-[11px] text-vermillion">
+                {coverError}
+              </div>
+            )}
             {coverLoading ? (
               <div className="py-10 text-center font-mono text-xs text-muted">正在加载家族封面...</div>
             ) : coverCandidates.length === 0 ? (
@@ -2256,7 +2298,14 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
                 {coverCandidates.map((c) => (
                   <button
                     key={c.bgm_id}
-                    onClick={() => applyCover(c.bgm_id)}
+                    onClick={() => {
+                      if (introPickerOpen) {
+                        closeCoverPicker();
+                        jumpToBangumiIntro(c.bgm_id);
+                      } else {
+                        applyCover(c.bgm_id);
+                      }
+                    }}
                     disabled={coverBusy}
                     className="group flex flex-col gap-1 text-left disabled:opacity-50"
                   >
