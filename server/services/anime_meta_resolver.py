@@ -265,5 +265,8 @@ async def resolve_one(db: Session, bgm_id: int, *, is_refresh: bool = False) -> 
     if is_refresh:
         _discard_replaced_images(
             old_backdrop_url, row.backdrop_url, old_logo_url, row.logo_url,
-            keep=(row.custom_backdrop_url, row.custom_logo_url),
+            keep=(
+                row.custom_backdrop_url, row.custom_logo_url,
+                row.movie_custom_backdrop_url, row.movie_custom_logo_url,
+            ),
         )

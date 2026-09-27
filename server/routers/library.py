@@ -1592,8 +1592,20 @@ async def _refresh_anime_meta_task(bgm_id: int) -> None:
         db.close()
 
 
+def _custom_image_columns(row: "models.AnimeMetaCache", scope: str) -> tuple[str | None, str | None]:
+    """按范围取用户手选的(背景图, LOGO)。"""
+    if scope == "movie":
+        return row.movie_custom_backdrop_url, row.movie_custom_logo_url
+    return row.custom_backdrop_url, row.custom_logo_url
+
+
 @router.get("/anime-meta/{bgm_id}")
-def get_anime_meta(bgm_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+def get_anime_meta(
+    bgm_id: int,
+    background_tasks: BackgroundTasks,
+    scope: str = "library",  # "library"=媒体库详情页 / "movie"=剧场版页,手选各存一份
+    db: Session = Depends(get_db),
+):
     """媒体库详情页头部(背景图/LOGO/分级/标签/类型/工作室)的数据源。
     查无记录(从没触发过解析)时后台丢一个解析任务,本次先返回status=pending,
     前端据此走降级态(模糊放大的Bangumi封面+文字标题),不阻塞等待网络请求。
@@ -1612,15 +1624,16 @@ def get_anime_meta(bgm_id: int, background_tasks: BackgroundTasks, db: Session =
         if last is None or last < datetime.now(timezone.utc) - _META_REFRESH_MIN_INTERVAL:
             background_tasks.add_task(_refresh_anime_meta_task, bgm_id)
 
+    custom_backdrop, custom_logo = _custom_image_columns(row, scope)
     return {
         "bgm_id": bgm_id,
         "status": row.status,
         "tmdb_id": row.tmdb_id,
-        # 用户手动选的图优先,没选才用自动挑的
-        "backdrop_url": row.custom_backdrop_url or row.backdrop_url,
-        "logo_url": row.custom_logo_url or row.logo_url,
-        "backdrop_custom": bool(row.custom_backdrop_url),
-        "logo_custom": bool(row.custom_logo_url),
+        # 用户手动选的图优先(按scope取对应那份),没选才用自动挑的
+        "backdrop_url": custom_backdrop or row.backdrop_url,
+        "logo_url": custom_logo or row.logo_url,
+        "backdrop_custom": bool(custom_backdrop),
+        "logo_custom": bool(custom_logo),
         "content_rating": row.content_rating,
         "genres": row.genres.split(",") if row.genres else [],
         "tags": row.tags.split(",") if row.tags else [],
@@ -1647,6 +1660,7 @@ async def get_anime_meta_image_candidates(bgm_id: int, db: Session = Depends(get
 
 class CustomImageRequest(BaseModel):
     kind: str            # "backdrop" | "logo"
+    scope: str = "library"  # "library" | "movie",两处各记各的
     url: str | None = None  # None=恢复自动挑选
 
 
@@ -1660,10 +1674,10 @@ def set_anime_meta_custom_image(bgm_id: int, req: CustomImageRequest, db: Sessio
     row = db.query(models.AnimeMetaCache).filter(models.AnimeMetaCache.bgm_id == bgm_id).first()
     if row is None:
         raise HTTPException(status_code=404, detail="该条目没有元数据记录")
-    if req.kind == "backdrop":
-        row.custom_backdrop_url = req.url
-    else:
-        row.custom_logo_url = req.url
+    if req.scope not in ("library", "movie"):
+        raise HTTPException(status_code=400, detail="scope只能是library或movie")
+    prefix = "movie_custom" if req.scope == "movie" else "custom"
+    setattr(row, f"{prefix}_{req.kind}_url", req.url)
     db.commit()
     return {"ok": True}
 

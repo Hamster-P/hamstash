@@ -343,6 +343,10 @@ class AnimeMetaCache(Base):
     # 只覆盖上面两列,永远不碰这两列,所以用户的选择不会被新版挑图规则冲掉。
     custom_backdrop_url = Column(String, nullable=True)
     custom_logo_url = Column(String, nullable=True)
+    # 剧场版页的手选单独一份:媒体库详情页展示的是整个系列(合集,可能含多部剧场版),
+    # 剧场版页的一张卡是其中某一部,两处想要的图本来就不同,不能共用同一个选择。
+    movie_custom_backdrop_url = Column(String, nullable=True)
+    movie_custom_logo_url = Column(String, nullable=True)
     content_rating = Column(String, nullable=True)
     genres = Column(String, nullable=True)   # 逗号分隔
     tags = Column(String, nullable=True)     # 逗号分隔

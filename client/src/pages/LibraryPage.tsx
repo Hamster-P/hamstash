@@ -469,7 +469,7 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
       const res = await fetch(`${API_BASE}/anime-meta/${bgmId}/custom-image`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ kind, url }),
+        body: JSON.stringify({ kind, url, scope: movieOnly ? "movie" : "library" }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setImagePicker(null);
@@ -781,7 +781,8 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
   // 查无记录时后端会自己丢一个后台解析任务、先回status=pending,这里不重试轮询,
   // 用户下次重新进这部番的详情页(或过一阵子)自然就有数据了。
   const fetchAnimeMeta = (bgmId: number) => {
-    fetch(`${API_BASE}/anime-meta/${bgmId}`)
+    // 手选的背景图/LOGO按页面分开记:剧场版页(movie)跟媒体库详情页(library)各一份
+    fetch(`${API_BASE}/anime-meta/${bgmId}?scope=${movieOnly ? "movie" : "library"}`)
       .then((res) => res.json())
       .then((data) => setAnimeMeta(data))
       .catch(() => setAnimeMeta(null));
@@ -1892,6 +1893,26 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
                     >
                       <FolderMinus size={14} /> 移出列表
                     </button>
+                    {/* 背景图/LOGO 手动指定:跟媒体库详情页同一套(同一个选择框、同一份后端记录),
+                        仅在已解析出 TMDB 信息时才有候选可选 */}
+                    {activeHead.bgm_id && animeMeta?.status === "resolved" && (
+                      <>
+                        <button
+                          onClick={() => openImagePicker("backdrop", activeHead.bgm_id!)}
+                          title="调整海报图片"
+                          className="flex items-center gap-1.5 rounded-md border border-border bg-ink/60 px-3 py-1.5 text-muted backdrop-blur transition-colors hover:border-vermillion hover:text-vermillion"
+                        >
+                          <ImageIcon size={14} /> 调整海报图片
+                        </button>
+                        <button
+                          onClick={() => openImagePicker("logo", activeHead.bgm_id!)}
+                          title="调整logo图片"
+                          className="flex items-center gap-1.5 rounded-md border border-border bg-ink/60 px-3 py-1.5 text-muted backdrop-blur transition-colors hover:border-vermillion hover:text-vermillion"
+                        >
+                          <Type size={14} /> 调整logo图片
+                        </button>
+                      </>
+                    )}
                   </div>
                 )}
               </div>
