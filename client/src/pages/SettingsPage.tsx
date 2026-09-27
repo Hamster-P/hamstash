@@ -544,6 +544,8 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
         </label>
       </div>
 
+      <ImageCacheSection />
+
       <LibraryRepairSection />
         </>
       )}
@@ -1513,6 +1515,94 @@ interface RepairApplyResult {
   };
   local_media?: { added: string[]; current_total: number };
   orphans?: { removed_renamed_files: number; removed_anime_folders: number };
+}
+
+// 图片缓存(封面/背景图/LOGO/选图预览)占用展示 + 手动清理。
+// 缓存只是本地副本,清掉后图片下次显示时会重新联网下载,是否清理交给用户判断。
+function ImageCacheSection() {
+  const [info, setInfo] = useState<{ file_count: number; size_bytes: number } | null>(null);
+  const [clearing, setClearing] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+
+  const loadInfo = () => {
+    fetch(`${API_BASE}/media/image-cache`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => setInfo(data))
+      .catch(() => setInfo(null));
+  };
+  useEffect(loadInfo, []);
+
+  const toMB = (bytes: number) => (bytes / 1024 / 1024).toFixed(2);
+
+  const handleClear = async () => {
+    setClearing(true);
+    setMessage(null);
+    try {
+      const res = await fetch(`${API_BASE}/media/image-cache`, { method: "DELETE" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setMessage(`已清理 ${data.removed} 个文件,释放 ${toMB(data.freed_bytes)} MB`);
+    } catch {
+      setMessage("清理失败,请检查后端连接后重试");
+    } finally {
+      setClearing(false);
+      setConfirming(false);
+      loadInfo();
+    }
+  };
+
+  return (
+    <div className="mb-6 rounded-md border border-border bg-surface p-4">
+      <div className="mb-1 text-sm">图片缓存</div>
+      <p className="mb-3 font-mono text-[11px] text-muted">
+        封面、背景图、LOGO 和选图预览会缓存在本地,加快显示、离线也能看。清理后图片会在下次显示时重新联网下载(走代理)。
+      </p>
+      <div className="flex flex-wrap items-center gap-3 font-mono text-xs">
+        <span>
+          当前占用:
+          {info ? ` ${toMB(info.size_bytes)} MB(${info.file_count} 个文件)` : " 读取中..."}
+        </span>
+        {confirming ? (
+          <>
+            <span className="text-vermillion">确定清空全部图片缓存?</span>
+            <button
+              onClick={handleClear}
+              disabled={clearing}
+              className="rounded border border-vermillion px-2 py-1 text-vermillion transition-colors hover:bg-vermillion hover:text-ink disabled:opacity-40"
+            >
+              {clearing ? "清理中..." : "确定清理"}
+            </button>
+            <button
+              onClick={() => setConfirming(false)}
+              disabled={clearing}
+              className="rounded border border-border px-2 py-1 text-muted transition-colors hover:text-paper disabled:opacity-40"
+            >
+              取消
+            </button>
+          </>
+        ) : (
+          <button
+            onClick={() => {
+              setMessage(null);
+              setConfirming(true);
+            }}
+            disabled={!info || info.file_count === 0}
+            className="rounded border border-border px-2 py-1 text-muted transition-colors hover:border-vermillion hover:text-vermillion disabled:opacity-40"
+          >
+            清理图片缓存
+          </button>
+        )}
+        <button
+          onClick={loadInfo}
+          className="rounded border border-border px-2 py-1 text-muted transition-colors hover:text-paper"
+        >
+          刷新
+        </button>
+      </div>
+      {message && <p className="mt-2 font-mono text-[11px] text-muted">{message}</p>}
+    </div>
+  );
 }
 
 function LibraryRepairSection() {

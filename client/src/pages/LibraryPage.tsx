@@ -2436,6 +2436,7 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
                         <img
                           src={proxiedImageUrl(c.thumb)}
                           alt=""
+                          loading="lazy"
                           className={imagePicker.kind === "backdrop" ? "h-full w-full object-cover" : "max-h-full max-w-full object-contain"}
                         />
                       </div>

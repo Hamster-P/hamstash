@@ -78,6 +78,39 @@ def discard_cached_image(url: str) -> None:
             print(f"[image_proxy] 清理旧图片缓存失败,忽略: {e}")
 
 
+@router.get("/media/image-cache")
+def get_image_cache_info():
+    """图片缓存占用:文件数 + 总字节数(设置页「媒体库」tab展示,让用户自己判断要不要清)。"""
+    total = count = 0
+    if _CACHE_DIR.exists():
+        for f in _CACHE_DIR.iterdir():
+            try:
+                if f.is_file():
+                    total += f.stat().st_size
+                    count += 1
+            except OSError:
+                continue  # 文件正好被删/被占用,不影响统计
+    return {"file_count": count, "size_bytes": total}
+
+
+@router.delete("/media/image-cache")
+def clear_image_cache():
+    """清空全部图片缓存。只是本地副本,删了之后各处图片下次显示时会重新联网下载
+    (走代理);单个文件删不掉(被占用等)就跳过,返回实际删掉的数量。"""
+    removed = freed = 0
+    if _CACHE_DIR.exists():
+        for f in _CACHE_DIR.iterdir():
+            try:
+                if f.is_file():
+                    size = f.stat().st_size
+                    f.unlink()
+                    removed += 1
+                    freed += size
+            except OSError as e:
+                print(f"[image_proxy] 清理缓存文件失败,跳过: {e}")
+    return {"removed": removed, "freed_bytes": freed}
+
+
 def _write_cache(url: str, content_type: str, content: bytes) -> None:
     """先写临时文件再os.replace成最终文件名,原子写入——避免进程中途被杀掉/
     磁盘写满等情况留下一个半截的坏缓存文件,之后一直被_find_cached_file当成
