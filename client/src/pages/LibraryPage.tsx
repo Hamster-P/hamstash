@@ -1707,11 +1707,35 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
                 />
               )}
               {animeMeta?.status === "resolved" && animeMeta.backdrop_url && (
-                <img
-                  src={proxiedImageUrl(animeMeta.backdrop_url)}
-                  alt=""
-                  className="absolute inset-0 h-full w-full object-cover object-top opacity-90"
-                />
+                <>
+                  {/* 模仿媒体库详情页头部:底下垫一层同图的模糊版铺满整屏(氛围底层);
+                      真图只占顶部一条横幅(高度同 HERO_BANNER_HEIGHT),保持原比例贴右上角,
+                      再用蒙版让它向左、向下渐隐,融进模糊底层,没有硬边。 */}
+                  <img
+                    src={proxiedImageUrl(animeMeta.backdrop_url)}
+                    alt=""
+                    className="absolute inset-0 h-full w-full scale-125 object-cover blur-2xl"
+                  />
+                  <div
+                    className="absolute inset-x-0 top-0 flex justify-end overflow-hidden"
+                    style={{ height: HERO_BANNER_HEIGHT }}
+                  >
+                    <img
+                      src={proxiedImageUrl(animeMeta.backdrop_url)}
+                      alt=""
+                      className="h-full w-auto max-w-full object-cover object-top opacity-90"
+                      style={{
+                        // 左渐隐 ∩ 下渐隐:两层蒙版取交集
+                        maskImage:
+                          "linear-gradient(to right, transparent, black 35%), linear-gradient(to bottom, black 55%, transparent)",
+                        maskComposite: "intersect",
+                        WebkitMaskImage:
+                          "linear-gradient(to right, transparent, black 35%), linear-gradient(to bottom, black 55%, transparent)",
+                        WebkitMaskComposite: "source-in",
+                      }}
+                    />
+                  </div>
+                </>
               )}
               <div className="absolute inset-0 bg-gradient-to-b from-ink/40 via-ink/15 to-ink/75" />
             </div>
