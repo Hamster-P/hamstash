@@ -1,5 +1,6 @@
 import { useState } from "react";
 import BangumiResultsList, { type BangumiSubject } from "../../components/BangumiResultsList";
+import { btnGhost, btnPrimary, control } from "./ui";
 import { API_BASE } from "../../api";
 
 export type EntryPickerRequest =
@@ -76,7 +77,7 @@ export default function EntryPickerDialog({
       >
         <div className="mb-2 flex items-center justify-between">
           <div className="text-sm">{request.mode === "add" ? "设为独立剧场版/OVA — 选择条目" : "重选条目"}</div>
-          <button onClick={onClose} className="rounded border border-border px-2 py-1 font-mono text-[11px] text-muted hover:text-paper">
+          <button onClick={onClose} className={btnGhost}>
             关闭
           </button>
         </div>
@@ -86,12 +87,12 @@ export default function EntryPickerDialog({
             onChange={(e) => setKeyword(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && search()}
             placeholder="搜索剧场版/OVA 名称"
-            className="flex-1 rounded border border-border bg-ink px-3 py-1.5 text-sm text-paper outline-none placeholder:text-muted/60 focus:border-vermillion"
+            className={`${control} min-w-0 flex-1`}
           />
           <button
             onClick={search}
             disabled={loading}
-            className="rounded-md border border-vermillion px-4 py-1.5 font-mono text-xs text-vermillion transition-colors hover:bg-vermillion hover:text-ink disabled:opacity-40"
+            className={btnPrimary}
           >
             {loading ? "检索中..." : "检索"}
           </button>

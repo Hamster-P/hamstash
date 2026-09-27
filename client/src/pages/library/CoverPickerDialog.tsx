@@ -3,6 +3,7 @@ import { proxiedImageUrl } from "../../utils/proxiedImage";
 import { API_BASE } from "../../api";
 import { sortCoverCandidates } from "./sort";
 import type { CoverCandidate } from "./types";
+import { btnGhost } from "./ui";
 
 // 封面和「Bangumi 介绍」选季共用网格。
 // cover：点一张写成该文件夹的自定义封面。intro：点一张跳到那一部的介绍页。
@@ -79,20 +80,13 @@ export default function CoverPickerDialog({
       >
         <div className="mb-3 flex items-center justify-between">
           <div className="text-sm">{mode === "intro" ? "选择要查看的季度 / 作品" : "选择媒体库封面"}</div>
-          <div className="flex items-center gap-2 font-mono text-[11px]">
+          <div className="flex items-center gap-2">
             {mode === "cover" && (
-              <button
-                onClick={() => applyCover(null)}
-                disabled={busy}
-                className="rounded border border-border px-2 py-1 text-muted transition-colors hover:border-vermillion hover:text-vermillion disabled:opacity-40"
-              >
+              <button onClick={() => applyCover(null)} disabled={busy} className={btnGhost}>
                 恢复默认
               </button>
             )}
-            <button
-              onClick={onClose}
-              className="rounded border border-border px-2 py-1 text-muted transition-colors hover:text-paper"
-            >
+            <button onClick={onClose} className={btnGhost}>
               关闭
             </button>
           </div>

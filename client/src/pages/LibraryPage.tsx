@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { FolderOpen, Loader2, RefreshCcw, Settings2 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import type { BangumiSubject } from "../components/BangumiResultsList";
@@ -14,15 +14,14 @@ import { takeLibraryDetailSession } from "./library/session";
 import { useLibrarySettings } from "./library/settings";
 import { sortAnimes } from "./library/sort";
 import type { AnimeDetail, AnimeMeta, Episode, LibraryAnime, RegroupTarget, SortMode } from "./library/types";
+import { btnGhost, btnPrimary, countBadge, pageSub, pageTitle, posterFrame, posterTitle, seg, segOff, segOn } from "./library/ui";
 
 interface LibraryPageProps {
   onSelectAnime?: (bgmId: number) => void;
   onManualMatch?: (folderName: string) => void;
-  // 带滚动条的 <main>。列表和详情共用它，切换时保存/恢复网格滚动位置。
-  scrollContainerRef?: RefObject<HTMLElement | null>;
 }
 
-export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContainerRef }: LibraryPageProps) {
+export default function LibraryPage({ onSelectAnime, onManualMatch }: LibraryPageProps) {
   const settings = useLibrarySettings();
   // 从介绍页回来时，第一次渲染就进详情，避免先闪一下网格再跳进去。
   const [restored] = useState(() => takeLibraryDetailSession());
@@ -47,8 +46,9 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
 
   const playLock = useRef(false);
   const gridScrollTop = useRef(restored?.gridScrollTop ?? 0);
-  const restoringRelatedRef = useRef(!!restored);
-  const restoreScrollTop = useRef(restored?.relatedScrollTop ?? 0);
+  const gridScrollRef = useRef<HTMLDivElement>(null);
+  // 从补番回来时，分集区要滚回原来的位置。只在这次挂载用一次。
+  const detailBodyScroll = useRef(restored && restored.mode !== "self" ? restored.relatedScrollTop : 0);
   const watchedInDetailRef = useRef(false);
   const detailRef = useRef<AnimeDetail | null>(null);
   const metaTicket = useRef(0);
@@ -56,6 +56,14 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
   detailRef.current = detail;
 
   const displayedAnimes = useMemo(() => sortAnimes(animes, sort), [animes, sort]);
+
+  // 补番滚动位置只还给这一次进入。清掉之后，再点别的番不会跳到旧位置。
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      detailBodyScroll.current = 0;
+    }, 0);
+    return () => clearTimeout(timer);
+  }, []);
 
   const fetchAnimes = (silent = false) => {
     if (!silent) setLoading(true);
@@ -126,19 +134,11 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
   }, [animes]);
 
   useLayoutEffect(() => {
-    const el = scrollContainerRef?.current;
-    if (!el) return;
-    if (selectedAnime) {
-      if (restoringRelatedRef.current) {
-        el.scrollTop = restoreScrollTop.current;
-        restoringRelatedRef.current = false;
-      } else {
-        el.scrollTop = 0;
-      }
-    } else {
-      el.scrollTop = gridScrollTop.current;
-    }
-  }, [selectedAnime, scrollContainerRef]);
+    // 网格自己滚动。回到列表时把离开前的位置还回去。
+    if (selectedAnime) return;
+    const el = gridScrollRef.current;
+    if (el) el.scrollTop = gridScrollTop.current;
+  }, [selectedAnime]);
 
   const applyWatchedLocally = (folderName: string, filename: string) => {
     watchedInDetailRef.current = true;
@@ -212,7 +212,7 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
   }, [settings.library_root]);
 
   const openDetail = (anime: LibraryAnime) => {
-    gridScrollTop.current = scrollContainerRef?.current?.scrollTop ?? 0;
+    gridScrollTop.current = gridScrollRef.current?.scrollTop ?? 0;
     watchedInDetailRef.current = false;
     setRelatedSeed({ show: false, items: [] });
     setSelectedAnime(anime);
@@ -286,15 +286,15 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
   };
 
   return (
-    <div className="text-paper">
+    <div className="absolute inset-0 flex flex-col overflow-hidden text-paper">
       {selectedAnime ? (
         <LibraryDetailView
           anime={selectedAnime}
           detail={detail}
           detailLoading={detailLoading}
           animeMeta={animeMeta}
-          scrollContainerRef={scrollContainerRef}
           gridScrollTopRef={gridScrollTop}
+          initialBodyScroll={detailBodyScroll.current}
           initialShowRelated={relatedSeed.show}
           initialRelated={relatedSeed.items}
           onBack={handleBack}
@@ -320,17 +320,18 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
           }}
         />
       ) : (
-        <div>
-          <div className="sticky top-0 z-20 overflow-hidden bg-ink px-8 pb-4 pt-8">
-            <div className="mb-6 flex items-center justify-between">
-              <div>
-                <h1 className="font-display text-2xl tracking-tight">影视库</h1>
-                <p className="mt-1 font-mono text-xs text-muted">
-                  关联目录：{settings.library_root} | 发现 {animes.length} 部动画
+        <>
+          <div className="shrink-0 bg-ink px-8 pb-4 pt-8">
+            <div className="mb-4 flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <h1 className={pageTitle}>影视库</h1>
+                <p className={`${pageSub} truncate`}>
+                  关联目录：<span className="font-mono">{settings.library_root}</span>
+                  {` · 发现 ${animes.length} 部动画`}
                 </p>
               </div>
-              <div className="flex items-center gap-2">
-                <div className="flex overflow-hidden rounded-md border border-border font-mono text-xs">
+              <div className="flex shrink-0 items-center gap-2">
+                <div className={seg}>
                   {(
                     [
                       { value: "default", label: "默认" },
@@ -341,11 +342,7 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
                     <button
                       key={opt.value}
                       onClick={() => changeSort(opt.value)}
-                      className={`px-3 py-1.5 transition-colors ${
-                        sort === opt.value
-                          ? "bg-vermillion text-ink"
-                          : "bg-surface text-muted hover:bg-surface-hover hover:text-paper"
-                      }`}
+                      className={sort === opt.value ? segOn : segOff}
                     >
                       {opt.label}
                     </button>
@@ -359,7 +356,7 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
                         .then(() => fetchAnimes())
                         .catch(() => setLoading(false));
                     }}
-                    className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion"
+                    className={btnGhost}
                   >
                     <RefreshCcw size={14} /> 刷新 & 扫盘
                   </button>
@@ -369,23 +366,19 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
                     setMatchMode((value) => !value);
                     setPendingDeleteFolder(null);
                   }}
-                  className={`flex items-center gap-1.5 rounded-md border px-3 py-1.5 font-mono text-xs transition-colors ${
-                    matchMode
-                      ? "border-vermillion bg-vermillion text-ink"
-                      : "border-border text-muted hover:border-vermillion hover:text-vermillion"
-                  }`}
+                  className={matchMode ? btnPrimary : btnGhost}
                 >
                   <Settings2 size={14} /> {matchMode ? "结束管理" : "管理"}
                 </button>
               </div>
             </div>
             {deleteAnimeError && (
-              <div className="mb-4 rounded-md border border-vermillion/40 bg-surface p-3 font-mono text-xs text-vermillion">
+              <div className="mb-4 rounded-md border border-vermillion/40 bg-surface p-3 text-xs text-vermillion">
                 删除失败: {deleteAnimeError}
               </div>
             )}
             {regroupNotice && (
-              <div className="mb-4 flex items-start justify-between gap-3 rounded-md border border-vermillion/40 bg-surface p-3 font-mono text-[11px] text-vermillion">
+              <div className="mb-4 flex items-start justify-between gap-3 rounded-md border border-vermillion/40 bg-surface p-3 text-xs text-vermillion">
                 <span>{regroupNotice}</span>
                 <button onClick={() => setRegroupNotice(null)} className="shrink-0 text-muted transition-colors hover:text-paper">
                   知道了
@@ -394,30 +387,29 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
             )}
           </div>
 
-          {/* 角标用负偏移骑在卡片右上角，第一排需要这点上边距才不会被裁掉。 */}
-          <div className="px-8 pb-8 pt-3">
+          <div ref={gridScrollRef} className="min-h-0 flex-1 overflow-y-auto px-8 pb-8 pt-3">
             {loading ? (
-              <div className="font-mono text-xs text-muted">正在加载...</div>
+              <div className="text-xs text-muted">正在加载...</div>
             ) : (
               <div className="grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-4">
                 {displayedAnimes.map((anime) => (
                   <div key={anime.id} onClick={() => openDetail(anime)} className="group relative cursor-pointer">
-                    <div className="relative aspect-[2/3] overflow-hidden rounded-md bg-surface shadow-md">
+                    <div className={posterFrame}>
                       {anime.cover_url ? (
                         <img
                           src={proxiedImageUrl(anime.cover_url)}
                           alt={anime.folder_name}
-                          className="h-full w-full object-cover transition-transform group-hover:scale-105"
+                          className="h-full w-full object-cover"
                         />
                       ) : anime.bgm_id ? (
-                        <div className="flex h-full w-full flex-col items-center justify-center gap-2 border border-border bg-surface text-muted">
+                        <div className="flex h-full w-full flex-col items-center justify-center gap-2 border border-border text-muted">
                           <Loader2 size={28} strokeWidth={1.5} className="animate-spin" />
-                          <span className="font-mono text-[10px]">等待更新</span>
+                          <span className="text-xs">等待更新</span>
                         </div>
                       ) : (
-                        <div className="flex h-full w-full flex-col items-center justify-center gap-2 border border-border bg-surface text-muted">
+                        <div className="flex h-full w-full flex-col items-center justify-center gap-2 border border-border text-muted">
                           <FolderOpen size={32} strokeWidth={1.5} />
-                          <span className="font-mono text-[10px]">No Cover</span>
+                          <span className="text-xs">暂无封面</span>
                         </div>
                       )}
                       {(matchMode || !anime.bgm_id) && (
@@ -428,7 +420,7 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
                                 e.stopPropagation();
                                 setCoverPicker({ folderName: anime.folder_name, bgmId: anime.bgm_id! });
                               }}
-                              className="rounded border border-border bg-surface/90 px-2 py-1 font-mono text-[10px] text-paper transition-colors hover:border-vermillion hover:text-vermillion"
+                              className={btnGhost}
                             >
                               选择图片
                             </button>
@@ -438,24 +430,21 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
                               e.stopPropagation();
                               onManualMatch?.(anime.folder_name);
                             }}
-                            className="rounded border border-vermillion bg-vermillion/80 px-2 py-1 font-mono text-[10px] text-ink transition-colors hover:bg-vermillion"
+                            className={btnPrimary}
                           >
                             {anime.bgm_id ? "重新匹配" : "指定动漫"}
                           </button>
                           {matchMode &&
                             (pendingDeleteFolder === anime.folder_name ? (
-                              <div className="flex items-center gap-1.5 font-mono text-[10px]" onClick={(e) => e.stopPropagation()}>
+                              <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
                                 <button
                                   disabled={deletingFolder === anime.folder_name}
                                   onClick={() => deleteAnime(anime.folder_name)}
-                                  className="rounded border border-vermillion bg-vermillion px-2 py-1 text-ink transition-colors hover:bg-vermillion/90 disabled:opacity-40"
+                                  className={btnPrimary}
                                 >
                                   确定删除
                                 </button>
-                                <button
-                                  onClick={() => setPendingDeleteFolder(null)}
-                                  className="rounded border border-border bg-surface px-2 py-1 text-muted transition-colors hover:text-paper"
-                                >
+                                <button onClick={() => setPendingDeleteFolder(null)} className={btnGhost}>
                                   取消
                                 </button>
                               </div>
@@ -465,7 +454,7 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
                                   e.stopPropagation();
                                   setPendingDeleteFolder(anime.folder_name);
                                 }}
-                                className="rounded border border-vermillion bg-vermillion px-2 py-1 font-mono text-[10px] text-ink transition-colors hover:bg-vermillion/90"
+                                className={btnPrimary}
                               >
                                 删除
                               </button>
@@ -474,24 +463,22 @@ export default function LibraryPage({ onSelectAnime, onManualMatch, scrollContai
                       )}
                     </div>
                     {settings.library_unwatched_badge_enabled && anime.unwatched_count > 0 && (
-                      <div className="absolute -right-2 -top-2 flex h-7 min-w-7 items-center justify-center rounded-full bg-vermillion/80 px-1.5 font-mono text-xs font-bold text-ink shadow-lg ring-2 ring-surface backdrop-blur-sm">
-                        {anime.unwatched_count > 99 ? "99+" : anime.unwatched_count}
-                      </div>
+                      <div className={countBadge}>{anime.unwatched_count > 99 ? "99+" : anime.unwatched_count}</div>
                     )}
-                    <div className="mt-2 line-clamp-2 text-sm font-medium leading-snug transition-colors group-hover:text-vermillion">
+                    <div className={`${posterTitle} transition-colors group-hover:text-vermillion`}>
                       {anime.display_title || anime.folder_name}
                     </div>
                   </div>
                 ))}
                 {animes.length === 0 && (
-                  <div className="col-span-full py-16 text-center font-mono text-xs text-muted">
+                  <div className="col-span-full py-16 text-center text-xs text-muted">
                     {settings.library_root} 下没有发现任何子目录，请先往该目录下载动画。
                   </div>
                 )}
               </div>
             )}
           </div>
-        </div>
+        </>
       )}
 
       {coverPicker && (

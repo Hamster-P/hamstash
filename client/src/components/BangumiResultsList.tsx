@@ -22,39 +22,45 @@ interface BangumiResultsListProps {
 
 export default function BangumiResultsList({ results, onSelect, emptyText }: BangumiResultsListProps) {
   if (results.length === 0) {
-    return <div className="text-center py-10 text-muted font-mono text-xs">{emptyText}</div>;
+    return <div className="py-10 text-center text-xs text-muted">{emptyText}</div>;
   }
 
   return (
-    <div className="space-y-2">
-      {results.map((item) => (
-        <div
-          key={item.id}
-          onClick={() => onSelect(item.id)}
-          className="flex cursor-pointer items-center gap-4 rounded-md border border-border p-3 transition-colors hover:border-vermillion"
-        >
-          <div className="h-12 w-16 shrink-0 rounded bg-muted overflow-hidden">
-            {item.images?.common && (
-              <img
-                src={proxiedImageUrl(item.images.common)}
-                className="h-full w-full object-cover"
-              />
-            )}
+    <div>
+      {results.map((item) => {
+        const original = item.name && item.name !== item.name_cn ? item.name : null;
+        const eps = item.eps ? `全${item.eps}话` : null;
+        const sub = [original, eps].filter(Boolean).join(" · ");
+        return (
+          <div
+            key={item.id}
+            onClick={() => onSelect(item.id)}
+            className="flex cursor-pointer items-center gap-3 border-b border-border py-2.5 transition-colors hover:bg-surface"
+          >
+            <div className="h-16 w-11 shrink-0 overflow-hidden rounded bg-surface">
+              {item.images?.common && (
+                <img
+                  src={proxiedImageUrl(item.images.common)}
+                  alt=""
+                  loading="lazy"
+                  decoding="async"
+                  className="h-full w-full object-cover"
+                />
+              )}
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-sm">{item.name_cn || item.name}</div>
+              <div className="h-4 truncate text-xs text-muted">{sub}</div>
+            </div>
+            <div className="flex shrink-0 items-center gap-3 text-right">
+              {item.rating?.score !== undefined && item.rating.score !== null && (
+                <div className="text-xs text-score">★ {item.rating.score.toFixed(1)}</div>
+              )}
+              <div className="w-24 text-xs text-muted">{item.date || "—"}</div>
+            </div>
           </div>
-          <div className="flex-1 min-w-0">
-            <div className="truncate text-sm">{item.name_cn || item.name}</div>
-            <div className="truncate font-mono text-[11px] text-muted">{item.name}</div>
-          </div>
-          <div className="flex shrink-0 items-center gap-3 text-right">
-            {item.rating?.score !== undefined && item.rating.score !== null && (
-              <div className="font-mono text-xs font-bold text-amber-500">
-                ⭐ {item.rating.score.toFixed(1)}
-              </div>
-            )}
-            <div className="font-mono text-xs text-muted w-24">{item.date || "—"}</div>
-          </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }

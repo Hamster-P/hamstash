@@ -1,6 +1,7 @@
 import { useState, useEffect, useLayoutEffect, useRef } from "react";
 import { Search as SearchIcon, ArrowLeft } from "lucide-react";
 import BangumiResultsList, { type BangumiSubject } from "../components/BangumiResultsList";
+import { btnGhost, btnPrimary, control, pageSub, pageTitle } from "./library/ui";
 
 interface SearchPageProps {
   onSelectAnime: (bgmId: number) => void;
@@ -47,9 +48,7 @@ function saveSearchSession(state: SearchSessionState) {
   }
 }
 
-// 统一的下拉/输入控件样式,跟下载页/下载管理页保持一致
-const controlClass =
-  "rounded border border-border bg-surface px-2 py-1.5 font-mono text-xs text-paper outline-none focus:border-vermillion focus:ring-1 focus:ring-vermillion";
+const controlClass = control;
 
 const YEAR_OPTIONS = ["不限", ...Array.from({ length: 8 }, (_, i) => String(2026 - i))];
 const QUARTER_OPTIONS = [
@@ -164,23 +163,21 @@ export default function SearchPage({ onSelectAnime, manualMatchFolder, onCancelM
     <div className="flex h-full flex-col space-y-4 px-8 pb-8 pt-8">
       {/* 顶部标题 + 说明:左/上间距(px-8 pt-8)跟追更/下载/影视库页对齐 */}
       <div>
-        <h1 className="mb-1 font-display text-2xl tracking-tight">搜索</h1>
-        <p className="font-mono text-xs text-muted">
-          搜索历史番剧,支持按年份、季度筛选
-        </p>
+        <h1 className={pageTitle}>搜索</h1>
+        <p className={pageSub}>搜索历史番剧，支持按年份、季度筛选</p>
       </div>
 
       {manualMatchFolder && (
-        <div className="flex items-center justify-between gap-3 rounded border border-vermillion/50 bg-vermillion/10 px-3 py-2 font-mono text-xs text-vermillion">
+        <div className="flex items-center justify-between gap-3 rounded-md border border-vermillion/50 bg-vermillion/10 px-3 py-2 text-xs text-vermillion">
           <span className="min-w-0 truncate">
             正在为文件夹「{manualMatchFolder}」选择匹配的番剧
           </span>
           {onCancelManualMatch && (
             <button
               onClick={onCancelManualMatch}
-              className="flex shrink-0 items-center gap-1 rounded border border-vermillion/60 px-2 py-1 text-vermillion transition-colors hover:bg-vermillion hover:text-ink"
+              className={`${btnGhost} shrink-0`}
             >
-              <ArrowLeft size={12} />
+              <ArrowLeft size={14} />
               返回影视库
             </button>
           )}
@@ -196,7 +193,7 @@ export default function SearchPage({ onSelectAnime, manualMatchFolder, onCancelM
             onChange={(e) => setKeyword(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && handleSearch()}
             placeholder="输入番剧名称（留空按推荐搜索）..."
-            className="w-full rounded border border-border bg-surface py-1.5 pl-8 pr-3 text-sm text-paper outline-none placeholder:text-muted/60 focus:border-vermillion focus:ring-1 focus:ring-vermillion"
+            className="w-full rounded-md border border-border bg-surface py-1.5 pl-8 pr-3 text-xs text-paper outline-none placeholder:text-muted/60 focus:border-vermillion"
           />
           <SearchIcon className="absolute left-2.5 top-2.5 h-4 w-4 text-muted" />
         </div>
@@ -233,14 +230,14 @@ export default function SearchPage({ onSelectAnime, manualMatchFolder, onCancelM
         <button
           onClick={() => handleSearch()}
           disabled={loading}
-          className="min-w-[84px] rounded-md border border-vermillion px-4 py-1.5 text-center font-mono text-xs text-vermillion transition-colors hover:bg-vermillion hover:text-ink disabled:opacity-40"
+          className={`${btnPrimary} min-w-[84px]`}
         >
           {loading ? "检索中..." : "检索"}
         </button>
       </div>
 
       {/* 列表渲染 */}
-      <div ref={listRef} onScroll={handleListScroll} className="flex-1 overflow-y-auto space-y-2">
+      <div ref={listRef} onScroll={handleListScroll} className="flex-1 overflow-y-auto space-y-2 pr-6">
         <BangumiResultsList
           results={results}
           onSelect={onSelectAnime}
@@ -251,7 +248,7 @@ export default function SearchPage({ onSelectAnime, manualMatchFolder, onCancelM
             <button
               onClick={() => handleSearch(keyword, true)}
               disabled={loadingMore}
-              className="rounded-md border border-border px-4 py-1.5 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion disabled:opacity-40"
+              className={btnGhost}
             >
               {loadingMore ? "加载中..." : "加载更多"}
             </button>

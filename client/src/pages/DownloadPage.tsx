@@ -395,17 +395,20 @@ export default function DownloadPage({
   };
 
   return (
-    <div className="p-8">
-      {initialBgmId !== null && onBack && (
-        <button
-          onClick={onBack}
-          className="mb-4 flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion"
-        >
-          <ArrowLeft size={14} />
-          返回详情
-        </button>
-      )}
-      <h1 className="mb-6 font-display text-2xl tracking-tight">下载</h1>
+    <div className="absolute inset-0 flex flex-col overflow-hidden">
+      <div className="shrink-0 bg-ink px-8 pt-8">
+        {initialBgmId !== null && onBack && (
+          <button
+            onClick={onBack}
+            className="mb-4 flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion"
+          >
+            <ArrowLeft size={14} />
+            返回详情
+          </button>
+        )}
+        <h1 className="mb-6 font-display text-2xl tracking-tight">下载</h1>
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto px-8 pb-8">
 
       {/* 5. UI 重构：全部替换为规整的下拉菜单 */}
       <div className="mb-4 flex flex-wrap items-center gap-3">
@@ -722,6 +725,7 @@ export default function DownloadPage({
           )}
         </div>
       )}
+      </div>
     </div>
   );
 }

@@ -19,16 +19,17 @@ import CoverPickerDialog from "./CoverPickerDialog";
 import EntryPickerDialog, { type EntryPickerRequest } from "./EntryPickerDialog";
 import ImagePickerDialog from "./ImagePickerDialog";
 import { saveLibraryDetailSession } from "./session";
-import { cleanTitleFromFilename, compareSeasonNames, isRegularSeasonBucket, sortCoverCandidates } from "./sort";
+import { cleanTitleFromFilename, compareSeasonNames, episodeLabel, isRegularSeasonBucket, sortCoverCandidates } from "./sort";
 import { HERO_BANNER_HEIGHT, type AnimeDetail, type AnimeMeta, type CoverCandidate, type Episode, type ImageKind, type LibraryAnime, type RegroupTarget, type StandaloneItem } from "./types";
+import { btnGhost, btnPrimary } from "./ui";
 
 export default function LibraryDetailView({
   anime,
   detail,
   detailLoading,
   animeMeta,
-  scrollContainerRef,
   gridScrollTopRef,
+  initialBodyScroll,
   initialShowRelated,
   initialRelated,
   onBack,
@@ -42,8 +43,8 @@ export default function LibraryDetailView({
   detail: AnimeDetail | null;
   detailLoading: boolean;
   animeMeta: AnimeMeta | null;
-  scrollContainerRef?: RefObject<HTMLElement | null>;
   gridScrollTopRef: RefObject<number>;
+  initialBodyScroll: number;
   initialShowRelated: boolean;
   initialRelated: BangumiSubject[];
   onBack: () => void;
@@ -67,8 +68,7 @@ export default function LibraryDetailView({
   const [introOpen, setIntroOpen] = useState(false);
   const [introCandidates, setIntroCandidates] = useState<CoverCandidate[]>([]);
   const [introChecking, setIntroChecking] = useState(false);
-  const headerRef = useRef<HTMLDivElement>(null);
-  const [headerHeight, setHeaderHeight] = useState(0);
+  const bodyRef = useRef<HTMLDivElement>(null);
   const seasonRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
   // 只为了分集按钮知道哪些文件已经进了剧场版列表，不渲染剧场版页。
@@ -90,16 +90,14 @@ export default function LibraryDetailView({
     : [];
   const hasHeroBanner = animeMeta?.status === "resolved" && !!animeMeta.backdrop_url;
 
-  // 头部高度会随简介和快捷按钮变。量出来留给分季块，跳转时才不会被吸顶头盖住。
+  // 分集区自己滚动。回来时把补番列表滚回离开前的位置，只做一次。
   useLayoutEffect(() => {
-    const el = headerRef.current;
+    const el = bodyRef.current;
     if (!el) return;
-    const update = () => setHeaderHeight(el.offsetHeight);
-    update();
-    const observer = new ResizeObserver(update);
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [detail, showRelated]);
+    el.scrollTop = initialBodyScroll;
+    // 只在进入这一页时定位，后面简介变高不要把用户再拽回去。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const fetchRelated = (bgmId: number) => {
     setRelatedLoading(true);
@@ -130,7 +128,7 @@ export default function LibraryDetailView({
       anime,
       relatedAnime: related,
       gridScrollTop: gridScrollTopRef.current,
-      relatedScrollTop: scrollContainerRef?.current?.scrollTop ?? 0,
+      relatedScrollTop: bodyRef.current?.scrollTop ?? 0,
       mode,
     });
   };
@@ -187,8 +185,9 @@ export default function LibraryDetailView({
     imageKind === "backdrop" ? animeMeta?.backdrop_url ?? null : imageKind === "logo" ? animeMeta?.logo_url ?? null : null;
 
   return (
-    <div>
-      <div ref={headerRef} className="sticky top-0 z-10 overflow-hidden bg-ink">
+    <div className="flex min-h-0 flex-1 flex-col">
+      {/* relative 把头图的绝对定位层关在标题栏里，不然会盖住下面的分集。 */}
+      <div className="relative shrink-0 overflow-hidden bg-ink">
         {/* 模糊底铺满头部。没有 TMDB 背景时用 Bangumi 封面，这是正常降级，不是报错。 */}
         <div className="absolute inset-0">
           {animeMeta?.status === "resolved" && animeMeta.backdrop_url ? (
@@ -357,12 +356,12 @@ export default function LibraryDetailView({
         </div>
       </div>
 
-      <div className="px-8 pb-8">
+      <div ref={bodyRef} className="min-h-0 flex-1 overflow-y-auto px-8 pb-8">
         {showRelated ? (
           relatedLoading ? (
-            <div className="font-mono text-xs text-muted">正在查询相关作品...</div>
+            <div className="text-xs text-muted">正在查询相关作品...</div>
           ) : relatedError ? (
-            <div className="font-mono text-xs text-vermillion">获取失败: {relatedError}</div>
+            <div className="text-xs text-vermillion">获取失败: {relatedError}</div>
           ) : (
             <BangumiResultsList
               results={related}
@@ -374,7 +373,7 @@ export default function LibraryDetailView({
             />
           )
         ) : detailLoading ? (
-          <div className="font-mono text-xs text-muted">正在读取硬盘文件结构...</div>
+          <div className="text-xs text-muted">正在读取硬盘文件结构...</div>
         ) : sortedSeasons.length > 0 ? (
           <div className="space-y-6">
             {sortedSeasons.map(([seasonName, episodes]) => (
@@ -383,11 +382,16 @@ export default function LibraryDetailView({
                 ref={(el) => {
                   seasonRefs.current[seasonName] = el;
                 }}
-                style={{ scrollMarginTop: headerHeight + 16 }}
+                style={{ scrollMarginTop: 16 }}
                 className="rounded-lg border border-border bg-surface p-4"
               >
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-border pb-1.5">
-                  <h3 className="font-display text-lg text-vermillion">{seasonName}</h3>
+                  <h3 className="font-display text-lg text-vermillion">
+                    {seasonName}
+                    <span className="ml-2 text-xs font-normal text-muted">
+                      已看 {episodes.filter((ep) => ep.is_watched).length}/{episodes.length}
+                    </span>
+                  </h3>
                   {/* 每个桶都有归属入口。认不出是哪一部也给按钮，进弹窗再选。 */}
                   {manageMode && (
                     <div className="flex flex-wrap items-center gap-2 font-mono text-[11px]">
@@ -402,100 +406,90 @@ export default function LibraryDetailView({
                             bgmId: detail?.season_owners?.[seasonName]?.bgm_id ?? null,
                           })
                         }
-                        className="flex items-center gap-1 rounded border border-border px-2 py-1 text-muted transition-colors hover:border-vermillion hover:text-vermillion"
+                        className={btnGhost}
                       >
                         <Move size={12} /> 调整归属…
                       </button>
                     </div>
                   )}
                 </div>
-                <div className="flex flex-col gap-2">
-                  {[...episodes].reverse().map((ep) => (
-                    <div
-                      key={ep.rel_path}
-                      className="group flex items-center justify-between gap-3 rounded border border-transparent p-3 transition-colors hover:border-border/50 hover:bg-paper/5"
-                    >
-                      <div className="flex min-w-0 flex-1 flex-col">
-                        <div className="flex min-w-0 items-center gap-2">
-                          <span className={`min-w-0 flex-1 truncate font-mono text-sm ${ep.is_watched ? "text-muted line-through" : "text-paper"}`}>
-                            {ep.filename}
-                          </span>
-                          {ep.is_watched && <CheckCircle2 size={14} className="shrink-0 text-green-500/80" />}
+                <div className="flex flex-col">
+                  {[...episodes].reverse().map((ep) => {
+                    const label = episodeLabel(ep.filename);
+                    return (
+                      <div
+                        key={ep.rel_path}
+                        className="flex items-center justify-between gap-3 rounded-md px-2 py-2 transition-colors hover:bg-paper/5"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="flex min-w-0 items-center gap-2">
+                            <span className={`min-w-0 truncate text-sm ${ep.is_watched ? "text-muted line-through" : "text-paper"}`}>
+                              {label ?? ep.filename}
+                            </span>
+                            {ep.is_watched && <CheckCircle2 size={14} className="shrink-0 text-vermillion" />}
+                          </div>
+                          {label && <div className="truncate font-mono text-[11px] text-muted">{ep.filename}</div>}
+                          {ep.is_watched && ep.watched_at && (
+                            <div className="font-mono text-[11px] text-muted">上次观看 {ep.watched_at}</div>
+                          )}
                         </div>
-                        {ep.is_watched && ep.watched_at && (
-                          <span className="mt-1 font-mono text-[10px] text-green-500/70">上次观看: {ep.watched_at}</span>
-                        )}
-                      </div>
 
-                      {manageMode ? (
-                        pendingDelete === ep.rel_path ? (
-                          <div className="flex w-28 shrink-0 items-center justify-center gap-1.5 font-mono text-xs">
-                            <button
-                              disabled={deleting === ep.rel_path}
-                              onClick={() => deleteEpisode(ep)}
-                              className="rounded border border-vermillion bg-vermillion px-2 py-1 text-ink transition-colors hover:bg-vermillion/90 disabled:opacity-40"
-                            >
-                              确定
+                        {manageMode ? (
+                          pendingDelete === ep.rel_path ? (
+                            <div className="flex shrink-0 items-center gap-1.5">
+                              <button disabled={deleting === ep.rel_path} onClick={() => deleteEpisode(ep)} className={btnPrimary}>
+                                确定
+                              </button>
+                              <button onClick={() => setPendingDelete(null)} className={btnGhost}>
+                                取消
+                              </button>
+                            </div>
+                          ) : (
+                            <button onClick={() => setPendingDelete(ep.rel_path)} className={`${btnPrimary} min-w-24`}>
+                              <Trash2 size={14} />
+                              删除
                             </button>
+                          )
+                        ) : (
+                          <div className="flex shrink-0 items-center gap-2">
+                            {!isRegularSeasonBucket(seasonName) &&
+                              (addedRelPaths.has(ep.rel_path) ? (
+                                <span className={`${btnGhost} pointer-events-none opacity-70`}>已添加到剧场版</span>
+                              ) : (
+                                <button
+                                  onClick={() =>
+                                    setEntryRequest({
+                                      mode: "add",
+                                      libraryFolder: anime.folder_name,
+                                      relPath: ep.rel_path,
+                                      filename: ep.filename,
+                                      keyword: cleanTitleFromFilename(ep.filename),
+                                    })
+                                  }
+                                  title="把这一集作为独立剧场版/OVA 加入剧场版模式"
+                                  className={btnGhost}
+                                >
+                                  添加到剧场版模式
+                                </button>
+                              ))}
                             <button
-                              onClick={() => setPendingDelete(null)}
-                              className="rounded border border-border bg-surface px-2 py-1 text-muted transition-colors hover:text-paper"
+                              onClick={() => onPlay(ep)}
+                              className={`${ep.is_watched ? btnGhost : btnPrimary} min-w-24`}
                             >
-                              取消
+                              <Play size={14} fill="currentColor" />
+                              {ep.is_watched ? "再次播放" : "播放"}
                             </button>
                           </div>
-                        ) : (
-                          <button
-                            onClick={() => setPendingDelete(ep.rel_path)}
-                            className="flex w-28 shrink-0 items-center justify-center gap-1.5 rounded-md border border-vermillion bg-vermillion px-3 py-1.5 font-mono text-xs text-ink transition-colors hover:bg-vermillion/90"
-                          >
-                            <Trash2 size={14} />
-                            删除
-                          </button>
-                        )
-                      ) : (
-                        <div className="flex shrink-0 items-center gap-2 font-mono text-xs">
-                          {!isRegularSeasonBucket(seasonName) &&
-                            (addedRelPaths.has(ep.rel_path) ? (
-                              <span className="rounded-md border border-border px-3 py-1.5 text-muted/70">已添加到剧场版</span>
-                            ) : (
-                              <button
-                                onClick={() =>
-                                  setEntryRequest({
-                                    mode: "add",
-                                    libraryFolder: anime.folder_name,
-                                    relPath: ep.rel_path,
-                                    filename: ep.filename,
-                                    keyword: cleanTitleFromFilename(ep.filename),
-                                  })
-                                }
-                                title="把这一集作为独立剧场版/OVA 加入剧场版模式"
-                                className="rounded-md border border-border px-3 py-1.5 text-muted transition-colors hover:border-vermillion hover:text-vermillion"
-                              >
-                                添加到剧场版模式
-                              </button>
-                            ))}
-                          <button
-                            onClick={() => onPlay(ep)}
-                            className={`flex w-28 items-center justify-center gap-1.5 rounded-md border px-3 py-1.5 transition-colors ${
-                              ep.is_watched
-                                ? "border-border bg-surface text-muted hover:border-vermillion hover:text-vermillion"
-                                : "border-vermillion bg-vermillion text-ink hover:bg-vermillion/90"
-                            }`}
-                          >
-                            <Play size={14} fill="currentColor" />
-                            {ep.is_watched ? "再次播放" : "播放"}
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  ))}
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             ))}
           </div>
         ) : (
-          <div className="py-8 font-mono text-xs text-muted">该文件夹下未找到符合格式的视频文件。</div>
+          <div className="py-8 text-xs text-muted">该文件夹下未找到符合格式的视频文件。</div>
         )}
       </div>
 

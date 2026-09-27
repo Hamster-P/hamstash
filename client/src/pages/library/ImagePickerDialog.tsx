@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { proxiedImageUrl } from "../../utils/proxiedImage";
 import { API_BASE } from "../../api";
 import type { ImageCandidate, ImageKind, MetaScope } from "./types";
+import { btnGhost } from "./ui";
 
 // 海报和 LOGO 共用这一格。scope 决定记在剧场版还是媒体库详情，两页各一份。
 export default function ImagePickerDialog({
@@ -75,18 +76,11 @@ export default function ImagePickerDialog({
       >
         <div className="mb-3 flex items-center justify-between">
           <div className="text-sm">{kind === "backdrop" ? "选择海报图片(背景图)" : "选择 LOGO 图片"}</div>
-          <div className="flex items-center gap-2 font-mono text-[11px]">
-            <button
-              onClick={() => apply(null)}
-              disabled={busy}
-              className="rounded border border-border px-2 py-1 text-muted transition-colors hover:border-vermillion hover:text-vermillion disabled:opacity-40"
-            >
+          <div className="flex items-center gap-2">
+            <button onClick={() => apply(null)} disabled={busy} className={btnGhost}>
               恢复默认
             </button>
-            <button
-              onClick={onClose}
-              className="rounded border border-border px-2 py-1 text-muted transition-colors hover:text-paper"
-            >
+            <button onClick={onClose} className={btnGhost}>
               关闭
             </button>
           </div>

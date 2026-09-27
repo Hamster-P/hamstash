@@ -3,6 +3,7 @@ import { proxiedImageUrl } from "../../utils/proxiedImage";
 import { API_BASE } from "../../api";
 import { postRegroup } from "./regroup";
 import type { LibraryAnime, RegroupCandidates, RegroupTarget } from "./types";
+import { btnGhost, btnPrimary, control } from "./ui";
 
 // 三个入口共用：整个文件夹、某个季度桶、剧场版里的单个文件。
 // 差别只在作用哪些文件，以及能不能事先确定这批文件是哪一部。
@@ -79,7 +80,7 @@ export default function RegroupDialog({
           </div>
           <button
             onClick={onClose}
-            className="shrink-0 rounded border border-border px-2 py-1 font-mono text-[11px] text-muted transition-colors hover:text-paper"
+            className={`${btnGhost} shrink-0`}
           >
             关闭
           </button>
@@ -150,7 +151,7 @@ export default function RegroupDialog({
                   <button
                     disabled={busy}
                     onClick={() => run(null)}
-                    className="rounded border border-border px-3 py-1.5 text-muted transition-colors hover:border-vermillion hover:text-vermillion disabled:opacity-40"
+                    className={btnGhost}
                   >
                     独立成一部
                   </button>
@@ -161,7 +162,7 @@ export default function RegroupDialog({
                       const next = Number(e.target.value);
                       if (next) run(next);
                     }}
-                    className="rounded border border-border bg-surface px-2 py-1.5 text-paper outline-none focus:border-vermillion disabled:opacity-40"
+                    className={control}
                   >
                     <option value="">合并到…</option>
                     {candidates && (
@@ -184,7 +185,7 @@ export default function RegroupDialog({
                     <button
                       disabled={busy}
                       onClick={() => run(null, true)}
-                      className="rounded border border-vermillion px-3 py-1.5 text-vermillion transition-colors hover:bg-vermillion hover:text-ink disabled:opacity-40"
+                      className={btnPrimary}
                     >
                       恢复自动归属
                     </button>

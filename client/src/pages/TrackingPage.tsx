@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { proxiedImageUrl } from "../utils/proxiedImage";
+import { pageSub, pageTitle, posterFrame } from "./library/ui";
 
 interface ScheduleItem {
   bgm_id: number | null;
@@ -80,13 +81,13 @@ export default function TrackingPage({ onSelectAnime }: TrackingPageProps) {
     focusedDay === null ? days.map((_, i) => i) : [focusedDay];
 
   return (
-    <div>
-      {/* 顶部说明 + 星期表头,吸顶固定,滚动内容时始终可见 */}
-      <div className="sticky top-0 z-10 bg-ink px-8 pb-2 pt-8">
-        <h1 className="mb-1 font-display text-2xl tracking-tight">追更</h1>
-        <p className="mb-4 font-mono text-xs text-muted">
+    <div className="absolute inset-0 flex flex-col overflow-hidden">
+      {/* 标题和星期固定。滚动条只出现在下面的海报区。 */}
+      <div className="shrink-0 bg-ink px-8 pb-2 pt-8">
+        <h1 className={pageTitle}>追更</h1>
+        <p className={`${pageSub} mb-4`}>
           {loading
-            ? "正在获取新番连载时刻表..." // 2. 文案优化，因为不再需要缓慢的"解析"
+            ? "正在获取新番连载时刻表..."
             : `本季连载 ${schedule.length} 部 · ${
                 focusedDay !== null
                   ? "点击星期标题返回一周视图"
@@ -105,7 +106,7 @@ export default function TrackingPage({ onSelectAnime }: TrackingPageProps) {
             <button
               key={index}
               onClick={() => setFocusedDay(focusedDay === index ? null : index)}
-              className={`text-left font-display text-sm transition-colors ${
+              className={`text-left text-sm transition-colors ${
                 focusedDay === index
                   ? "text-vermillion"
                   : "text-muted hover:text-paper"
@@ -117,60 +118,31 @@ export default function TrackingPage({ onSelectAnime }: TrackingPageProps) {
         </div>
       </div>
 
-      {/*
-        内容区:总览 + 7个单日面板,一次性全部预先渲染好并常驻DOM,
-        非活跃面板用 h-0 overflow-hidden 包裹(而不是display:none/条件挂载)。
-        overflow:hidden只裁剪绘制,不影响内部布局计算和图片解码,
-        所以7天内容依然是"提前加载完、缓存着",切换纯粹是显隐,没有
-        重新挂载/重新解码的卡顿;同时h-0确保裁剪掉的内容不会像
-        position:absolute那样撑大最近滚动祖先的可滚动区域。
-      */}
-      <div className="px-8 pb-8 pt-3">
-        {/* 总览:7列海报卡片 */}
-        <div className={focusedDay === null ? "" : "h-0 overflow-hidden"}>
-          <div className="grid grid-cols-7 gap-3">
+      {/* 只渲染当前这一屏。封面走浏览器缓存，切日子不必把每张图挂两份。 */}
+      <div className="min-h-0 flex-1 overflow-y-auto px-8 pb-8 pt-3">
+        {focusedDay === null ? (
+          <div className="grid grid-cols-7 gap-4">
             {grouped.map((items, index) => (
-              <div key={index} className="flex flex-col gap-3">
+              <div key={index} className="flex flex-col gap-4">
                 {items.map((anime) => (
-                  <AnimeCard
-                    key={anime.bgm_id}
-                    anime={anime}
-                    onSelectAnime={onSelectAnime}
-                  />
+                  <AnimeCard key={anime.bgm_id ?? anime.title} anime={anime} onSelectAnime={onSelectAnime} />
                 ))}
-                {!loading && items.length === 0 && (
-                  <div className="pt-2 font-mono text-[11px] text-muted/50">
-                    —
-                  </div>
-                )}
+                {!loading && items.length === 0 && <div className="pt-2 text-xs text-muted/50">—</div>}
               </div>
             ))}
           </div>
-        </div>
-
-        {/* 每一天的聚焦海报墙,7份都提前渲染好,只切换显示哪一份;
-            列数/卡片尺寸跟总览保持一致,只是这一天的番剧铺满7列 */}
-        {grouped.map((items, index) => (
-          <div
-            key={index}
-            className={focusedDay === index ? "" : "h-0 overflow-hidden"}
-          >
-            <div className="grid grid-cols-7 gap-3">
-              {items.map((anime) => (
-                <AnimeCard
-                  key={anime.bgm_id}
-                  anime={anime}
-                  onSelectAnime={onSelectAnime}
-                />
+        ) : (
+          <div>
+            <div className="grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-4">
+              {grouped[focusedDay].map((anime) => (
+                <AnimeCard key={anime.bgm_id ?? anime.title} anime={anime} onSelectAnime={onSelectAnime} />
               ))}
             </div>
-            {!loading && items.length === 0 && (
-              <div className="font-mono text-xs text-muted">
-                这天没有连载番剧
-              </div>
+            {!loading && grouped[focusedDay].length === 0 && (
+              <div className="text-xs text-muted">这天没有连载番剧</div>
             )}
           </div>
-        ))}
+        )}
       </div>
     </div>
   );
@@ -188,18 +160,15 @@ function AnimeCard({
   return (
     <div
       onClick={() => anime.bgm_id && onSelectAnime(anime.bgm_id)}
-      className={`flex flex-col gap-1.5 rounded-md bg-surface p-1.5 transition-colors ${
-        anime.bgm_id
-          ? "cursor-pointer hover:bg-surface-hover"
-          : "cursor-default opacity-60"
-      }`}
+      className={anime.bgm_id ? "cursor-pointer" : "cursor-default opacity-60"}
     >
-      <div className="aspect-[2/3] w-full shrink-0 overflow-hidden rounded bg-ink">
+      <div className={posterFrame}>
         {anime.cover_url && (
           <img
             src={proxiedImageUrl(anime.cover_url)}
             alt=""
             loading="lazy"
+            decoding="async"
             onLoad={() => setLoaded(true)}
             className={`h-full w-full object-cover transition-opacity duration-300 ${
               loaded ? "opacity-100" : "opacity-0"
@@ -207,20 +176,10 @@ function AnimeCard({
           />
         )}
       </div>
-      <div className="min-w-0 flex-1">
-        <div className="line-clamp-2 text-xs leading-snug">{anime.title}</div>
-        <div className="mt-1 flex items-center gap-2">
-          {anime.total_eps && (
-            <div className="font-mono text-[11px] text-vermillion">
-              全{anime.total_eps}话
-            </div>
-          )}
-          {anime.score !== undefined && anime.score !== null && (
-            <div className="font-mono text-[11px] text-amber-500 font-bold">
-              ⭐ {anime.score.toFixed(1)}
-            </div>
-          )}
-        </div>
+      <div className="mt-2 line-clamp-2 text-sm font-medium leading-5">
+        {anime.title}
+        {anime.score != null && <span className="font-normal text-score"> ★ {anime.score.toFixed(1)}</span>}
+        {anime.total_eps ? <span className="font-normal text-muted"> · 全{anime.total_eps}话</span> : null}
       </div>
     </div>
   );

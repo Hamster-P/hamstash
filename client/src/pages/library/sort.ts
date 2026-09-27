@@ -7,6 +7,16 @@ export function isRegularSeasonBucket(name: string): boolean {
   return matched ? parseInt(matched[1], 10) >= 1 : false;
 }
 
+// 整理后的文件名里，S04E18 / 第18话 提出来当主标题。
+// 认不出就返回 null，调用方继续显示完整文件名。
+export function episodeLabel(filename: string): string | null {
+  const seasonEp = filename.match(/S\d{1,3}E(\d{1,4})/i);
+  if (seasonEp) return `第${Number(seasonEp[1])}话`;
+  const spoken = filename.match(/第\s*(\d{1,4})\s*[话集]/);
+  if (spoken) return `第${Number(spoken[1])}话`;
+  return null;
+}
+
 // 从整理后的文件名取出标题，当作「添加到剧场版」的默认检索词。
 // 去掉扩展名、[字幕组] / 【】 / () 标签，再把空白折成一格。
 export function cleanTitleFromFilename(filename: string): string {

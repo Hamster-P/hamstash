@@ -21,8 +21,44 @@ import { videoPath } from "./paths";
 import RegroupDialog from "./RegroupDialog";
 import { useLibrarySettings } from "./settings";
 import { HERO_BANNER_HEIGHT, type ImageKind, type LibraryAnime, type RegroupTarget, type StandaloneItem } from "./types";
+import { btnGhost, btnPrimary, pageTitle, posterFrame, posterTitle, seg, segOff, segOn } from "./ui";
 
 type WatchFilter = "all" | "unwatched" | "watched";
+
+// 槽位先空着。LOGO 出来再填进去，失败或确认没有图才改成文字标题。
+function HeroLogo({
+  logoUrl,
+  pending,
+  title,
+  failedUrl,
+  onFail,
+}: {
+  logoUrl: string | null;
+  pending: boolean;
+  title: string;
+  failedUrl: string | null;
+  onFail: (url: string) => void;
+}) {
+  const failed = !!logoUrl && failedUrl === logoUrl;
+  const showText = !pending && (!logoUrl || failed);
+  return (
+    // 绝对定位，图片的原始像素不能把这一格撑高。
+    // 否则宽 LOGO 会按原图像素画出来，把整页布局撑爆。
+    <div className="relative h-[30%] min-h-0 shrink-0 overflow-hidden">
+      {logoUrl && !failed && (
+        <img
+          src={proxiedImageUrl(logoUrl)}
+          alt=""
+          onError={() => onFail(logoUrl)}
+          className="absolute inset-0 h-full w-full object-contain object-left [filter:drop-shadow(0_1px_1px_rgba(0,0,0,0.55))]"
+        />
+      )}
+      {showText && (
+        <h2 className="line-clamp-2 font-display text-2xl leading-tight tracking-tight drop-shadow">{title}</h2>
+      )}
+    </div>
+  );
+}
 
 export default function MovieLibraryPage() {
   const settings = useLibrarySettings();
@@ -41,6 +77,8 @@ export default function MovieLibraryPage() {
   const [entryRequest, setEntryRequest] = useState<EntryPickerRequest | null>(null);
   const [imageKind, setImageKind] = useState<ImageKind | null>(null);
   const [animeMeta, setAnimeMeta] = useState<Awaited<ReturnType<typeof loadAnimeMeta>>>(null);
+  // LOGO 图加载失败才改显示文字。换地址后重新试。
+  const [logoFailedUrl, setLogoFailedUrl] = useState<string | null>(null);
   const playLock = useRef(false);
   const metaTicket = useRef(0);
 
@@ -235,10 +273,10 @@ export default function MovieLibraryPage() {
 
       {/* 标题、hero、明细行冻在顶部。暗化只靠上面那层 fixed 渐变，这里不再铺第二层底。 */}
       <div className="relative shrink-0 overflow-hidden px-8 pb-6 pt-8">
-        <div className="relative mb-6 flex items-center justify-between">
-          <h1 className="font-display text-2xl tracking-tight">剧场版</h1>
-          <div className="flex items-center gap-2">
-            <div className="flex overflow-hidden rounded-md border border-border font-mono text-xs">
+        <div className="relative mb-4 flex items-start justify-between gap-4">
+          <h1 className={pageTitle}>剧场版</h1>
+          <div className="flex shrink-0 items-center gap-2">
+            <div className={seg}>
               {(
                 [
                   { value: "all", label: "全部" },
@@ -249,11 +287,7 @@ export default function MovieLibraryPage() {
                 <button
                   key={opt.value}
                   onClick={() => setWatchFilter(opt.value)}
-                  className={`px-3 py-1.5 transition-colors ${
-                    watchFilter === opt.value
-                      ? "bg-vermillion text-ink"
-                      : "bg-surface text-muted hover:bg-surface-hover hover:text-paper"
-                  }`}
+                  className={watchFilter === opt.value ? segOn : segOff}
                 >
                   {opt.label}
                 </button>
@@ -264,11 +298,7 @@ export default function MovieLibraryPage() {
                 setManage((value) => !value);
                 setPendingDelete(null);
               }}
-              className={`flex items-center gap-1.5 rounded-md border px-3 py-1.5 font-mono text-xs transition-colors ${
-                manage
-                  ? "border-vermillion bg-vermillion text-ink"
-                  : "border-border bg-surface text-muted hover:border-vermillion hover:text-vermillion"
-              }`}
+              className={manage ? btnPrimary : btnGhost}
             >
               <Settings2 size={14} /> {manage ? "结束管理" : "管理"}
             </button>
@@ -290,7 +320,8 @@ export default function MovieLibraryPage() {
         )}
 
         {activeHead && (
-          <div className="relative flex gap-6">
+          <div className="relative">
+          <div className="flex gap-6">
             <div className="h-56 w-40 shrink-0 overflow-hidden rounded-md border border-border bg-surface shadow-2xl">
               {activeHead.cover_url ? (
                 <img src={proxiedImageUrl(activeHead.cover_url)} alt={activeHead.title ?? ""} className="h-full w-full object-cover" />
@@ -301,36 +332,33 @@ export default function MovieLibraryPage() {
                 </div>
               )}
             </div>
-            {/* 右列跟海报等高。简介在内部滚动，下边线不会超出海报。 */}
-            <div className="flex h-56 min-w-0 flex-1 flex-col overflow-hidden">
-              <div className="mb-2 flex h-16 shrink-0 items-end">
-                {animeMeta?.status === "resolved" && animeMeta.logo_url ? (
-                  <img
-                    src={proxiedImageUrl(animeMeta.logo_url)}
-                    alt={activeHead.title || activeHead.filename}
-                    className="max-h-16 max-w-full object-contain object-left [filter:drop-shadow(0_1px_1px_rgba(0,0,0,0.55))_drop-shadow(0_0_7px_rgba(0,0,0,0.6))]"
-                  />
-                ) : (
-                  <h1 className="line-clamp-2 font-display text-2xl leading-tight tracking-tight drop-shadow">
-                    {activeHead.title || activeHead.filename}
-                  </h1>
-                )}
-              </div>
-              {animeMeta?.status === "resolved" &&
-                (animeMeta.content_rating || (animeMeta.genres?.length ?? 0) > 0 || (animeMeta.studios?.length ?? 0) > 0) && (
-                  <div className="mb-2 flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-paper/90 drop-shadow">
+            {/* 高度按左侧海报切：LOGO 30%，分级 10%，简介 60%。 */}
+            <div className="flex h-56 min-w-0 flex-1 flex-col">
+              <HeroLogo
+                logoUrl={animeMeta && animeMeta.status !== "pending" ? animeMeta.logo_url || null : null}
+                pending={!animeMeta || animeMeta.status === "pending"}
+                title={activeHead.title || activeHead.filename}
+                failedUrl={logoFailedUrl}
+                onFail={setLogoFailedUrl}
+              />
+              <div className="flex h-[10%] shrink-0 items-center overflow-hidden font-mono text-[11px] text-paper/90 drop-shadow">
+                {animeMeta?.status === "resolved" && (
+                  <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
                     {animeMeta.content_rating && (
                       <span className="rounded border border-border/80 bg-ink/40 px-1.5 py-0.5">{animeMeta.content_rating}</span>
                     )}
-                    {(animeMeta.genres?.length ?? 0) > 0 && <span>{animeMeta.genres!.join(" / ")}</span>}
-                    {(animeMeta.studios?.length ?? 0) > 0 && <span>{animeMeta.studios!.join(" / ")}</span>}
+                    {(animeMeta.genres?.length ?? 0) > 0 && <span className="truncate">{animeMeta.genres!.join(" / ")}</span>}
+                    {(animeMeta.studios?.length ?? 0) > 0 && <span className="truncate">{animeMeta.studios!.join(" / ")}</span>}
                   </div>
                 )}
-              <p className="min-h-0 max-w-2xl flex-1 overflow-y-auto font-mono text-xs leading-relaxed text-paper/90 drop-shadow">
+              </div>
+              <p className="h-[60%] overflow-y-auto pr-1 text-sm text-paper/90 drop-shadow">
                 {activeHead.summary || "暂无简介"}
               </p>
-              {manage && (
-                <div className="mt-3 flex shrink-0 items-center gap-2 font-mono text-xs">
+            </div>
+          </div>
+          {manage && (
+                <div className="relative mt-3 flex shrink-0 items-center gap-2 font-mono text-xs">
                   <button
                     onClick={() =>
                       setEntryRequest({
@@ -371,55 +399,42 @@ export default function MovieLibraryPage() {
                   )}
                 </div>
               )}
-            </div>
           </div>
         )}
+      </div>
 
+      <div className="min-h-0 flex-1 overflow-y-auto px-8 pb-8 pt-4">
         {expandedBgm !== null && expandedItems.length > 0 && (
-          <div className="relative mt-4 flex flex-col gap-1.5 rounded-md border border-border bg-surface p-3">
+          <div className="mb-4 flex flex-col rounded-md border border-border bg-surface px-3 py-1">
             {expandedItems.map((item) => (
-              <div key={item.id} className="flex items-center justify-between gap-3 rounded px-2 py-1.5 hover:bg-paper/5">
+              <div key={item.id} className="flex items-center justify-between gap-3 rounded-md px-2 py-2 hover:bg-paper/5">
                 <div className="flex min-w-0 items-center gap-2">
-                  {item.is_watched && <CheckCircle2 size={14} className="shrink-0 text-green-500/80" />}
+                  {item.is_watched && <CheckCircle2 size={14} className="shrink-0 text-vermillion" />}
                   <span
                     className={`min-w-0 truncate font-mono text-xs ${item.is_watched ? "text-muted line-through" : "text-paper"} ${item.missing ? "opacity-50" : ""}`}
                     title={item.rel_path}
                   >
                     {item.filename}
-                    {item.missing ? "(文件缺失)" : ""}
+                    {item.missing ? "（文件缺失）" : ""}
                   </span>
                 </div>
                 {manage ? (
                   pendingDelete === item.rel_path ? (
-                    <div className="flex shrink-0 items-center gap-1.5 font-mono text-xs">
-                      <button
-                        disabled={busy}
-                        onClick={() => deleteFile(item)}
-                        className="rounded border border-vermillion bg-vermillion px-2 py-1 text-ink hover:bg-vermillion/90 disabled:opacity-40"
-                      >
+                    <div className="flex shrink-0 items-center gap-1.5">
+                      <button disabled={busy} onClick={() => deleteFile(item)} className={btnPrimary}>
                         确定删
                       </button>
-                      <button
-                        onClick={() => setPendingDelete(null)}
-                        className="rounded border border-border bg-surface px-2 py-1 text-muted hover:text-paper"
-                      >
+                      <button onClick={() => setPendingDelete(null)} className={btnGhost}>
                         取消
                       </button>
                     </div>
                   ) : (
-                    <div className="flex shrink-0 items-center gap-2 font-mono text-xs">
-                      <button
-                        onClick={() => setPendingDelete(item.rel_path)}
-                        className="flex items-center gap-1 rounded-md border border-vermillion bg-vermillion px-3 py-1 text-ink hover:bg-vermillion/90"
-                      >
-                        <Trash2 size={13} /> 删除文件
+                    <div className="flex shrink-0 items-center gap-2">
+                      <button onClick={() => setPendingDelete(item.rel_path)} className={btnPrimary}>
+                        <Trash2 size={14} /> 删除文件
                       </button>
-                      <button
-                        disabled={busy}
-                        onClick={() => removeItems([item])}
-                        className="flex items-center gap-1 rounded-md border border-border px-3 py-1 text-muted hover:border-vermillion hover:text-vermillion disabled:opacity-40"
-                      >
-                        <FolderMinus size={13} /> 仅移出
+                      <button disabled={busy} onClick={() => removeItems([item])} className={btnGhost}>
+                        <FolderMinus size={14} /> 仅移出
                       </button>
                       <button
                         disabled={busy || item.missing}
@@ -430,9 +445,9 @@ export default function MovieLibraryPage() {
                             bgmId: item.bgm_id,
                           })
                         }
-                        className="flex items-center gap-1 rounded-md border border-border px-3 py-1 text-muted transition-colors hover:border-vermillion hover:text-vermillion disabled:opacity-40"
+                        className={btnGhost}
                       >
-                        <Move size={13} /> 调整归属…
+                        <Move size={14} /> 调整归属…
                       </button>
                     </div>
                   )
@@ -440,37 +455,29 @@ export default function MovieLibraryPage() {
                   <button
                     disabled={item.missing}
                     onClick={() => playItem(item)}
-                    className={`flex w-24 shrink-0 items-center justify-center gap-1.5 rounded-md border px-3 py-1 font-mono text-xs transition-colors disabled:opacity-40 ${
-                      item.is_watched
-                        ? "border-border bg-surface text-muted hover:border-vermillion hover:text-vermillion"
-                        : "border-vermillion bg-vermillion text-ink hover:bg-vermillion/90"
-                    }`}
+                    className={`${item.is_watched ? btnGhost : btnPrimary} min-w-24`}
                   >
-                    <Play size={13} fill="currentColor" />
-                    {item.is_watched ? "再看" : "播放"}
+                    <Play size={14} fill="currentColor" />
+                    {item.is_watched ? "再次播放" : "播放"}
                   </button>
                 )}
               </div>
             ))}
           </div>
         )}
-      </div>
-
-      {/* 只有卡片区滚动。窗口矮时，卡片不会滚进透明的 hero 后面。 */}
-      <div className="min-h-0 flex-1 overflow-y-auto px-8 pb-8 pt-3">
         {standaloneLoading ? (
-          <div className="font-mono text-xs text-muted">正在加载...</div>
+          <div className="text-xs text-muted">正在加载...</div>
         ) : groups.length === 0 ? (
-          <div className="py-16 text-center font-mono text-xs text-muted">
-            还没有独立展示的剧场版/OVA。下载剧场版会自动加入;也可在某部番的详情页里,把某一集设为独立剧场版/OVA。
+          <div className="py-16 text-center text-xs text-muted">
+            还没有独立展示的剧场版/OVA。下载剧场版会自动加入；也可在某部番的详情页里，把某一集设为独立剧场版/OVA。
           </div>
         ) : filteredGroups.length === 0 ? (
-          <div className="py-16 text-center font-mono text-xs text-muted">当前筛选下没有内容。</div>
+          <div className="py-16 text-center text-xs text-muted">当前筛选下没有内容。</div>
         ) : (
           <div className="grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-4">
             {filteredGroups.map((group) => {
               const head = group.items[0];
-              const allWatched = group.items.every((item) => item.is_watched);
+              const allMissing = group.items.every((item) => item.missing);
               const isActive = group.bgm_id === activeBgm;
               return (
                 <div
@@ -479,38 +486,29 @@ export default function MovieLibraryPage() {
                   onClick={() => clickCard(group)}
                   className="group cursor-pointer"
                 >
-                  <div
-                    className={`relative aspect-[2/3] overflow-hidden rounded-md bg-surface shadow-md ring-2 transition-all ${
-                      isActive ? "ring-vermillion" : "ring-transparent"
-                    }`}
-                  >
+                  <div className={`${posterFrame} ring-2 ${isActive ? "ring-vermillion" : "ring-transparent"}`}>
                     {head.cover_url ? (
                       <img
                         src={proxiedImageUrl(head.cover_url)}
                         alt={head.title ?? head.filename}
-                        className="h-full w-full object-cover transition-transform group-hover:scale-105"
+                        loading="lazy"
+                        decoding="async"
+                        className={`h-full w-full object-cover ${allMissing ? "opacity-50" : ""}`}
                       />
                     ) : (
-                      <div className="flex h-full w-full flex-col items-center justify-center gap-1 border border-border bg-surface text-muted">
+                      <div className="flex h-full w-full flex-col items-center justify-center gap-1 text-muted">
                         <Loader2 size={22} strokeWidth={1.5} className="animate-spin" />
-                        <span className="font-mono text-[10px]">等待更新</span>
+                        <span className="text-xs">等待更新</span>
                       </div>
                     )}
-                    <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-ink/25 opacity-0 transition-opacity group-hover:opacity-100">
-                      <Play size={40} fill="currentColor" className="text-vermillion drop-shadow-lg" />
-                    </div>
-                  </div>
-                  <div
-                    className={`mt-2 line-clamp-2 text-sm font-medium leading-snug transition-colors ${
-                      isActive ? "text-vermillion" : "group-hover:text-vermillion"
-                    }`}
-                  >
-                    {head.title || head.filename}
-                    {allWatched && (
-                      <span className="ml-1 inline-flex items-center align-middle text-green-500/80" title="已播放">
-                        <CheckCircle2 size={13} />
-                      </span>
+                    {!manage && (
+                      <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-scrim/30 opacity-0 transition-opacity group-hover:opacity-100">
+                        <Play size={32} fill="currentColor" className="text-on-scrim" />
+                      </div>
                     )}
+                  </div>
+                  <div className={`${posterTitle} ${isActive ? "text-vermillion" : "group-hover:text-vermillion"}`}>
+                    {head.title || head.filename}
                   </div>
                 </div>
               );

@@ -13,6 +13,10 @@
   --color-paper: var(--tone-paper);
   --color-muted: var(--tone-muted);
   --color-toggle-on: var(--tone-toggle-on);
+  /* 头图垫字。不跟主题翻，浅色页上也保持深底浅字。 */
+  --color-scrim: var(--tone-scrim);
+  --color-on-scrim: #f4f7fb;
+  --color-score: var(--tone-score);
 
   --font-display: "Space Grotesk", "Segoe UI", ui-sans-serif, sans-serif;
   --font-body: "Inter", "Segoe UI", system-ui, sans-serif;
@@ -31,6 +35,8 @@
   --tone-paper: #eef1f7;
   --tone-muted: #7c88a8;
   --tone-toggle-on: #4f8cff;
+  --tone-scrim: #070b14;
+  --tone-score: #f5c16c;
 }
 
 [data-theme="light"] {
@@ -45,6 +51,7 @@
   --tone-muted: #6b7690;
   /* 开关打开态专用色,比主强调色更柔和一档,避免浅色背景下过于抢眼 */
   --tone-toggle-on: #8fb4f0;
+  --tone-score: #9a6b12;
 }
 
 @layer base {
@@ -65,11 +72,6 @@
     font-family: var(--font-body);
     -webkit-font-smoothing: antialiased;
     transition: background-color 0.2s ease, color 0.2s ease;
-  }
-
-  /* 浅色版下用微妙阴影替代深色版依赖的强边框,呼应界面留白+层级感 */
-  [data-theme="light"] .bg-surface {
-    box-shadow: 0 1px 2px rgba(16, 21, 38, 0.06), 0 1px 1px rgba(16, 21, 38, 0.04);
   }
 
   ::selection {

@@ -947,6 +947,7 @@ async def list_standalone_media(background_tasks: BackgroundTasks, db: Session =
             "title": (catalog.title if catalog else None),
             "cover_url": (catalog.cover_url if catalog else None),
             "summary": (catalog.summary if catalog else None),
+            "air_date": (catalog.air_date if catalog else None),
             "is_watched": watched_at is not None,
             "watched_at": watched_at.strftime("%Y-%m-%d %H:%M:%S") if watched_at else None,
             "missing": not (library_root / r.rel_path).exists(),
@@ -1385,6 +1386,7 @@ async def list_library_animes(background_tasks: BackgroundTasks, db: Session = D
         display_title = re.sub(r"\s*\[bgm-\d+\]", "", media.folder_name).strip()
         cover_url = None
         summary = "暂无简介"
+        air_date = None
         total_episodes = 0  # 默认总集数
 
         if media.bgm_id:
@@ -1395,6 +1397,7 @@ async def list_library_animes(background_tasks: BackgroundTasks, db: Session = D
                 # 统一融合成一个标准数据，直接使用 Bangumi 的中文名替换原本地物理文件夹名
                 display_title = catalog.title or display_title
                 summary = catalog.summary or "暂无简介"
+                air_date = catalog.air_date
                 # 尝试从数据库对象中取 total_episodes，如果没这列，它在更新后会被赋值
                 total_episodes = getattr(catalog, "total_episodes", 0) or 0
                 # 老坏行(简介只剩占位串 / 封面空):后台补一次,下次列表就正常了
@@ -1444,6 +1447,10 @@ async def list_library_animes(background_tasks: BackgroundTasks, db: Session = D
             "total_episodes": total_episodes,    # 总集数
             "latest_activity_at": media.latest_activity_at,
             "last_watched_at": last_watched_map.get(media.folder_name),
+            "air_date": air_date,
+            # 进度条分母用本地正片数。资料站总话数和硬盘文件数经常对不上。
+            "episode_file_count": media.episode_file_count,
+            "watched_episode_count": media.watched_episode_count,
             "unwatched_count": unwatched_count,  # 未看集数角标;开关关闭或还没扫过时恒为0
         })
 

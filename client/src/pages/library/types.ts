@@ -7,6 +7,10 @@ export interface LibraryAnime {
   summary: string;
   latest_activity_at: string | null;
   last_watched_at: string | null;
+  air_date?: string | null;
+  // 本地正片数 / 其中已看数。还没扫过是 null，不要用资料站总话数代替。
+  episode_file_count?: number | null;
+  watched_episode_count?: number | null;
   // 未看集数角标。后端开关关闭，或该文件夹还没扫过集数时，恒为 0。
   unwatched_count: number;
 }
@@ -56,6 +60,7 @@ export interface StandaloneItem {
   title: string | null;
   cover_url: string | null;
   summary: string | null;
+  air_date?: string | null;
   is_watched: boolean;
   watched_at: string | null;
   missing: boolean;
@@ -120,3 +125,4 @@ export const DEFAULT_SETTINGS: AppSettings = {
 
 // 详情头真图横幅高度。比海报（约 240px）更高，脸不容易刚好被裁在边上。
 export const HERO_BANNER_HEIGHT = "26rem";
+

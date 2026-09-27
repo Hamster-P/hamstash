@@ -4,6 +4,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { proxiedImageUrl } from "../utils/proxiedImage";
+import { btnGhost, btnPrimary } from "./library/ui";
 
 interface AnimeDetail {
   bgm_id: number;
@@ -152,7 +153,7 @@ export default function DetailPage({
       <div className="mb-4 flex shrink-0 items-center gap-2 rounded-md border border-border bg-surface px-4 py-3">
         <button
           onClick={onBack}
-          className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion"
+          className={btnGhost}
         >
           <ArrowLeft size={14} />
           返回
@@ -162,7 +163,7 @@ export default function DetailPage({
           <button
             onClick={() => onConfirmMatch?.(bgmId)}
             disabled={!detail}
-            className="flex items-center gap-1.5 rounded-md border border-vermillion px-3 py-1.5 font-mono text-xs text-vermillion transition-colors hover:bg-vermillion hover:text-ink disabled:opacity-40"
+            className={btnPrimary}
           >
             <Check size={14} />
             确认匹配
@@ -172,7 +173,7 @@ export default function DetailPage({
             <button
               onClick={() => onNavigateToDownload(searchKeyword, bgmId, false)}
               disabled={!detail}
-              className="flex items-center gap-1.5 rounded-md border border-vermillion px-3 py-1.5 font-mono text-xs text-vermillion transition-colors hover:bg-vermillion hover:text-ink disabled:opacity-40"
+              className={btnPrimary}
             >
               <Download size={14} />
               下载
@@ -180,7 +181,7 @@ export default function DetailPage({
             <button
               onClick={() => onNavigateToDownload(searchKeyword, bgmId, true)}
               disabled={!detail}
-              className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion disabled:opacity-40"
+              className={btnGhost}
             >
               <Rss size={14} />
               RSS订阅
@@ -189,7 +190,7 @@ export default function DetailPage({
         )}
         <button
           onClick={() => openUrl(bgmUrl)}
-          className="ml-auto flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion"
+          className={`${btnGhost} ml-auto`}
         >
           <ExternalLink size={14} />
           在浏览器打开
@@ -212,7 +213,7 @@ export default function DetailPage({
             <div className="truncate font-display text-lg tracking-tight">
               {detail.title}
             </div>
-            <div className="font-mono text-[11px] text-muted">
+            <div className="text-xs text-muted">
               {detail.air_date || "—"} ·{" "}
               {detail.total_eps ? `全${detail.total_eps}话` : "集数未知"}
             </div>
@@ -232,7 +233,7 @@ export default function DetailPage({
             <p className="font-mono text-xs text-vermillion">{embedError}</p>
             <button
               onClick={() => openUrl(bgmUrl)}
-              className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 font-mono text-xs text-muted transition-colors hover:border-vermillion hover:text-vermillion"
+              className={btnGhost}
             >
               <ExternalLink size={14} />
               在浏览器打开
