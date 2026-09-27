@@ -5,6 +5,7 @@ import Sidebar, { type View } from "./components/Sidebar";
 import TrackingPage from "./pages/TrackingPage";
 import SearchPage from "./pages/SearchPage";
 import LibraryPage from "./pages/LibraryPage";
+import MovieLibraryPage from "./pages/library/MovieLibraryPage";
 import DownloadPage from "./pages/DownloadPage";
 import DownloadManagerPage from "./pages/DownloadManagerPage";
 import RssPage from "./pages/RssPage";
@@ -294,13 +295,7 @@ function AppContent() {
                 scrollContainerRef={mainScrollRef}
               />
             )}
-            {view === "movieLibrary" && (
-              <LibraryPage
-                movieOnly
-                onSelectAnime={handleSelectAnime}
-                scrollContainerRef={mainScrollRef}
-              />
-            )}
+            {view === "movieLibrary" && <MovieLibraryPage />}
             {view === "rss" && <RssPage />}
             {view === "settings" && (
               <SettingsPage
