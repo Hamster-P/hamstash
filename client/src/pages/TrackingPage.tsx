@@ -176,7 +176,7 @@ function AnimeCard({
           />
         )}
       </div>
-      <div className="mt-2 line-clamp-2 text-sm font-medium leading-5">
+      <div className="mt-2 text-sm font-medium leading-5 break-words">
         {anime.title}
         {anime.score != null && <span className="font-normal text-score"> ★ {anime.score.toFixed(1)}</span>}
         {anime.total_eps ? <span className="font-normal text-muted"> · 全{anime.total_eps}话</span> : null}
