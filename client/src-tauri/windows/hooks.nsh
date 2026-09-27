@@ -1,3 +1,36 @@
+; 客户端还开着时直接结束，不再弹出确认框。
+; 找不到进程时 FindProcess 的返回值不是 0，直接跳过。
+; 结束失败仍中止安装，避免覆盖正在占用的 exe。
+!macro KillAppIfRunning executableName productName
+  !define UniqueID ${__LINE__}
+
+  !if "${INSTALLMODE}" == "currentUser"
+    nsis_tauri_utils::FindProcessCurrentUser "${executableName}"
+  !else
+    nsis_tauri_utils::FindProcess "${executableName}"
+  !endif
+  Pop $R0
+  ${If} $R0 = 0
+    !if "${INSTALLMODE}" == "currentUser"
+      nsis_tauri_utils::KillProcessCurrentUser "${executableName}"
+    !else
+      nsis_tauri_utils::KillProcess "${executableName}"
+    !endif
+    Pop $R0
+    Sleep 500
+    ${If} $R0 = 0
+    ${OrIf} $R0 = 2
+      Goto app_check_done_${UniqueID}
+    ${Else}
+      nsis_tauri_utils::StrReplace "$(failedToKillApp)" "{{product_name}}" "${productName}"
+      Pop $R3
+      Abort $R3
+    ${EndIf}
+  ${EndIf}
+  app_check_done_${UniqueID}:
+    !undef UniqueID
+!macroend
+
 ; 安装/卸载时注册Windows服务(用NSSM包装打包好的后端exe)。
 ; 数据目录(数据库/设置)由后端自己在检测到打包运行(PyInstaller frozen)时
 ; 自动指向%ProgramData%\hamstash\,不需要这里传环境变量,详见server/paths.py。
