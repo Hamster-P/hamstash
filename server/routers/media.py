@@ -18,6 +18,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse, Response
 
 import paths
+from services.cover_fit import fit_bangumi_cover, is_bangumi_cover
 from services.proxy import get_proxy_url, make_client
 
 router = APIRouter(tags=["图片代理"])
@@ -185,6 +186,12 @@ async def image_proxy(url: str = Query(...)):
     # 映射来的,交给它自动识别即可。
     cached = _find_cached_file(url)
     if cached is not None:
+        if is_bangumi_cover(url):
+            fitted, content_type, changed = fit_bangumi_cover(cached.read_bytes())
+            if changed:
+                # 旧缓存是整张大图。缩完写回，下次直接读小图。
+                _write_cache(url, content_type, fitted)
+                return Response(content=fitted, media_type=content_type)
         return FileResponse(cached)
 
     # 缓存未命中:不管有没有配代理都要真正经过后端拉一次字节(proxy为None时
@@ -199,8 +206,11 @@ async def image_proxy(url: str = Query(...)):
                 resp = await client.get(url, headers=FORWARD_HEADERS)
                 resp.raise_for_status()
                 content_type = resp.headers.get("content-type", "image/jpeg")
-                _write_cache(url, content_type, resp.content)
-                return Response(content=resp.content, media_type=content_type)
+                body = resp.content
+                if is_bangumi_cover(url):
+                    body, content_type, _changed = fit_bangumi_cover(body)
+                _write_cache(url, content_type, body)
+                return Response(content=body, media_type=content_type)
             except (httpx.HTTPError, httpx.InvalidURL) as e:
                 # httpx.InvalidURL不是httpx.HTTPError的子类,单独列出来兜底——
                 # 代理地址格式已经在保存时校验过了(schemas.py),这里只是防万一
