@@ -186,8 +186,8 @@ function AnimeCard({
       className={anime.bgm_id ? "cursor-pointer" : "cursor-default opacity-60"}
     >
       <div className={posterFrame}>
+        {/* 内部滚动区里不要加 loading=lazy，WebView2 经常不开始请求。 */}
         {anime.cover_url && (
-          {/* 内部滚动区里 lazy 经常不开始，封面会一直空着。 */}
           <img
             src={proxiedImageUrl(anime.cover_url)}
             alt=""
