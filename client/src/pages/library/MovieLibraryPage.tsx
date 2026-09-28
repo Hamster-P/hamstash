@@ -491,7 +491,6 @@ export default function MovieLibraryPage() {
                       <img
                         src={proxiedImageUrl(head.cover_url)}
                         alt={head.title ?? head.filename}
-                        loading="lazy"
                         decoding="async"
                         className={`h-full w-full object-cover ${allMissing ? "opacity-50" : ""}`}
                       />

@@ -120,7 +120,6 @@ export default function ImagePickerDialog({
                   <img
                     src={proxiedImageUrl(candidate.thumb)}
                     alt=""
-                    loading="lazy"
                     className={kind === "backdrop" ? "h-full w-full object-cover" : "max-h-full max-w-full object-contain"}
                   />
                 </div>

@@ -42,7 +42,6 @@ export default function BangumiResultsList({ results, onSelect, emptyText }: Ban
                 <img
                   src={proxiedImageUrl(item.images.common)}
                   alt=""
-                  loading="lazy"
                   decoding="async"
                   className="h-full w-full object-cover"
                 />
