@@ -698,7 +698,9 @@ export default function DownloadPage({
                       {p.original_title}
                     </div>
                     <div className="text-vermillion">
-                      [{p.media_type}] {p.target_full_path}
+                      {p.media_type === "合集"
+                        ? `[合集] ${p.target_full_path}\\`
+                        : `[${p.media_type}] ${p.target_full_path}`}
                     </div>
                   </div>
                 ))}

@@ -154,6 +154,49 @@ class TestParseFileEpisode(unittest.TestCase):
         self.assertIsNone(R.parse_file_episode("进击的巨人总集篇 [BDRip 1080p].mkv"))
 
 
+class TestEpisodeFallbackIgnoresTitleNumbers(unittest.TestCase):
+    """作品名里的 100 不是集数。01-12 合集区间也不是单集。"""
+
+    TITLE = (
+        "[DBD-Raws][ 超超超超超喜欢你的100个女朋友 "
+        "/Kimi no Koto ga Dai Dai Dai Dai Daisuki na 100-nin no Kanojo]"
+        "[01-12TV全集+特典映像][1080P][BDRip][HEVC-10bit]"
+        "[简繁日双语外挂][FLAC][MKV](君のことが大大大大大好きな100人の彼女)"
+    )
+
+    def test_title_hundred_is_not_an_episode(self):
+        self.assertEqual(R._episode_fallback_str(self.TITLE, generic_fallback=True), "??")
+
+    def test_real_episode_100_still_counts(self):
+        self.assertEqual(R._episode_fallback_str("One Piece - 100.mkv", generic_fallback=True), "100")
+
+    def test_real_episode_after_title_hundred_still_counts(self):
+        result = R.preview_rename_file(
+            "超超超超超喜欢你的100个女朋友",
+            "超超超超超喜欢你的100个女朋友 - 03.mkv",
+            "超超超超超喜欢你的100个女朋友 - 03.mkv",
+            r"D:\Anime",
+            bgm_id=1,
+            season_hint="超超超超超喜欢你的100个女朋友",
+            platform="TV",
+            season_ordinal="01",
+        )
+        self.assertIn("S01E03", result["target_filename"])
+
+    def test_batch_title_preview_does_not_become_e100(self):
+        result = R.preview_rename_file(
+            "超超超超超喜欢你的100个女朋友",
+            self.TITLE,
+            self.TITLE,
+            r"D:\Anime",
+            bgm_id=424379,
+            season_hint="超超超超超喜欢你的100个女朋友",
+            platform="OVA",
+        )
+        self.assertNotIn("E100", result["target_filename"])
+        self.assertEqual(result["parsed_episode"], "??")
+
+
 class TestClassifyUnknownSubdir(unittest.TestCase):
     """名字认不出的子目录,靠内容判类型——纯给"详情页分组 + 未看角标口径"用,不动文件。"""
 

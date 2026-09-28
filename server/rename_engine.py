@@ -287,8 +287,13 @@ _ZH_EPISODE_RE = re.compile(r"第\s*(\d{1,4})\s*[话話集]")
 # 方括号里单独放集数:"[02话]"/"【22】"/"[747]"。要求括号里除了数字(和可选的
 # 第/话/集)没有别的内容,所以"[1080p]"/"[2023.02.25]"/"[01-12]"都不会命中。
 _BRACKET_EPISODE_RE = re.compile(r"[\[【]\s*(?:第\s*)?(\d{1,4})\s*[话話集]?\s*[\]】]")
-# 裸数字兜底时,紧跟这些量词的数字不是集数。
-_NOT_EPISODE_AFTER = re.compile(r"^\s*[月年季期部卷话話集]")
+# 裸数字兜底时,紧跟这些字的数字不是集数。
+# 「个/人」是作品名里的量词,比如「100个女朋友」「100人の彼女」。
+_NOT_EPISODE_AFTER = re.compile(r"^\s*[月年季期部卷话話集个人]")
+# 「100-nin」这种罗马音量词,连字符后面是字母,不是集数。
+_NOT_EPISODE_HYPHEN_WORD = re.compile(r"^-\s*[A-Za-z]")
+# 「01-12」「01～12」是合集区间,两头都不是某一集。
+_EPISODE_RANGE_RE = re.compile(r"\d{1,4}\s*[-~～]\s*\d{1,4}")
 
 
 def _episode_fallback_str(search_text: str, generic_fallback: bool = False) -> str:
@@ -315,11 +320,14 @@ def _episode_fallback_str(search_text: str, generic_fallback: bool = False) -> s
         # 两侧都不能贴着字母,否则"10bit"/"1080p"这类分辨率/编码后缀里的数字
         # 会被误当成集数抓取(比如没有真实集数的OVA/PV文件会被错误猜出集数)。
         masked = _EPISODE_NOISE_RE.sub(lambda m: " " * len(m.group(0)), search_text)
+        masked = _EPISODE_RANGE_RE.sub(lambda m: " " * len(m.group(0)), masked)
         for m in re.finditer(r'(?<![a-zA-Z\d.])(\d{1,4})(?![a-zA-Z\d])', masked):
             value = m.group(1)
             tail = masked[m.end():]
-            # 中文语境里紧跟量词的数字不是集数:"4月新番"/"第2季"/"全12话"/"上部"
+            # 中文语境里紧跟量词的数字不是集数:"4月新番"/"第2季"/"全12话"/"100个女朋友"
             if _NOT_EPISODE_AFTER.match(tail):
+                continue
+            if _NOT_EPISODE_HYPHEN_WORD.match(tail):
                 continue
             # 发布年份(2023.02.25这类日期标签的年份部分)
             if len(value) == 4 and 1900 <= int(value) <= 2099:
@@ -570,6 +578,42 @@ def _normalize_absolute_episode(
         return raw_episode
     candidate = raw_episode - episode_offset
     return candidate if candidate >= 1 else raw_episode
+
+
+# 合集包标题特征:集数区间("[01-12]"/"01~12TV")或"全集/合集/全N话/BDBOX"字样。
+# 区间左侧不能贴着字母/数字/小数点,否则"x264-10bit"/"H.264-8bit"里的"264-10"会被当成区间。
+_COLLECTION_RANGE_RE = re.compile(r"(?<![A-Za-z\d.])(\d{1,3})\s*[-~～]\s*(\d{1,3})(?!\d)")
+_COLLECTION_KEYWORD_RE = re.compile(r"全集|合集|全\s*\d+\s*[话話集]|BD-?BOX", re.IGNORECASE)
+
+
+def is_collection_title(torrent_title: str) -> bool:
+    """种子标题是不是一个"多集合集包"。只用于下载前预览:此时拿不到种子里的
+    真实文件列表,合集包里每个文件各自该进哪个目录要等下载完看文件名才知道。"""
+    if _COLLECTION_KEYWORD_RE.search(torrent_title):
+        return True
+    masked = _EPISODE_NOISE_RE.sub(lambda m: " " * len(m.group(0)), torrent_title)
+    for m in _COLLECTION_RANGE_RE.finditer(masked):
+        if int(m.group(2)) > int(m.group(1)):
+            return True
+    return False
+
+
+def preview_collection(anime_title: str, torrent_title: str, library_root: str,
+                       bgm_id: int | None = None) -> dict:
+    """合集包的下载前预览:只给出落到番剧根目录,不给具体子目录/文件名——
+    子分类(Season/OVA/Other…)按种子内每个文件名分别决定,预览阶段不定。"""
+    folder = build_anime_folder_name(anime_title, bgm_id)
+    anime_root = f"{library_root}\\{folder}".replace("/", "\\")
+    return {
+        "original_title": torrent_title,
+        "media_type": "合集",
+        "parsed_episode": "",
+        "parsed_resolution": "",
+        "parsed_fansub": "",
+        "target_folder": anime_root,
+        "target_filename": "",
+        "target_full_path": anime_root,
+    }
 
 
 def preview_rename_file(

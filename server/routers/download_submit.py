@@ -90,7 +90,9 @@ async def preview_rename_batch(
 
     if not payload.bgm_id:
         previews = [
-            rename_engine.preview_rename(payload.anime_title, title, library_root)
+            rename_engine.preview_collection(payload.anime_title, title, library_root)
+            if rename_engine.is_collection_title(title)
+            else rename_engine.preview_rename(payload.anime_title, title, library_root)
             for title in payload.titles
         ]
         return {"status": "ready", "previews": previews}
@@ -143,7 +145,11 @@ async def preview_rename_batch(
             season_total_eps = season_info["eps"]
 
     previews = [
-        rename_engine.preview_rename_file(
+        rename_engine.preview_collection(
+            anime_title, title, library_root, folder_bgm_id
+        )
+        if rename_engine.is_collection_title(title)
+        else rename_engine.preview_rename_file(
             anime_title=anime_title,
             file_name=title,
             torrent_title=title,
