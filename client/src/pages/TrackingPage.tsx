@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { proxiedImageUrl } from "../utils/proxiedImage";
-import { pageSub, pageTitle, posterFrame } from "./library/ui";
+import { pageSub, pageTitle, posterFrame, seg, segOff, segOn } from "./library/ui";
 
 interface ScheduleItem {
   bgm_id: number | null;
@@ -54,8 +54,26 @@ export default function TrackingPage({ onSelectAnime }: TrackingPageProps) {
   const initialCache = useMemo(loadCachedSchedule, []);
   const [schedule, setSchedule] = useState<ScheduleItem[]>(initialCache ?? []);
   const [loading, setLoading] = useState(initialCache === null);
-  // null = 一周总览; 数字 = 只看这一天(点星期标题切换)
-  const [focusedDay, setFocusedDay] = useState<number | null>(null);
+  // 纵向是七列。横向把七天都按大卡片铺开。
+  const [layout, setLayout] = useState<"vertical" | "horizontal">("vertical");
+
+  useEffect(() => {
+    fetch(`${API_BASE}/tracking/layout`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (data?.mode === "vertical" || data?.mode === "horizontal") setLayout(data.mode);
+      })
+      .catch(() => {});
+  }, []);
+
+  const changeLayout = (next: "vertical" | "horizontal") => {
+    setLayout(next);
+    fetch(`${API_BASE}/tracking/layout`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: next }),
+    }).catch((err: unknown) => console.error("保存追更排列失败", err));
+  };
 
   useEffect(() => {
     // 命中前台缓存(6小时内)时直接用,跳过网络请求,切回追更页不用等
@@ -77,50 +95,49 @@ export default function TrackingPage({ onSelectAnime }: TrackingPageProps) {
     [schedule],
   );
 
-  const visibleDayIndexes =
-    focusedDay === null ? days.map((_, i) => i) : [focusedDay];
-
   return (
     <div className="absolute inset-0 flex flex-col overflow-hidden">
-      {/* 标题和星期固定。滚动条只出现在下面的海报区。 */}
+      {/* 标题固定。纵向时星期也固定，滚动条只在海报区。 */}
       <div className="shrink-0 bg-ink px-8 pb-2 pt-8">
-        <h1 className={pageTitle}>追更</h1>
-        <p className={`${pageSub} mb-4`}>
-          {loading
-            ? "正在获取新番连载时刻表..."
-            : `本季连载 ${schedule.length} 部 · ${
-                focusedDay !== null
-                  ? "点击星期标题返回一周视图"
-                  : "点击星期标题只看当天"
-              }`}
-        </p>
-
-        <div
-          className="grid gap-3 border-b border-border pb-2"
-          style={{
-            gridTemplateColumns:
-              focusedDay === null ? "repeat(7, 1fr)" : "1fr",
-          }}
-        >
-          {visibleDayIndexes.map((index) => (
+        <div className="mb-4 flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <h1 className={pageTitle}>追更</h1>
+            <p className={pageSub}>
+              {loading ? "正在获取新番连载时刻表..." : `本季连载 ${schedule.length} 部`}
+            </p>
+          </div>
+          <div className={`${seg} shrink-0`}>
             <button
-              key={index}
-              onClick={() => setFocusedDay(focusedDay === index ? null : index)}
-              className={`text-left text-sm transition-colors ${
-                focusedDay === index
-                  ? "text-vermillion"
-                  : "text-muted hover:text-paper"
-              }`}
+              type="button"
+              onClick={() => changeLayout("vertical")}
+              className={layout === "vertical" ? segOn : segOff}
             >
-              {days[index]}
+              纵向
             </button>
-          ))}
+            <button
+              type="button"
+              onClick={() => changeLayout("horizontal")}
+              className={layout === "horizontal" ? segOn : segOff}
+            >
+              横向
+            </button>
+          </div>
         </div>
+
+        {layout === "vertical" && (
+          <div className="grid grid-cols-7 gap-3 border-b border-border pb-2">
+            {days.map((day) => (
+              <div key={day} className="text-sm text-muted">
+                {day}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
-      {/* 只渲染当前这一屏。封面走浏览器缓存，切日子不必把每张图挂两份。 */}
+      {/* 只挂当前这种排列。封面走浏览器缓存，切换不必把每张图挂两份。 */}
       <div className="min-h-0 flex-1 overflow-y-auto px-8 pb-8 pt-3">
-        {focusedDay === null ? (
+        {layout === "vertical" ? (
           <div className="grid grid-cols-7 gap-4">
             {grouped.map((items, index) => (
               <div key={index} className="flex flex-col gap-4">
@@ -132,15 +149,21 @@ export default function TrackingPage({ onSelectAnime }: TrackingPageProps) {
             ))}
           </div>
         ) : (
-          <div>
-            <div className="grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-4">
-              {grouped[focusedDay].map((anime) => (
-                <AnimeCard key={anime.bgm_id ?? anime.title} anime={anime} onSelectAnime={onSelectAnime} />
-              ))}
-            </div>
-            {!loading && grouped[focusedDay].length === 0 && (
-              <div className="text-xs text-muted">这天没有连载番剧</div>
-            )}
+          <div className="flex flex-col gap-8">
+            {grouped.map((items, index) => (
+              <section key={index}>
+                <div className="mb-3 border-b border-border pb-2 text-sm text-muted">{days[index]}</div>
+                {items.length > 0 ? (
+                  <div className="grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-4">
+                    {items.map((anime) => (
+                      <AnimeCard key={anime.bgm_id ?? anime.title} anime={anime} onSelectAnime={onSelectAnime} />
+                    ))}
+                  </div>
+                ) : (
+                  !loading && <div className="text-xs text-muted">这天没有连载番剧</div>
+                )}
+              </section>
+            ))}
           </div>
         )}
       </div>

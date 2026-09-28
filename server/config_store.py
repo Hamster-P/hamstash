@@ -39,6 +39,7 @@ DEFAULTS = {
     "qbit_password": os.getenv("QBIT_PASSWORD", ""),
     "qbit_setup_completed": "false",  # 引导向导是否已经走完,前端据此决定要不要弹首次引导
     "library_sort_mode": "default",  # 影视库列表页排序方式记忆: default/recent_watched/recent_updated
+    "tracking_layout": "vertical",  # 追更页排列记忆: vertical=七列 / horizontal=七天大卡片
     # 媒体库默认封面策略(未手动选图的条目适用):
     # latest_tv=家族树里最新一季TV的图 / first_season=第一季的图 / matched=直接用匹配条目本身的图。
     # 无TV季的纯剧场版家族一律回退用匹配条目本身的图。

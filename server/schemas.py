@@ -192,6 +192,7 @@ class RssSubscriptionResponse(BaseModel):
     last_error: Optional[str] = None
     created_at: datetime
     last_polled_at: Optional[datetime] = None
+    season_complete: bool = False
 
     class Config:
         from_attributes = True

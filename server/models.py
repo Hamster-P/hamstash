@@ -43,6 +43,9 @@ class SubscriptionRule(Base):
     last_error = Column(String, nullable=True)  # 最近一次激活/关闭qBittorrent RSS时的报错,给一览页展示
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     last_polled_at = Column(DateTime(timezone=True), nullable=True)  # 上次尝试轮询这条订阅的时间(不管成不成功),给一览页展示
+    # 上次轮询时判断的「本季每一集都已下载完成」。
+    # 取不到正片集数、或超长篇，保持 False，页面不提示。
+    season_complete = Column(Boolean, default=False, nullable=False)
 
 
 class DownloadTask(Base):

@@ -130,6 +130,14 @@ def update_settings(payload: SettingsUpdate, db: Session = Depends(get_db)):
         # 必须放进这个 values dict:write_ini 会整段重写 INI 的 [settings] 段,漏了就每次
         # 保存别的设置都把端口冲回默认。run_service.py 和 Rust 侧都从 INI 读这个值。
         "server_port": str(payload.server_port),
+        # 这两个不在设置页上。write_ini 会整段重写 [settings]，
+        # 不带上的话，保存其它设置会把排列和排序从 INI 里抹掉。
+        "library_sort_mode": get_setting(
+            db, "library_sort_mode", config_store.DEFAULTS["library_sort_mode"]
+        ),
+        "tracking_layout": get_setting(
+            db, "tracking_layout", config_store.DEFAULTS["tracking_layout"]
+        ),
     }
     for key, value in values.items():
         upsert_setting(db, key, value)

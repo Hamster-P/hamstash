@@ -90,6 +90,19 @@ async def poll_subscription(db: Session, rule: SubscriptionRule, download_root: 
     rule.last_polled_at = datetime.now()
     db.commit()
 
+    try:
+        await _poll_subscription_items(db, rule, download_root)
+    finally:
+        # 不管这轮有没有新种子，都用现有下载明细重算一次本季是否下完。
+        try:
+            from services.rss_season_complete import refresh_season_complete
+
+            await refresh_season_complete(db, rule)
+        except Exception as exc:
+            print(f"[RSS引擎] 判断本季是否下完失败 subscription={rule.id}: {exc}")
+
+
+async def _poll_subscription_items(db: Session, rule: SubscriptionRule, download_root: str) -> None:
     # 禁用某源只是在设置里隐藏它、不再新建订阅,adapter 仍留在注册表里,历史订阅继续轮询。
     # 只有真正未知的 source 字面量(理论上不会出现)才在这里跳过,避免整轮轮询被 KeyError 打断。
     if not has_source(rule.source):

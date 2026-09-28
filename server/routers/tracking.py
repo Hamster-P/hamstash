@@ -1,12 +1,36 @@
 """对应前端 TrackingPage(追更):本季连载时刻表。"""
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 import bangumi_client
+import config_store
 from database import get_db
 from services.anime_origin_cache import resolve_origin_batch
+from services.common import get_setting, upsert_setting
 
 router = APIRouter(tags=["追更"])
+
+TRACKING_LAYOUTS = {"vertical", "horizontal"}
+
+
+class TrackingLayoutUpdate(BaseModel):
+    mode: str
+
+
+@router.get("/tracking/layout")
+def get_tracking_layout(db: Session = Depends(get_db)):
+    """追更页纵向/横向记忆。重新打开时恢复上次选择。"""
+    return {"mode": get_setting(db, "tracking_layout", config_store.DEFAULTS["tracking_layout"])}
+
+
+@router.put("/tracking/layout")
+def set_tracking_layout(req: TrackingLayoutUpdate, db: Session = Depends(get_db)):
+    if req.mode not in TRACKING_LAYOUTS:
+        raise HTTPException(status_code=400, detail=f"未知排列: {req.mode}")
+    upsert_setting(db, "tracking_layout", req.mode)
+    config_store.update_ini_value("tracking_layout", req.mode)
+    return {"mode": req.mode}
 
 
 @router.get("/bangumi/schedule")

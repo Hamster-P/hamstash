@@ -12,6 +12,7 @@ interface RssSubscription {
   rss_url: string | null;
   created_at: string;
   last_polled_at: string | null;
+  season_complete?: boolean;
 }
 
 interface RssMatchedItem {
@@ -195,6 +196,7 @@ export default function RssPage() {
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       await loadMatchedItems(id);
+      await loadSubs();
     } catch (err) {
       console.error("立即更新失败", err);
     } finally {
@@ -292,7 +294,14 @@ export default function RssPage() {
                       selectedId === sub.id ? "bg-surface-hover" : ""
                     }`}
                   >
-                    <td className="px-3 py-2">{sub.anime_title}</td>
+                    <td className="px-3 py-2">
+                      <div>{sub.anime_title}</div>
+                      {sub.season_complete && (
+                        <div className="mt-1 font-mono text-[11px] text-vermillion">
+                          本季已全部下载，推荐删除rss订阅
+                        </div>
+                      )}
+                    </td>
                     <td className="max-w-[160px] truncate px-3 py-2 font-mono text-xs text-muted">
                       {sub.keyword}
                     </td>
