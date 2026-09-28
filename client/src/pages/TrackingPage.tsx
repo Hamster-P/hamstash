@@ -187,10 +187,10 @@ function AnimeCard({
     >
       <div className={posterFrame}>
         {anime.cover_url && (
+          {/* 内部滚动区里 lazy 经常不开始，封面会一直空着。 */}
           <img
             src={proxiedImageUrl(anime.cover_url)}
             alt=""
-            loading="lazy"
             decoding="async"
             onLoad={() => setLoaded(true)}
             className={`h-full w-full object-cover transition-opacity duration-300 ${
