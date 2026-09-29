@@ -52,9 +52,9 @@
    "raw": "[Group] Anime Title [01-12] [BDRip 1080p]",
    "platform": null,
    "media_type": "tv",
-   "episode": "01",
+   "episode": "??",
    "src": "ab-golden",
-   "known_bug": false
+   "known_bug": true
   },
   {
    "id": "ab_range_e_prefix",
@@ -466,9 +466,9 @@
    "raw": "[Group] Anime [01-12] [1080p]",
    "platform": null,
    "media_type": "tv",
-   "episode": "01",
+   "episode": "??",
    "src": "ab-golden",
-   "known_bug": false
+   "known_bug": true
   },
   {
    "id": "ab_legacy_reject_batch",
