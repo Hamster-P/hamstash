@@ -35,6 +35,11 @@ tauri-plugin-http = "2"
 tokio = { version = "1", features = ["net", "io-util", "time", "sync"] }
 reqwest = { version = "0.12", features = ["json"] }
 url = "2"
+# 不直接使用,纯粹靠 Cargo 特性统一(unification)给 tauri-plugin-updater 内部依赖的
+# 同一个 reqwest 0.13.4 打开 socks 特性——它默认不带 socks 特性,check()/downloadAndInstall()
+# 传 socks4/socks5 代理地址时会构造代理失败,导致"设置页填了 socks 代理、检查更新仍报
+# 无法连接更新服务器"(国内用户常见,本地加速器多数只给 socks4/5 出口)。
+reqwest013 = { package = "reqwest", version = "0.13.4", features = ["socks"], default-features = true }
 
 # 监视外置PotPlayer窗口标题用(见lib.rs::run_potplayer_title_watcher)。
 # tauri本身已经间接依赖了同一个版本,声明成直接依赖不会增加实际编译量。
