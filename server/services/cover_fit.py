@@ -6,6 +6,7 @@
 """
 import io
 import struct
+from pathlib import Path
 from urllib.parse import urlparse
 
 from PIL import Image
@@ -45,6 +46,21 @@ def _dimensions(content: bytes) -> tuple[int, int] | None:
             return None
         index += 2 + segment
     return None
+
+
+def file_needs_fit(path: Path) -> bool:
+    """只读到宽高为止。认不出或已在框内的文件不再解码。"""
+    chunks = bytearray()
+    with path.open("rb") as handle:
+        while len(chunks) < 1024 * 1024:
+            block = handle.read(65536)
+            if not block:
+                break
+            chunks.extend(block)
+            size = _dimensions(bytes(chunks))
+            if size is not None:
+                return size[0] > COVER_MAX_W or size[1] > COVER_MAX_H
+    return False
 
 
 def fit_bangumi_cover(content: bytes) -> tuple[bytes, str, bool]:

@@ -1,10 +1,18 @@
 """封面只缩到卡片用得上的尺寸，小图不动。"""
 import io
+import tempfile
 import unittest
+from pathlib import Path
 
 from PIL import Image
 
-from services.cover_fit import COVER_MAX_H, COVER_MAX_W, fit_bangumi_cover, is_bangumi_cover
+from services.cover_fit import (
+    COVER_MAX_H,
+    COVER_MAX_W,
+    file_needs_fit,
+    fit_bangumi_cover,
+    is_bangumi_cover,
+)
 
 
 def _jpeg(width: int, height: int) -> bytes:
@@ -33,6 +41,18 @@ class CoverFitTests(unittest.TestCase):
         body, _content_type, changed = fit_bangumi_cover(original)
         self.assertFalse(changed)
         self.assertEqual(body, original)
+
+    def test_file_needs_fit_uses_header_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            big = Path(tmp) / "big.jpg"
+            small = Path(tmp) / "small.jpg"
+            unknown = Path(tmp) / "unknown.bin"
+            big.write_bytes(_jpeg(3000, 4085))
+            small.write_bytes(_jpeg(400, 560))
+            unknown.write_bytes(b"not an image")
+            self.assertTrue(file_needs_fit(big))
+            self.assertFalse(file_needs_fit(small))
+            self.assertFalse(file_needs_fit(unknown))
 
 
 if __name__ == "__main__":

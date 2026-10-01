@@ -11,6 +11,7 @@
 import asyncio
 import hashlib
 import secrets
+from pathlib import Path
 from urllib.parse import urlparse
 
 import httpx
@@ -18,7 +19,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse, Response
 
 import paths
-from services.cover_fit import fit_bangumi_cover, is_bangumi_cover
+from services.cover_fit import file_needs_fit, fit_bangumi_cover, is_bangumi_cover
 from services.proxy import get_proxy_url, make_client
 
 router = APIRouter(tags=["图片代理"])
@@ -112,7 +113,7 @@ def clear_image_cache():
     return {"removed": removed, "freed_bytes": freed}
 
 
-def _write_cache(url: str, content_type: str, content: bytes) -> None:
+def _write_cache(url: str, content_type: str, content: bytes) -> bool:
     """先写临时文件再os.replace成最终文件名,原子写入——避免进程中途被杀掉/
     磁盘写满等情况留下一个半截的坏缓存文件,之后一直被_find_cached_file当成
     "命中"提供残缺数据。写失败(比如磁盘满了)只打日志,不影响本次请求已经
@@ -124,8 +125,37 @@ def _write_cache(url: str, content_type: str, content: bytes) -> None:
         tmp_path = target.with_name(f"{target.name}.tmp{secrets.token_hex(4)}")
         tmp_path.write_bytes(content)
         tmp_path.replace(target)
+        return True
     except OSError as e:
         print(f"[image_proxy] 写入图片缓存失败,不影响本次返回: {e}")
+        return False
+
+# 封面 URL 带内容哈希，同一地址就是同一张图，可以让浏览器存一年。
+IMAGE_CACHE_CONTROL = "public, max-age=31536000, immutable"
+
+
+def _image_headers(body: bytes | None = None) -> dict[str, str]:
+    headers = {"Cache-Control": IMAGE_CACHE_CONTROL}
+    if body is not None:
+        headers["ETag"] = f'"{hashlib.sha256(body).hexdigest()}"'
+    return headers
+
+
+def _shrink_cached_cover(url: str, cached: Path) -> tuple[Path | None, bytes | None, str]:
+    """大图缩完写回磁盘。写成功返回新路径；写失败返回缩好的字节，供本次直接响应。"""
+    fitted, content_type, changed = fit_bangumi_cover(cached.read_bytes())
+    if not changed:
+        return cached, None, content_type
+    if not _write_cache(url, content_type, fitted):
+        return None, fitted, content_type
+    written = _cache_path_for(url, content_type)
+    if written.resolve() != cached.resolve():
+        try:
+            cached.unlink(missing_ok=True)
+        except OSError as e:
+            print(f"[image_proxy] 清理缩小前的旧封面失败,忽略: {e}")
+    return written, None, content_type
+
 
 # 追更/影视库这类页面一次性会同时请求几十张封面图,全部并发怼向本地代理容易
 # 让代理/对面CDN瞬时过载导致部分请求超时——限制一下同时在跑的图片请求数,
@@ -180,24 +210,22 @@ async def image_proxy(url: str = Query(...)):
     if parsed.scheme not in ("http", "https") or parsed.hostname not in ALLOWED_IMAGE_HOSTS:
         raise HTTPException(status_code=400, detail="不支持的图片来源")
 
-    # 缓存命中:直接读本地文件,不摸网络——不管有没有配代理、网络通不通都能命中,
-    # 这是离线能力的关键,顺带比每次都经代理转发快得多。FileResponse不传
-    # media_type时会按文件名后缀自动猜,我们缓存文件名后缀就是真实content-type
-    # 映射来的,交给它自动识别即可。
+    # 缓存命中直接读本地文件。已经在 800×1120 里的封面不再整张解码。
+    # 还要缩小的丢到线程里，避免堵住其它封面请求。
     cached = _find_cached_file(url)
     if cached is not None:
-        if is_bangumi_cover(url):
-            fitted, content_type, changed = fit_bangumi_cover(cached.read_bytes())
-            if changed:
-                # 旧缓存是整张大图。缩完写回，下次直接读小图。
-                _write_cache(url, content_type, fitted)
-                return Response(content=fitted, media_type=content_type)
-        return FileResponse(cached)
+        if is_bangumi_cover(url) and await asyncio.to_thread(file_needs_fit, cached):
+            cached, inline, content_type = await asyncio.to_thread(_shrink_cached_cover, url, cached)
+            if inline is not None:
+                return Response(content=inline, media_type=content_type, headers=_image_headers(inline))
+        return FileResponse(cached, headers=_image_headers())
 
     # 缓存未命中:不管有没有配代理都要真正经过后端拉一次字节(proxy为None时
     # httpx.AsyncClient(proxy=None)就是直连),不然字节压根不经过我们的进程,
     # 没机会写入缓存。
     proxy = get_proxy_url()
+    body: bytes | None = None
+    content_type = "image/jpeg"
     async with _CONCURRENCY_LIMIT:
         last_error: Exception | None = None
         for _ in range(_MAX_ATTEMPTS):
@@ -207,14 +235,21 @@ async def image_proxy(url: str = Query(...)):
                 resp.raise_for_status()
                 content_type = resp.headers.get("content-type", "image/jpeg")
                 body = resp.content
-                if is_bangumi_cover(url):
-                    body, content_type, _changed = fit_bangumi_cover(body)
-                _write_cache(url, content_type, body)
-                return Response(content=body, media_type=content_type)
+                break
             except (httpx.HTTPError, httpx.InvalidURL) as e:
                 # httpx.InvalidURL不是httpx.HTTPError的子类,单独列出来兜底——
                 # 代理地址格式已经在保存时校验过了(schemas.py),这里只是防万一
                 # (比如升级前保存的旧值),不至于让整个请求变成没有提示的500。
                 last_error = e
+                body = None
 
-    raise HTTPException(status_code=502, detail=f"获取图片失败: {last_error}")
+    if body is None:
+        raise HTTPException(status_code=502, detail=f"获取图片失败: {last_error}")
+
+    if is_bangumi_cover(url):
+        body, content_type, _changed = await asyncio.to_thread(fit_bangumi_cover, body)
+    await asyncio.to_thread(_write_cache, url, content_type, body)
+    cached = _find_cached_file(url)
+    if cached is not None:
+        return FileResponse(cached, headers=_image_headers())
+    return Response(content=body, media_type=content_type, headers=_image_headers(body))

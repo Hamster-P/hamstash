@@ -178,7 +178,10 @@ function AnimeCard({
   anime: ScheduleItem;
   onSelectAnime: (id: number) => void;
 }) {
-  const [loaded, setLoaded] = useState(false);
+  // 0 用原地址，1 再请求一次，2 放弃并留下底色。
+  const [attempt, setAttempt] = useState(0);
+  const base = anime.cover_url ? proxiedImageUrl(anime.cover_url) : undefined;
+  const src = base && attempt === 1 ? `${base}&retry=1` : base;
 
   return (
     <div
@@ -187,15 +190,12 @@ function AnimeCard({
     >
       <div className={posterFrame}>
         {/* 内部滚动区里不要加 loading=lazy，WebView2 经常不开始请求。 */}
-        {anime.cover_url && (
+        {src && attempt < 2 && (
           <img
-            src={proxiedImageUrl(anime.cover_url)}
+            src={src}
             alt=""
-            decoding="async"
-            onLoad={() => setLoaded(true)}
-            className={`h-full w-full object-cover transition-opacity duration-300 ${
-              loaded ? "opacity-100" : "opacity-0"
-            }`}
+            onError={() => setAttempt((current) => current + 1)}
+            className="h-full w-full object-cover"
           />
         )}
       </div>
