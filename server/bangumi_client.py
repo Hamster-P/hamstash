@@ -6,12 +6,8 @@ import unicodedata
 from services.proxy import get_proxy_url, make_client
 
 BASE_URL = "https://api.bgm.tv"
-# Bangumi meta_tags 里的非日本产地标签,命中即判为国漫/他国番剧过滤掉。
-# 搜索结果按"黑名单"过滤(见search_anime):只剔除明确标了这些产地的,无产地标签的
-# 一律保留——否则社区没补产地标签的日本剧场版(如"游戏王剧场版 光之金字塔",meta_tags
-# 只有[剧场版,原创])会被误杀。
-FOREIGN_ORIGIN_TAGS = {"中国", "中国大陆", "香港", "台湾", "韩国", "美国", "欧美", "英国", "法国"}
-# Bangumi 搜索单页固定只返回约20条,且强匹配+产地黑名单过滤后可能只剩个位数。
+# 搜索不限产地。日本限定只在追更日历上做。
+# Bangumi 搜索单页固定只返回约20条,关键词强匹配后可能只剩个位数。
 # search_anime 在单次请求里最多翻 SEARCH_MAX_PAGES 页、攒够 SEARCH_TARGET_RESULTS 条
 # 过滤后结果就提前返回,避免"一次只出2条"。
 SEARCH_TARGET_RESULTS = 20
@@ -114,30 +110,16 @@ def _build_search_filter(year: int | None, month: int | None) -> dict:
     return filter_options
 
 
-def _drop_foreign_origin(items: list[dict]) -> list[dict]:
-    """产地黑名单:只剔除meta_tags明确标了非日本产地(中国/韩国/美国...见FOREIGN_ORIGIN_TAGS)
-    的条目,无产地标签的一律保留。之前用"只留日本/WEB"的白名单有两个毛病:①社区没补产地标签
-    的日本剧场版(如光之金字塔,tags只有[剧场版,原创])被误杀;②国漫普遍也带WEB,反而从WEB放行口
-    漏进来。改黑名单同时修好这两点。这个字段搜索接口本身就带,不需要额外请求。"""
-    return [
-        item for item in items
-        if not (FOREIGN_ORIGIN_TAGS & set(item.get("meta_tags") or []))
-    ]
-
-
 def _filter_search_page(raw_list: list[dict], keyword_norm: str) -> list[dict]:
-    """对单页原始结果做"关键词强匹配 + 产地黑名单"过滤。keyword_norm为空(推荐搜索)时
-    只走产地黑名单。不在这里做"零命中兜底"——兜底由聚合层跨页判断,避免每页各自吐回原始
-    结果把噪音混进来。"""
-    if keyword_norm:
-        matched = [
-            item for item in raw_list
-            if keyword_norm in _normalize_for_match(item.get("name_cn") or "")
-            or keyword_norm in _normalize_for_match(item.get("name") or "")
-        ]
-    else:
-        matched = raw_list
-    return _drop_foreign_origin(matched)
+    """对单页原始结果做关键词强匹配。不看出产地。keyword_norm为空时整页保留。
+    不在这里做零命中兜底,兜底由聚合层跨页判断。"""
+    if not keyword_norm:
+        return raw_list
+    return [
+        item for item in raw_list
+        if keyword_norm in _normalize_for_match(item.get("name_cn") or "")
+        or keyword_norm in _normalize_for_match(item.get("name") or "")
+    ]
 
 
 async def search_anime(
@@ -149,10 +131,10 @@ async def search_anime(
     target: int = SEARCH_TARGET_RESULTS,
     max_pages: int = SEARCH_MAX_PAGES,
 ):
-    """搜索番剧。Bangumi单页只返回约20条,强匹配+产地黑名单过滤后可能所剩无几——这里在单次
-    请求内**连续多翻几页并累加过滤后结果**,攒够target条 / 翻到头 / 达max_pages上限就返回,
-    避免"一次只出2条"。返回字段(data/total/raw_count/bangumi_total)与旧版一致,前端翻页
-    (offset += raw_count)/加载更多逻辑不用改。"""
+    """搜索番剧。Bangumi单页只返回约20条,关键词强匹配后可能所剩无几——这里在单次
+    请求内连续多翻几页并累加过滤后结果,攒够target条 / 翻到头 / 达max_pages上限就返回,
+    避免一次只出2条。不按产地剔除。返回字段(data/total/raw_count/bangumi_total)与旧版一致,
+    前端翻页(offset += raw_count)/加载更多逻辑不用改。"""
     url = f"{BASE_URL}/v0/search/subjects"
     payload = {
         "keyword": keyword,
@@ -196,9 +178,9 @@ async def search_anime(
                 break
 
     # 零命中兜底:归一化强匹配跨页仍一个都没有,但Bangumi原始结果非空 -> 大概率是格式/别名
-    # 差异导致的误杀而非真的无关,退回首页原始结果(仍套产地黑名单),避免"明明搜得到却空列表"。
+    # 差异导致的误杀而非真的无关,退回首页原始结果,避免明明搜得到却空列表。
     if not collected and first_raw_page:
-        collected = _drop_foreign_origin(first_raw_page)
+        collected = first_raw_page
 
     return {
         "data": collected,
