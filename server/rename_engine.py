@@ -207,6 +207,13 @@ def resolve_folder_bucket(
 
 
 _ILLEGAL_FILENAME_CHARS = re.compile(r'[\\/:*?"<>|]+')
+# / \ : 换成全角,不要换成下划线。
+# Windows 把 / 和 \ 当目录分隔,"乱马1/2" 会拆成 "乱马1" 和子目录 "2"。
+_FOLDER_NAME_TRANSLATION = str.maketrans({
+    "/": "／",
+    "\\": "＼",
+    ":": "：",
+})
 
 
 def _sanitize_filename_segment(text: str) -> str:
@@ -219,8 +226,10 @@ def build_anime_folder_name(anime_title: str, bgm_id: int | None) -> str:
     媒体库里番剧文件夹的命名规则:优先带上显性的bgm_id作为唯一标识,
     避免"无职转生"和"無職轉生"这类同番不同译名各占一个文件夹的情况。
     TMDB接入是阶段二工作,先用bgm_id顶上。
+    标题里的 / \\ : 先换成全角,其余非法字符再去掉。
     """
-    return f"{anime_title} [bgm-{bgm_id}]" if bgm_id else anime_title
+    title = _sanitize_filename_segment((anime_title or "").translate(_FOLDER_NAME_TRANSLATION))
+    return f"{title} [bgm-{bgm_id}]" if bgm_id else title
 
 
 _ZH_DIGITS = {

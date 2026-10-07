@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { proxiedImageUrl } from "../utils/proxiedImage";
 import { pageSub, pageTitle, posterFrame, seg, segOff, segOn } from "./library/ui";
 
@@ -26,6 +26,55 @@ const SCHEDULE_CACHE_KEY = "tracking_schedule_cache_v3";
 // 来避免慢请求——1小时能让新定档/临时补漏的番剧更快反映到界面,同时避免用户
 // 每次切换页面都触发一次网络请求。
 const SCHEDULE_CACHE_TTL_MS = 60 * 60 * 1000;
+
+type LayoutMode = "vertical" | "horizontal";
+
+// 进详情会卸掉这一页。滚动位置留在 sessionStorage，回来再摆回去。
+// 横版内容比纵版高。先按纵版画的话，滚动条会被掐短，横版位置就丢了。
+const TRACKING_LAYOUT_CACHE_KEY = "tracking_layout_cache_v1";
+const TRACKING_SCROLL_KEY = "tracking_scroll_top_v1";
+
+function readLayoutCache(): LayoutMode {
+  try {
+    const value = sessionStorage.getItem(TRACKING_LAYOUT_CACHE_KEY);
+    if (value === "vertical" || value === "horizontal") return value;
+  } catch {
+    // 读不到就先按纵向，等接口结果
+  }
+  return "vertical";
+}
+
+function rememberLayout(mode: LayoutMode) {
+  try {
+    sessionStorage.setItem(TRACKING_LAYOUT_CACHE_KEY, mode);
+  } catch {
+    // 存不下不影响这次显示
+  }
+}
+
+function readScrollMap(): Record<LayoutMode, number> {
+  try {
+    const raw = sessionStorage.getItem(TRACKING_SCROLL_KEY);
+    if (!raw) return { vertical: 0, horizontal: 0 };
+    const parsed = JSON.parse(raw) as Partial<Record<LayoutMode, number>>;
+    return {
+      vertical: Number(parsed.vertical) || 0,
+      horizontal: Number(parsed.horizontal) || 0,
+    };
+  } catch {
+    return { vertical: 0, horizontal: 0 };
+  }
+}
+
+function writeScroll(mode: LayoutMode, top: number) {
+  const map = readScrollMap();
+  map[mode] = top;
+  try {
+    sessionStorage.setItem(TRACKING_SCROLL_KEY, JSON.stringify(map));
+  } catch {
+    // 存不下就只留在这一次挂载里
+  }
+}
 
 function loadCachedSchedule(): ScheduleItem[] | null {
   try {
@@ -55,18 +104,57 @@ export default function TrackingPage({ onSelectAnime }: TrackingPageProps) {
   const [schedule, setSchedule] = useState<ScheduleItem[]>(initialCache ?? []);
   const [loading, setLoading] = useState(initialCache === null);
   // 纵向是七列。横向把七天都按大卡片铺开。
-  const [layout, setLayout] = useState<"vertical" | "horizontal">("vertical");
+  // 先用上次的排列，避免回来时先画纵版把横版滚动条掐短。
+  const [layout, setLayout] = useState<LayoutMode>(readLayoutCache);
+  const listRef = useRef<HTMLDivElement>(null);
+  const layoutRef = useRef(layout);
+  layoutRef.current = layout;
+  const scrollSaveRaf = useRef<number | null>(null);
+  // 内容还没出来时不要把已记住的位置写成 0。
+  const scrollRestored = useRef(false);
+
+  useLayoutEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    const top = readScrollMap()[layout];
+    if (schedule.length === 0 && top > 0) return;
+    scrollRestored.current = true;
+    el.scrollTop = top;
+  }, [layout, schedule.length]);
+
+  const flushScroll = () => {
+    if (scrollSaveRaf.current !== null) {
+      cancelAnimationFrame(scrollSaveRaf.current);
+      scrollSaveRaf.current = null;
+    }
+    const el = listRef.current;
+    if (!el || !scrollRestored.current) return;
+    writeScroll(layoutRef.current, el.scrollTop);
+  };
+
+  const handleListScroll = () => {
+    if (scrollSaveRaf.current !== null) return;
+    scrollSaveRaf.current = requestAnimationFrame(() => {
+      scrollSaveRaf.current = null;
+      flushScroll();
+    });
+  };
 
   useEffect(() => {
     fetch(`${API_BASE}/tracking/layout`)
       .then((res) => res.json())
       .then((data) => {
-        if (data?.mode === "vertical" || data?.mode === "horizontal") setLayout(data.mode);
+        if (data?.mode === "vertical" || data?.mode === "horizontal") {
+          rememberLayout(data.mode);
+          setLayout(data.mode);
+        }
       })
       .catch(() => {});
   }, []);
 
-  const changeLayout = (next: "vertical" | "horizontal") => {
+  const changeLayout = (next: LayoutMode) => {
+    flushScroll();
+    rememberLayout(next);
     setLayout(next);
     fetch(`${API_BASE}/tracking/layout`, {
       method: "PUT",
@@ -136,7 +224,12 @@ export default function TrackingPage({ onSelectAnime }: TrackingPageProps) {
       </div>
 
       {/* 只挂当前这种排列。封面走浏览器缓存，切换不必把每张图挂两份。 */}
-      <div className="min-h-0 flex-1 overflow-y-auto px-8 pb-8 pt-3">
+      <div
+        ref={listRef}
+        onScroll={handleListScroll}
+        onPointerDown={flushScroll}
+        className="min-h-0 flex-1 overflow-y-auto px-8 pb-8 pt-3"
+      >
         {layout === "vertical" ? (
           <div className="grid grid-cols-7 gap-4">
             {grouped.map((items, index) => (

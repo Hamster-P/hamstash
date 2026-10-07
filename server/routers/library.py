@@ -1293,6 +1293,188 @@ async def _regroup_media_impl(req: RegroupRequest, db: Session):
     }
 
 
+# 链尾目录名正好是「剩余标题 [bgm-数字]」。中间夹着季目录的不算拆开。
+_BGM_FOLDER_RE = re.compile(r"^(.+?) \[bgm-(\d+)\]$")
+_STRUCTURAL_DIR_RE = re.compile(
+    r"^(?:Season\s*\d+|OVA|剧场版|Specials|Others|Other|Movies)$",
+    re.IGNORECASE,
+)
+_DIR_NOISE_FILES = {"Thumbs.db", "desktop.ini", ".DS_Store"}
+
+
+def _find_split_bgm_folder(top: Path) -> tuple[str, int, Path] | None:
+    """顶层没有 [bgm-id]、里面只有一条子目录、链尾带 [bgm-id]，就是被 / 拆开的文件夹。
+
+    「乱马1/2 [bgm-489820]」落在磁盘上是「乱马1」里面的「2 [bgm-489820]」。
+    返回 (用 / 拼回的原标题, bgm_id, 链尾目录)。普通季目录返回 None。
+    """
+    if _BGM_FOLDER_RE.match(top.name) or _STRUCTURAL_DIR_RE.match(top.name):
+        return None
+    segments = [top.name]
+    current = top
+    for _ in range(8):
+        try:
+            with os.scandir(current) as it:
+                entries = list(it)
+        except OSError:
+            return None
+        dirs = []
+        for entry in entries:
+            try:
+                is_dir = entry.is_dir(follow_symlinks=False)
+            except OSError:
+                return None
+            if is_dir:
+                dirs.append(entry)
+                continue
+            if entry.name in _DIR_NOISE_FILES or entry.name.startswith("."):
+                continue
+            return None
+        if len(dirs) != 1:
+            return None
+        child = dirs[0]
+        if _STRUCTURAL_DIR_RE.match(child.name):
+            return None
+        match = _BGM_FOLDER_RE.match(child.name)
+        if match:
+            segments.append(match.group(1))
+            return "/".join(segments), int(match.group(2)), Path(child.path)
+        if "[bgm-" in child.name:
+            return None
+        segments.append(child.name)
+        current = Path(child.path)
+    return None
+
+
+def _rewrite_rel_prefix(path: str, old_prefix: str, new_name: str) -> str | None:
+    """路径落在被拆开的目录下时,把前缀换成合并后的文件夹名。分隔符保持原样。"""
+    norm = _norm_rel(path).strip("/")
+    old = _norm_rel(old_prefix).strip("/")
+    if not old or (norm != old and not norm.startswith(old + "/")):
+        return None
+    rest = norm[len(old):].lstrip("/")
+    rewritten = new_name if not rest else f"{new_name}/{rest}"
+    if "\\" in path:
+        return rewritten.replace("/", "\\")
+    return rewritten
+
+
+def _retarget_split_folder_rows(
+    db: Session, old_top: str, old_prefix: str, new_name: str, bgm_id: int,
+) -> None:
+    """合并目录之后,把还指着旧文件夹名的记录改到新名字上。"""
+    old_row = db.query(models.LocalMedia).filter(models.LocalMedia.folder_name == old_top).first()
+    new_row = db.query(models.LocalMedia).filter(models.LocalMedia.folder_name == new_name).first()
+    if old_row and new_row and old_row is not new_row:
+        if new_row.bgm_id is None:
+            new_row.bgm_id = bgm_id
+        db.delete(old_row)
+    elif old_row:
+        old_row.folder_name = new_name
+        if old_row.bgm_id is None:
+            old_row.bgm_id = bgm_id
+    elif new_row and new_row.bgm_id is None:
+        new_row.bgm_id = bgm_id
+
+    for row in db.query(models.PlaybackRecord).filter(models.PlaybackRecord.folder_name == old_top):
+        row.folder_name = new_name
+    for row in db.query(models.StandaloneMedia).filter(models.StandaloneMedia.library_folder == old_top):
+        row.library_folder = new_name
+    for row in db.query(models.StandaloneMedia).all():
+        rewritten = _rewrite_rel_prefix(row.rel_path or "", old_prefix, new_name)
+        if not rewritten or rewritten == row.rel_path:
+            continue
+        clash = db.query(models.StandaloneMedia).filter(models.StandaloneMedia.rel_path == rewritten).first()
+        if clash is not None and clash is not row:
+            continue
+        row.rel_path = rewritten
+    for row in db.query(models.RenamedFile).filter(models.RenamedFile.target_relative_path.isnot(None)):
+        rewritten = _rewrite_rel_prefix(row.target_relative_path, old_prefix, new_name)
+        if rewritten:
+            row.target_relative_path = rewritten
+    _detail_structure_cache.pop(old_top, None)
+
+
+def _remove_empty_parents(parents: list[Path], library_root: Path) -> bool:
+    """从里往外删合并后留下的空目录。只删媒体库里面的,删不掉就停。"""
+    root = library_root.resolve()
+    for parent in parents:
+        try:
+            resolved = parent.resolve()
+        except OSError:
+            return False
+        if resolved == root or root not in resolved.parents:
+            return False
+        try:
+            resolved.rmdir()
+        except OSError:
+            return False
+    return True
+
+
+def repair_split_bgm_folders(library_root: Path, db: Session) -> list[int]:
+    """把被斜杠拆开的番剧目录并回媒体库根下,返回认回来的 bgm_id。
+
+    目标文件夹已经存在就不动,避免两部番叠到一起。
+    外层空目录删不掉时把文件搬回去,不留下一半新一半旧。
+    """
+    recovered: list[int] = []
+    try:
+        with os.scandir(library_root) as it:
+            tops = [Path(entry.path) for entry in it if entry.is_dir(follow_symlinks=False)]
+    except OSError as e:
+        print(f"[SCAN] 检查被斜杠拆开的目录失败: {e}")
+        return recovered
+
+    root = library_root.resolve()
+    for top in tops:
+        found = _find_split_bgm_folder(top)
+        if not found:
+            continue
+        title, bgm_id, leaf = found
+        new_name = rename_engine.build_anime_folder_name(title, bgm_id)
+        dest = library_root / new_name
+        if dest.exists():
+            print(f"[SCAN] 斜杠拆开的目录无法合并，目标已存在: {new_name}")
+            continue
+        try:
+            old_prefix = leaf.resolve().relative_to(root).as_posix()
+        except (OSError, ValueError) as e:
+            print(f"[SCAN] 斜杠目录不在媒体库内,跳过: {leaf}: {e}")
+            continue
+        parents: list[Path] = []
+        parent = leaf.parent
+        while (
+            parent != library_root
+            and parent != root
+            and parent != parent.parent
+            and len(parents) < 8
+        ):
+            parents.append(parent)
+            if parent == top or parent.resolve() == top.resolve():
+                break
+            parent = parent.parent
+        try:
+            leaf.rename(dest)
+        except OSError as e:
+            print(f"[SCAN] 合并斜杠目录失败 {old_prefix} -> {new_name}: {e}")
+            continue
+        if not _remove_empty_parents(parents, library_root):
+            try:
+                dest.rename(leaf)
+            except OSError as e:
+                print(f"[SCAN] 空目录删不掉，文件已在 {new_name}，也搬不回去: {e}")
+            else:
+                print(f"[SCAN] 空目录删不掉，已放弃合并: {old_prefix}")
+                continue
+        _retarget_split_folder_rows(db, top.name, old_prefix, new_name, bgm_id)
+        recovered.append(bgm_id)
+        print(f"[SCAN] 已合并被斜杠拆开的目录: {old_prefix} -> {new_name}")
+    if recovered:
+        db.flush()
+    return recovered
+
+
 @router.get("/library/scan")
 async def scan_and_update_library(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     """
@@ -1304,6 +1486,10 @@ async def scan_and_update_library(background_tasks: BackgroundTasks, db: Session
     if not library_root.exists():
         print(f"警告：目标路径 {library_root} 不存在，请检查设置页面配置！")
         return {"message": f"Library root {library_root} does not exist.", "added": [], "current_total": 0}
+
+    # 标题里的 / 会被 Windows 拆成两层目录,先并回去再按顶层名字认 [bgm-id]。
+    for bgm_id in repair_split_bgm_folders(library_root, db):
+        background_tasks.add_task(_update_anime_details_from_bgm_task, bgm_id)
 
     # 一次os.scandir同时拿到子目录名和各自mtime:scandir的entry.stat()走的是目录读取时
     # 已缓存的元数据,避免了原先"iterdir列目录 + 再对每部番单独Path.stat()"的N次额外stat
