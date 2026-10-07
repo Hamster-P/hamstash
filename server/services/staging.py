@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 import os
 
 import rename_engine
-from models import AnimeFolder, RenamedFile, StandaloneMedia
+from models import AnimeFolder, RenamedFile, StandaloneMedia, SubscriptionRule
 
 RSS_FOLDER = "anime-hub"  # 我们在qBittorrent的RSS订阅目录树里统一挂在这个文件夹下
 ORGANIZE_TAG = "hub-organized"  # 打上这个标签代表后台整理任务已经处理过这个种子
@@ -60,6 +60,35 @@ def upsert_anime_folder(
         )
         db.add(folder)
     db.commit()
+
+
+def retarget_season_downloads(
+    db: Session, season_bgm_id: int, main_bgm_id: int, anime_title: str,
+) -> None:
+    """归属改了之后，进行中的下载仍记着提交时的系列根，整理时会把旧文件夹建回来。
+
+    只改这一季的目的地。staging_folder 不动：种子还在原来的暂存目录里，
+    靠这列才能认出来，下一轮整理再搬进新的媒体库文件夹。
+    订阅上的系列根也要改，否则下一次轮询会把旧目的地写回去。
+    """
+    folders = (
+        db.query(AnimeFolder)
+        .filter(AnimeFolder.season_bgm_id == season_bgm_id)
+        .all()
+    )
+    for row in folders:
+        row.main_bgm_id = main_bgm_id
+        row.anime_title = anime_title
+    rules = (
+        db.query(SubscriptionRule)
+        .filter(SubscriptionRule.bgm_id == season_bgm_id)
+        .all()
+    )
+    for rule in rules:
+        rule.main_bgm_id = main_bgm_id
+        rule.anime_title = anime_title
+    if folders or rules:
+        db.commit()
 
 
 def upsert_renamed_file(

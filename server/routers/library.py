@@ -871,6 +871,32 @@ def _norm_rel(path: str) -> str:
     return (path or "").replace("\\", "/")
 
 
+def delete_renamed_files_at(db: Session, removed: str, *, whole_folder: bool) -> int:
+    """删掉目标路径落在已删除文件上的整理记录。
+
+    留着 status=done 时,同一条种子再整理会直接跳过,删掉的集补不回来。
+    库里的路径有正斜杠也有反斜杠,按归一化后的路径比,不用 LIKE。
+    """
+    removed_norm = _norm_rel(removed).strip("/")
+    if not removed_norm:
+        return 0
+    prefix = removed_norm + "/"
+    rows = (
+        db.query(models.RenamedFile)
+        .filter(models.RenamedFile.target_relative_path.isnot(None))
+        .all()
+    )
+    gone = 0
+    for row in rows:
+        norm = _norm_rel(row.target_relative_path).strip("/")
+        hit = norm == removed_norm or (whole_folder and norm.startswith(prefix))
+        if not hit:
+            continue
+        db.delete(row)
+        gone += 1
+    return gone
+
+
 class StandaloneAddRequest(BaseModel):
     library_folder: str
     rel_path: str
@@ -1132,9 +1158,8 @@ async def _regroup_media_impl(req: RegroupRequest, db: Session):
     new_root = auto_root if req.restore_auto else (req.target_root_bgm_id or req.bgm_id)
 
     fallback = _norm_rel(req.rel_paths[0]).split("/")[0]
-    new_folder = rename_engine.build_anime_folder_name(
-        _title_for_bgm_id(db, new_root, fallback), new_root
-    )
+    new_title = _title_for_bgm_id(db, new_root, fallback)
+    new_folder = rename_engine.build_anime_folder_name(new_title, new_root)
 
     # 先落归属:即使下面搬文件中途失败,归属本身已经是用户要的状态,
     # 重试这个操作是幂等的(已经搬过去的文件不会再出现在rel_paths里)。
@@ -1146,6 +1171,10 @@ async def _regroup_media_impl(req: RegroupRequest, db: Session):
         bgm_series_cache.clear_group_override(db, req.bgm_id)
     else:
         bgm_series_cache.set_group_override(db, req.bgm_id, new_root)
+
+    # 进行中的下载和这条订阅的下一集，跟着新归属走，不再落回旧文件夹。
+    from services.staging import retarget_season_downloads
+    retarget_season_downloads(db, req.bgm_id, new_root, new_title)
 
     # 字幕要跟着视频一起搬,否则搬完就成了没字幕的孤儿文件。按源文件夹缓存一份
     # 完整文件清单(含非视频文件),交给rename_engine那套"同目录+同文件名主干"的
@@ -1732,6 +1761,9 @@ def delete_anime(folder_name: str, db: Session = Depends(get_db)):
         models.StandaloneMedia.library_folder == folder_name
     ).delete(synchronize_session=False)
 
+    # 整理记录还写着 done 的话,同一条种子再入库会跳过这些文件。
+    delete_renamed_files_at(db, folder_name, whole_folder=True)
+
     db.delete(media)
     db.commit()
     return {"status": "success", "folder_name": folder_name}
@@ -1780,6 +1812,9 @@ def delete_episode(req: EpisodeDeleteRequest, db: Session = Depends(get_db)):
     db.query(models.StandaloneMedia).filter(
         models.StandaloneMedia.rel_path == _norm_rel(req.rel_path)
     ).delete(synchronize_session=False)
+
+    # 只删指向这一集的整理记录。同一种子的其他集还在,不能整表清。
+    delete_renamed_files_at(db, req.rel_path, whole_folder=False)
 
     # "未看集数"角标:这一刻精确知道少了1个文件,直接算术-1,不用等下次扫描——
     # 只在当前值非None时才减(是None说明还没被扫过,留给/library/scan或详情页去补,
