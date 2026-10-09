@@ -18,6 +18,7 @@ from services.bgm_series_cache import (
     set_group_override,
 )
 from services.common import get_setting
+from services.rss_season_complete import torrent_hash_of
 from services.staging import staging_folder, upsert_anime_folder
 from services.rss_poller import poll_subscription_task
 
@@ -290,6 +291,8 @@ async def execute_download(
                 fansub_name=item.fansub_name,
                 target_full_path=None,  # 实际路径由后台整理任务处理完之后才能确定
                 status=status,
+                bgm_id=payload.bgm_id,
+                info_hash=torrent_hash_of(None, item.magnet),
             )
             db.add(task)
             db.commit()

@@ -22,7 +22,7 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import func, or_
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 import config_store
@@ -328,15 +328,10 @@ def resolve_landed_bgm_id(db: Session, current_relative_path: str) -> int | None
     走的是确定性链路,不做标题模糊匹配:原始种子名写的是繁体「奈葉」、Bangumi 存的是
     简体「奈叶」,差一个字,子串匹配必然落空(项目里也没有引入简繁转换)。
 
-        RenamedFile.torrent_hash -> RssMatchedItem -> SubscriptionRule.bgm_id
+        RenamedFile.torrent_hash -> 这个种子提交时的条目
 
-    两个查找键都要试,因为各源填的字段不一样(实测用户库:nyaa 的 info_hash 347/347
-    全填;animegarden 16/16 全为空,哈希只出现在 magnet 的 btih 里)。两条都走之后,
-    磁盘上真实存在的文件 100% 能反查到。
-
-    **单次下载(非订阅)反查不到**:download_task 没有 bgm_id 列,它的 anime_title 跟
-    anime_folder 也对不上(实测 join 到 0 行),RenamedFile 更没有记过暂存目录。
-    这种情况返回 None,调用方保持现状、不猜——宁可少提一条建议。
+    单次下载记在 DownloadTask.bgm_id,RSS 记在 SubscriptionRule.bgm_id。
+    升级前推送、两处都没有记录的旧种子返回 None,调用方保持现状、不猜。
     """
     # target_relative_path 历史上两种分隔符都存过(见_same_relpath),两种形态都查一次,
     # 不去动大小写(POSIX下大小写有意义,跟_same_relpath保持同一取向)。
@@ -356,32 +351,10 @@ def resolve_landed_bgm_id(db: Session, current_relative_path: str) -> int | None
 
 
 def _bgm_id_by_torrent_hash(db: Session, torrent_hash: str) -> int | None:
-    """种子哈希 -> 当初是按哪个Bangumi条目订阅下载的。见resolve_landed_bgm_id的说明。"""
-    info_hash = (torrent_hash or "").strip().lower()
-    if not info_hash:
-        return None
+    """种子哈希 -> 当初是按哪个Bangumi条目下载的。见resolve_landed_bgm_id的说明。"""
+    from services.staging import resolve_torrent_season_bgm_id
 
-    matched = (
-        db.query(models.RssMatchedItem)
-        .filter(func.lower(models.RssMatchedItem.info_hash) == info_hash)
-        .first()
-    )
-    if matched is None:
-        # animegarden 这类源不填 info_hash(实测16/16全为空),哈希只在磁力链接的btih段里
-        matched = (
-            db.query(models.RssMatchedItem)
-            .filter(models.RssMatchedItem.magnet.ilike(f"%btih:{info_hash}%"))
-            .first()
-        )
-    if matched is None:
-        return None
-
-    rule = (
-        db.query(models.SubscriptionRule)
-        .filter(models.SubscriptionRule.id == matched.subscription_id)
-        .first()
-    )
-    return rule.bgm_id if rule else None
+    return resolve_torrent_season_bgm_id(db, torrent_hash, fallback=None)
 
 
 def _landed_bgm_id_lookup(db: Session) -> dict[str, int]:

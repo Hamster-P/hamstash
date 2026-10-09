@@ -61,6 +61,11 @@ class DownloadTask(Base):
     fansub_name = Column(String, nullable=True)
     target_full_path = Column(String, nullable=True)  # 预期改名后的完整路径(预览值)
     status = Column(String, default="已推送")  # 已推送/下载中/已完成/已改名
+    # 提交时选中的季度条目。AnimeFolder.season_bgm_id 会被同文件夹的后一次提交盖掉，
+    # 整理这个种子时以这里为准，不能再读文件夹上的那一列。
+    bgm_id = Column(Integer, nullable=True)
+    # 磁力 btih 归一成 40 位十六进制，对上 qBittorrent 的种子哈希。Base32 也先转成这一种。
+    info_hash = Column(String, nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 class AppSetting(Base):
@@ -87,7 +92,9 @@ class AnimeFolder(Base):
     staging_folder = Column(String, unique=True, nullable=False, index=True)  # download_root下的暂存子目录
     anime_title = Column(String, nullable=False)
     main_bgm_id = Column(Integer, nullable=True)   # 系列根ID,决定文件夹归属
-    season_bgm_id = Column(Integer, nullable=True)  # 这一次提交时的季度专属ID,决定季度文字判断+集数偏移量
+    # 这个暂存文件夹最近一次提交的季度条目。同系列各季共用一个文件夹，后一次提交会盖掉它。
+    # 整理某个种子的季号不读这里，读这个种子自己的提交记录（见 resolve_torrent_season_bgm_id）。
+    season_bgm_id = Column(Integer, nullable=True)
     auto_rename = Column(Boolean, default=True)  # False时后台整理任务只搬家不改名,原样保留目录结构(应对BD/合集光盘)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 

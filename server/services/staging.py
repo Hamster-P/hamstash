@@ -5,12 +5,16 @@ RSS_FOLDER/ORGANIZE_TAG是qBittorrent这一侧的两个约定常量，AnimeFolde
 两张表则是"提交下载时预先记好要落到哪、后台整理任务实际处理到哪一步"的持久化记录，
 organize.py/subscription.py都要用，放在一起管理。
 """
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 import os
 
 import rename_engine
-from models import AnimeFolder, RenamedFile, StandaloneMedia, SubscriptionRule
+from models import (
+    AnimeFolder, DownloadTask, RenamedFile, RssMatchedItem, StandaloneMedia, SubscriptionRule,
+)
+from services.rss_season_complete import torrent_hash_of
 
 RSS_FOLDER = "anime-hub"  # 我们在qBittorrent的RSS订阅目录树里统一挂在这个文件夹下
 ORGANIZE_TAG = "hub-organized"  # 打上这个标签代表后台整理任务已经处理过这个种子
@@ -35,8 +39,10 @@ def upsert_anime_folder(
 ) -> None:
     """
     暂存文件夹 -> 番名/系列根ID/季度专属ID/是否自动改名 的对照,供后台整理任务反查使用。
-    main_bgm_id决定文件夹归属(同系列不同季共享同一个值),
-    season_bgm_id是这次提交时的季度专属ID,给季度文字判断和集数偏移量计算用。
+    main_bgm_id决定文件夹归属(同系列不同季共享同一个值)。
+    season_bgm_id只留最近一次提交的季度条目,给没有自己提交记录的旧种子当季号兜底,
+    也给调整归属时按季找到这个文件夹。整理某个种子的季号不读它,
+    见 resolve_torrent_season_bgm_id。
     同一个暂存文件夹如果被再次提交(同一部番又下载了一次,或者调整了auto_rename开关),
     以最新这次为准更新记录。
     """
@@ -60,6 +66,67 @@ def upsert_anime_folder(
         )
         db.add(folder)
     db.commit()
+
+
+def resolve_torrent_season_bgm_id(
+    db: Session, torrent_hash: str, fallback: int | None = None,
+) -> int | None:
+    """这个种子提交时选的 Bangumi 条目。没有记录时返回 fallback。
+
+    同一暂存文件夹只留最近一次提交的 season_bgm_id。第一季还在排队、又提交了第二季时,
+    若整理仍读文件夹上的季号,第一季会被算成第二季,和已经落地的 S02 撞上同一路径,
+    版本相同就整季跳过,文件留在种子原始目录里。
+    单次下载记在 DownloadTask 上,RSS 记在订阅规则上。两条都没有(升级前推送的旧任务)
+    才退回文件夹上的最近一次提交。
+    """
+    info_hash = (torrent_hash or "").strip().lower()
+    if not info_hash:
+        return fallback
+
+    task = (
+        db.query(DownloadTask)
+        .filter(
+            func.lower(DownloadTask.info_hash) == info_hash,
+            DownloadTask.bgm_id.isnot(None),
+        )
+        .order_by(DownloadTask.id.desc())
+        .first()
+    )
+    if task is not None:
+        return task.bgm_id
+
+    matched = (
+        db.query(RssMatchedItem)
+        .filter(func.lower(RssMatchedItem.info_hash) == info_hash)
+        .order_by(RssMatchedItem.id.desc())
+        .first()
+    )
+    if matched is None:
+        matched = (
+            db.query(RssMatchedItem)
+            .filter(RssMatchedItem.magnet.ilike(f"%btih:{info_hash}%"))
+            .order_by(RssMatchedItem.id.desc())
+            .first()
+        )
+    if matched is None:
+        # 动漫花园的 info_hash 常为空,磁力里的 btih 又经常是 Base32,用十六进制对不上。
+        for row in (
+            db.query(RssMatchedItem)
+            .filter(RssMatchedItem.info_hash.is_(None), RssMatchedItem.magnet.isnot(None))
+            .order_by(RssMatchedItem.id.desc())
+        ):
+            if torrent_hash_of(None, row.magnet) == info_hash:
+                matched = row
+                break
+    if matched is not None:
+        rule = (
+            db.query(SubscriptionRule)
+            .filter(SubscriptionRule.id == matched.subscription_id)
+            .first()
+        )
+        if rule is not None and rule.bgm_id is not None:
+            return rule.bgm_id
+    return fallback
 
 
 def retarget_season_downloads(

@@ -30,6 +30,7 @@ from services.staging import (
     find_recorded_version_at_target,
     get_current_version_at_target,
     has_done_record_at_target,
+    resolve_torrent_season_bgm_id,
     upsert_renamed_file,
     upsert_standalone_media,
 )
@@ -185,18 +186,21 @@ async def _resolve_organize_context(db: Session, torrent: dict) -> dict | None:
     }
 
 
-async def _resolve_season_context(db: Session, folder: AnimeFolder) -> dict:
-    """算这部番这一季的集数偏移量/季度文字提示/平台/季度序号,对种子内所有文件
-    都一样,只需算一次复用。特意不放进_resolve_organize_context里一起算——只有
-    确定要改名内部文件(auto_rename开着)时才用得到,"只搬家不改名"的种子
-    (BD原盘/合集光盘)在_organize_single_torrent里会提前return,不会走到这里,
-    省一轮不必要的Bangumi请求。
+async def _resolve_season_context(
+    db: Session, folder: AnimeFolder, season_bgm_id: int | None,
+) -> dict:
+    """算这个种子这一季的集数偏移量/季度文字提示/平台/季度序号。种子内各文件
+    共用这一份,文件名自带别的季号时再逐个覆盖(见 _preview_files_for_organize)。
+    season_bgm_id 是这个种子提交时选的条目,不是文件夹上最近一次提交的那一列。
+    特意不放进_resolve_organize_context里一起算——只有确定要改名内部文件
+    (auto_rename开着)时才用得到,"只搬家不改名"的种子(BD原盘/合集光盘)
+    在_organize_single_torrent里会提前return,不会走到这里,省一轮Bangumi请求。
     """
     season_hint = folder.anime_title
     platform = None
-    if folder.season_bgm_id:
+    if season_bgm_id:
         try:
-            season_detail = await bangumi_client.get_subject_detail(folder.season_bgm_id)
+            season_detail = await bangumi_client.get_subject_detail(season_bgm_id)
             season_hint = season_detail.get("name_cn") or season_detail.get("name") or folder.anime_title
             platform = season_detail.get("platform")
         except Exception as e:
@@ -209,10 +213,10 @@ async def _resolve_season_context(db: Session, folder: AnimeFolder) -> dict:
     # 查询失败(网络问题/这一部本来就不在真季名单里)时返回None,rename_engine那边会
     # 按platform分流到剧场版/Season 00,不会退回旧的文本猜测逻辑。
     season_ordinal = None
-    if folder.season_bgm_id and folder.main_bgm_id:
+    if season_bgm_id and folder.main_bgm_id:
         try:
             season_ordinal = await resolve_tv_season_ordinal_cached(
-                db, folder.season_bgm_id, folder.main_bgm_id
+                db, season_bgm_id, folder.main_bgm_id
             )
         except Exception as e:
             print(f"[ORGANIZE] 计算季度序号失败,按platform分流继续: {e}")
@@ -467,7 +471,7 @@ async def _apply_organize_plan(
     """执行_preview_files_for_organize算好的改名预览:逐个处理版本冲突判定、
     实际调用qBittorrent renameFile/deleteTorrent、字幕跟随改名,并把每个文件的
     结果写回RenamedFile表。library_folder/source_bgm_id/main_bgm_id 用于把剧场版/OVA
-    文件登记进"剧场版模式"列表——source_bgm_id是下载时选的条目(folder.season_bgm_id),
+    文件登记进"剧场版模式"列表——source_bgm_id是这个种子提交时选的条目,
     main_bgm_id是家族根(folder.main_bgm_id),两个一起交给_resolve_standalone_bgm_id
     去判断该用哪个bgm_id当这张卡的封面来源,不是无条件直接用source_bgm_id。"""
     for item in plans:
@@ -718,8 +722,9 @@ async def _organize_single_torrent(db: Session, torrent: dict) -> None:
 
     # 改名预览是纯计算 + Bangumi 查询,不依赖种子是否已搬库——特意放在 _move_to_library
     # 之前算好,好让下面的整体版本预检能在"文件还没进媒体库"时就拦下追不上现状的种子。
-    # 集数偏移量、季度提示文本、季度序号对种子内所有文件都一样,算一次复用即可。
-    season_context = await _resolve_season_context(db, folder)
+    # 季号按这个种子自己的提交记录算,不读文件夹上被后一次提交盖掉的 season_bgm_id。
+    season_bgm_id = resolve_torrent_season_bgm_id(db, torrent_hash, folder.season_bgm_id)
+    season_context = await _resolve_season_context(db, folder, season_bgm_id)
     plans = _preview_files_for_organize(
         db, folder, context["library_root"], season_context, torrent, video_paths
     )
@@ -751,7 +756,7 @@ async def _organize_single_torrent(db: Session, torrent: dict) -> None:
                 # 接着往下整理,不会卡死在"未知暂存目录"
 
     await _apply_organize_plan(
-        db, torrent_hash, all_paths, plans, library_folder, folder.season_bgm_id, folder.main_bgm_id
+        db, torrent_hash, all_paths, plans, library_folder, season_bgm_id, folder.main_bgm_id
     )
     _refresh_episode_count(db, library_folder)
 
