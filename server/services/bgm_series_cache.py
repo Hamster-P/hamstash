@@ -214,7 +214,9 @@ def _folder_title_for_root(
 #   1 = 最初版
 #   2 = 「不同演绎」排除规则改成看首播先后 + 算不出季号的成员改用作品名目录
 #   3 = 拆播分段按标题里的显式季号合并(Re:Zero 第三季/第四季各拆两段)
-SEASON_ALGO_VERSION = 3
+#   4 = 季度资格只沿「前传/续集/主线故事」链从根节点传递,不再被旧作品内部的
+#       续集关系绕回来冒领(乱马1/2 2024新版第三季此前被顶成 Season 05)
+SEASON_ALGO_VERSION = 4
 _ALGO_VERSION_SETTING_KEY = "season_algo_version"
 
 # "季度编号规则刚变过,建议跑一次修复媒体库"的一次性提示标记。

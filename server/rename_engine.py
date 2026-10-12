@@ -573,17 +573,27 @@ def _normalize_absolute_episode(
     (episode_offset)就是真实的季内集数。
 
     没超上限的一律原样保留,不做任何猜测(实测无职转生第二季E20、第三季E06都是
-    正常的季内编号,不能动)。episode_offset/season_total_eps任一为0或缺失时
-    (Bangumi没有集数数据、或者这是第一季没有前序)同样原样保留——宁可漏改,
-    也不能靠猜把本来正确的编号改坏。
+    正常的季内编号,不能动)。episode_offset为0或缺失时(这是第一季,没有前序
+    可减)同样原样保留——宁可漏改,也不能靠猜把本来正确的编号改坏。
+
+    season_total_eps(这一季自己的总集数)缺失/为0时——新开播的季还没完结,
+    Bangumi的total_episodes经常是0——不再像以前那样整个放弃换算:episode_offset
+    本身是"前序已完结各季的累计集数",只要它>0就是可信数据,不依赖这一季自己是
+    否已完结。跳过"raw_episode<=season_total_eps"这道短路判断,直接按超出offset
+    与否换算,新开播第一周就能正确识别字幕组的跨季绝对编号(实测:乱马1/2新版
+    第三季刚开播时season_total_eps还是0,字幕组发的是从新版第一季算起的绝对编号
+    "26",换算前一直原样显示成不存在的"E26",换算后正确显示"E02")。
+    代价:如果这一季自己恰好有一部比episode_offset还长的长篇(罕见),且字幕组
+    偏偏用的是季内编号而不是绝对编号,会被误减——两害相权,新开播季的集数编号
+    错误更常见、更影响观感,优先修这头。
 
     半集(12.5/48.5)同样走这条换算——实测案例:转生史莱姆第三季发的是48.5,
     这一季自己没有48集,减掉前序累计才是真实的季内编号。所以入参/返回都是float,
     不能收窄成int。
     """
-    if episode_offset <= 0 or not season_total_eps or season_total_eps <= 0:
+    if episode_offset <= 0:
         return raw_episode
-    if raw_episode <= season_total_eps:
+    if season_total_eps and season_total_eps > 0 and raw_episode <= season_total_eps:
         return raw_episode
     candidate = raw_episode - episode_offset
     return candidate if candidate >= 1 else raw_episode

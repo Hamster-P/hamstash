@@ -282,7 +282,15 @@ async def resolve_family_season_map(main_bgm_id: int | None) -> dict[int, dict]:
                 if relation_name == "不同演绎":
                     different_rendition.setdefault(current, set()).add(rid)
                     different_rendition.setdefault(rid, set()).add(current)
-                if relation_name in _SEASON_ELIGIBLE_RELATIONS:
+                # 资格只能沿着"前传/续集/主线故事"这条链从根节点一路传递下来——
+                # current自己必须已经有资格,这条边才能把资格递给rid。否则会被
+                # "资格漏斗"绕过:比如乱马1/2的2024新版(root)跟1989原版之间是
+                # "不同演绎"(不给资格),但1989原版自己内部有"续集"连去"热斗篇"、
+                # "热斗篇"又有"前传"连回1989原版——如果不检查current的资格,
+                # 1989原版会通过"热斗篇→前传→自己"这条边绕回来意外拿到资格,
+                # 把两部跟新版毫不相干的1989老分段也当成"季",把2024年才开播的
+                # 新版顶成Season 03/04/05(实测案例:新版第三季被错编成Season 05)。
+                if current in season_eligible and relation_name in _SEASON_ELIGIBLE_RELATIONS:
                     season_eligible.add(rid)
                 if rid not in visited:
                     next_layer.add(rid)
