@@ -47,18 +47,14 @@ try {
 }
 
 Write-Host "== 2/3 Preparing NSSM ==" -ForegroundColor Cyan
+# 不再现场从 nssm.cc 下载——那个站点不受我们控制,隔三差五 503 导致构建失败。
+# nssm 2.24 这个版本多年没变过,直接把二进制存进仓库(client/src-tauri/vendor/nssm.exe)。
 $nssmExe = Join-Path $backendOutDir "nssm.exe"
-if (-not (Test-Path $nssmExe)) {
-    $nssmZip = Join-Path $env:TEMP "nssm-release.zip"
-    Invoke-WebRequest -Uri "https://nssm.cc/release/nssm-2.24.zip" -OutFile $nssmZip
-    $nssmExtractDir = Join-Path $env:TEMP "nssm-extract"
-    if (Test-Path $nssmExtractDir) { Remove-Item -Recurse -Force $nssmExtractDir }
-    Expand-Archive -Path $nssmZip -DestinationPath $nssmExtractDir -Force
-    Copy-Item (Join-Path $nssmExtractDir "nssm-2.24\win64\nssm.exe") $nssmExe
-    Write-Host "NSSM downloaded to $nssmExe"
-} else {
-    Write-Host "NSSM already present, skipping download"
+$vendoredNssm = Join-Path $clientDir "src-tauri\vendor\nssm.exe"
+if (-not (Test-Path $vendoredNssm)) {
+    throw "找不到 $vendoredNssm -- 仓库里的 vendor/nssm.exe 不见了?"
 }
+Copy-Item $vendoredNssm $nssmExe -Force
 
 Write-Host "== 3/3 Building client installer (Tauri) ==" -ForegroundColor Cyan
 # 加载本地签名环境变量(scripts\sign-env.local.ps1,被 .gitignore 忽略、只在本机)——

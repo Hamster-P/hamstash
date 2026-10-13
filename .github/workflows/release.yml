@@ -36,14 +36,13 @@ jobs:
             --distpath "../client/src-tauri/backend" --workpath build --specpath . --noconfirm `
             run_service.py
 
-      # 2/3 下载 nssm.exe 到 backend/(对应 build-release.ps1 第 2 步)
-      - name: Fetch NSSM
+      # 2/3 nssm.exe 拷到 backend/(对应 build-release.ps1 第 2 步)
+      # 之前这里是现场从 nssm.cc 下载——那个站点不受我们控制,隔三差五 503,
+      # 构建跟着失败。nssm 2.24 这个版本多年没变过,直接把二进制存进仓库
+      # (client/src-tauri/vendor/nssm.exe),不再依赖它的可用性。
+      - name: Copy vendored NSSM
         shell: pwsh
-        run: |
-          $zip = "$env:TEMP\nssm.zip"
-          Invoke-WebRequest -Uri "https://nssm.cc/release/nssm-2.24.zip" -OutFile $zip
-          Expand-Archive -Path $zip -DestinationPath "$env:TEMP\nssm-extract" -Force
-          Copy-Item "$env:TEMP\nssm-extract\nssm-2.24\win64\nssm.exe" "client/src-tauri/backend/nssm.exe"
+        run: Copy-Item "client/src-tauri/vendor/nssm.exe" "client/src-tauri/backend/nssm.exe"
 
       # 3/3 前端依赖 + Rust 工具链 + tauri build/签名/发布
       # Node 20 已于 2026-04-30 EOL,不再有安全补丁,固定到当前 LTS。

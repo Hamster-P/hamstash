@@ -89,7 +89,7 @@ jobs:
           workspaces: client/src-tauri
 
       # tauri.conf.json 的 bundle.resources 里有 backend/hamstash-server/**/* 和
-      # backend/nssm.exe,它们是 release.yml 里 PyInstaller + 下载 NSSM 生成的,没入库。
+      # backend/nssm.exe,它们是 release.yml 里 PyInstaller 打包 + 拷贝 vendor/nssm.exe 生成的,没入库。
       # tauri 的 build script 匹配不到这个 glob 就直接失败。这里只是做**类型/编译检查**,
       # 不打包,所以补两个占位文件即可,不必真的跑一遍后端打包(那要一两分钟)。
       - name: Stub bundle resources (build script 要求这些路径存在)
