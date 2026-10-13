@@ -76,6 +76,13 @@ _EXTRA_PATTERN = re.compile(
     r"trailer|teaser|interview|spot|bonus|tokuten)\d{0,2}(?:v\d{1,2})?(?![a-z0-9=])|预告",
     re.IGNORECASE,
 )
+# 日文BD花絮常见写法:"ノンクレジット"(无字幕版/无credit版)+"オープニング/エンディング"
+# (OP/ED)。日文全假名写法命中不了上面那堆罗马字marker,不拦住就会被当成正片走
+# S0xExx编号(实测『不死不幸』"第2クール ノンクレジットエンディング映像.mkv":anitopy
+# 解不出集数,退回裸数字兜底从"第2クール"里抓出一个假集数"02",跟真正的第2集撞车)。
+# "ノンクレジット"单独出现已经是很强的信号(花絮以外的内容不会这么写),不需要再跟
+# OP/ED搭配判断。
+_EXTRA_JP = re.compile(r"ノンクレジット|ノークレジット")
 # 合集包里"[SP01]..[SPNN]"这种"方括号包裹+序号"的基本都是特典短片(菜单/CM/预告集锦),
 # 不是独立OVA条目。单独的"SP"(无方括号,如"某番 SP.mkv")仍走OVA_MARKERS的OVA分支不变。
 _BRACKET_SP_TAG = re.compile(r"\[sp\d+\]", re.IGNORECASE)
@@ -100,7 +107,7 @@ def classify_media_type(torrent_title: str, platform: str | None = None) -> str:
     # 词形marker只在剥掉字幕组段之后的正文里找;方括号标签([M28]/[SP01])是结构化
     # 写法,位置本来就可能在最前面,仍然对整串匹配。
     body = _strip_group_prefix(torrent_title)
-    if _EXTRA_PATTERN.search(body.lower()) or _BRACKET_SP_TAG.search(lowered_full):
+    if _EXTRA_PATTERN.search(body.lower()) or _BRACKET_SP_TAG.search(lowered_full) or _EXTRA_JP.search(body):
         return "extra"
 
     # Bangumi官方标注为TV的条目,其文件不可能是剧场版,跳过movie猜测。
@@ -298,7 +305,12 @@ _ZH_EPISODE_RE = re.compile(r"第\s*(\d{1,4})\s*[话話集]")
 _BRACKET_EPISODE_RE = re.compile(r"[\[【]\s*(?:第\s*)?(\d{1,4})\s*[话話集]?\s*[\]】]")
 # 裸数字兜底时,紧跟这些字的数字不是集数。
 # 「个/人」是作品名里的量词,比如「100个女朋友」「100人の彼女」。
-_NOT_EPISODE_AFTER = re.compile(r"^\s*[月年季期部卷话話集个人]")
+# 「クール」是日文"季度分段"单位(第2クール=第2库尔/下半季),"第2クール"这类
+# 写法不带"话/集"所以前面几条专用正则都不命中,靠这里拦住裸数字兜底,不然会把
+# "2"错当成集数(实测『不死不幸』"第2クール ノンクレジットエンディング映像.mkv"——
+# 这个文件本身已经被_EXTRA_JP识别成花絮不会走到这里,这里是给同样含"第Nクール"
+# 但不是花絮、anitopy解不出集数的其他文件名兜底,双保险不嫌多)。
+_NOT_EPISODE_AFTER = re.compile(r"^\s*(?:[月年季期部卷话話集个人]|クール)")
 # 「100-nin」这种罗马音量词,连字符后面是字母,不是集数。
 _NOT_EPISODE_HYPHEN_WORD = re.compile(r"^-\s*[A-Za-z]")
 # 「01-12」「01～12」是合集区间,两头都不是某一集。

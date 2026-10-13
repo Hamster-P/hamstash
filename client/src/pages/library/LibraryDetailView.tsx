@@ -265,13 +265,22 @@ export default function LibraryDetailView({
             )}
             {manageMode && anime.bgm_id && detail && (
               <button
-                onClick={() =>
+                onClick={() => {
+                  // 整部番的bgm_id只是个默认猜测——文件夹里可能只有一个桶,而且那个桶
+                  // 查到了自己真实的归属(典型:衍生新番被错误收编进原作文件夹,桶里
+                  // 全部文件按下载来源反查都指向那部衍生作品自己,见后端
+                  // routers/library.py::get_anime_seasons_and_episodes的反查逻辑)。
+                  // 这种情况下"整个番"按钮点出来的候选也该是那部衍生作品自己,
+                  // 不该一律用anime.bgm_id、把用户导去一个跟这批文件毫不相干的家族。
+                  const bucketNames = Object.keys(detail.seasons);
+                  const singleBucketOwner =
+                    bucketNames.length === 1 ? detail.season_owners?.[bucketNames[0]] : null;
                   onOpenRegroup({
                     label: `整个「${anime.display_title || anime.folder_name}」`,
                     relPaths: Object.values(detail.seasons).flat().map((ep) => ep.rel_path),
-                    bgmId: anime.bgm_id,
-                  })
-                }
+                    bgmId: singleBucketOwner?.bgm_id ?? anime.bgm_id,
+                  });
+                }}
                 title="调整归属…"
                 className="flex items-center gap-1.5 rounded-md border border-border bg-ink/60 px-3 py-1.5 font-mono text-xs text-muted backdrop-blur transition-colors hover:border-vermillion hover:text-vermillion"
               >

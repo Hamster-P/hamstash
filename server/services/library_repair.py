@@ -545,31 +545,41 @@ async def scan_rename_mismatches(
         proposed_targets_seen: dict[str, str] = {}
 
         for bucket_name, episodes in structure.items():
-            if bucket_name in _SKIPPED_BUCKETS:
-                continue
-
-            season_num = _parse_season_bucket(bucket_name)
-            if season_num is not None and season_num != "00":
-                # "Season NN"桶(NN!="00"):不信任文件夹上的数字,拿这部番真实的季度表
-                # 校验/映射一次。
-                effective = _resolve_effective_season(season_num, season_table)
-                if effective is None:
-                    continue  # 完全拿不到季度表(网络失败等),这一桶不动
-                info = season_table[effective]
-                args = {
-                    "season_ordinal": effective,
-                    "platform": info["platform"],
-                    "episode_offset": info["episode_offset"],
-                    "season_total_eps": info["eps"],
-                }
-                bucket_season_hint = info["name"]
-                is_season_bucket = True
-            else:
+            # "Specials/Others"是"认不出来"的兜底桶,不整体跳过——桶里个别文件可能
+            # 查得到真实的landed bgm_id(典型:衍生新番刚被"调整归属"拆成独立一部,
+            # 物理文件还留在旧的、现在已经不认识的子目录名下,比如"某暗部的少女共栖"
+            # 这个目录名本身就是正确的作品名,只是它不在这部番自己家族的folder_bucket
+            # 白名单里,扫描器认不出来、折叠进了这个桶)。这里不预先算bucket级的args,
+            # 逐文件靠landed_bgm_lookup反查,查不到的文件维持原有的保守行为、各自跳过,
+            # 不再因为桶名认不出就整桶放弃。
+            is_rescue_bucket = bucket_name in _SKIPPED_BUCKETS
+            if is_rescue_bucket:
                 is_season_bucket = False
-                args = _bucket_recompute_args(bucket_name, extra_buckets)
-                if args is None:
-                    continue
-                bucket_season_hint = None  # 逐文件解析,见下面_resolve_work_title
+                args = None
+                bucket_season_hint = None
+            else:
+                season_num = _parse_season_bucket(bucket_name)
+                if season_num is not None and season_num != "00":
+                    # "Season NN"桶(NN!="00"):不信任文件夹上的数字,拿这部番真实的季度表
+                    # 校验/映射一次。
+                    effective = _resolve_effective_season(season_num, season_table)
+                    if effective is None:
+                        continue  # 完全拿不到季度表(网络失败等),这一桶不动
+                    info = season_table[effective]
+                    args = {
+                        "season_ordinal": effective,
+                        "platform": info["platform"],
+                        "episode_offset": info["episode_offset"],
+                        "season_total_eps": info["eps"],
+                    }
+                    bucket_season_hint = info["name"]
+                    is_season_bucket = True
+                else:
+                    is_season_bucket = False
+                    args = _bucket_recompute_args(bucket_name, extra_buckets)
+                    if args is None:
+                        continue
+                    bucket_season_hint = None  # 逐文件解析,见下面_resolve_work_title
 
             for ep in episodes:
                 current_full_path = library_root / ep["rel_path"]
@@ -616,6 +626,17 @@ async def scan_rename_mismatches(
                     file_args = _season_args_for_landed_file(
                         db, current_rel, family_root, season_table, landed_bgm_lookup,
                     ) or args
+                elif is_rescue_bucket:
+                    # "Specials/Others"桶:没有bucket级的默认args(args在这里是None),
+                    # 唯一的归位依据就是landed_bgm_lookup反查——查不到/查到的条目不在
+                    # 这部番自己的家族里/算不出季号,都说明这个文件暂时没有权威依据,
+                    # 维持现状不动,不要瞎猜(跟_season_args_for_landed_file自己的四道
+                    # 护栏同一个态度)。
+                    file_args = _season_args_for_landed_file(
+                        db, current_rel, family_root, season_table, landed_bgm_lookup,
+                    )
+                    if file_args is None:
+                        continue
 
                 preview = rename_engine.preview_rename_file(
                     anime_title=anime_title,

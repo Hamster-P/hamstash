@@ -1772,6 +1772,66 @@ def get_anime_seasons_and_episodes(folder_name: str, db: Session = Depends(get_d
             if dates:
                 bucket_dates[bucket] = dates[0]
 
+    # 家族里确实没有这个桶的成员时(典型:衍生新番跟原作家族被Bangumi标注矛盾、
+    # 压根不属于这个家族,见bangumi_family.py相关注释),上面那段按family_root
+    # 查出来的season_owners自然给不出归属——桶名会被折叠成"Specials/Others",
+    # "调整归属"按钮因为season_owners没有这一项,只能回退用整部番的bgm_id当
+    # probe,候选列表里根本找不到这部衍生新番自己(真实案例:"某暗部的少女共栖"
+    # 被收编进"魔法禁书目录"文件夹,但家族遍历正确地不认它是家族成员,详情页却也
+    # 没法把它的真实bgm_id喂给"调整归属"弹窗,陷入两头都"正确"却互相打不通的死角)。
+    # 这里按"这个桶里的文件当初是按哪个条目下载的"反查一次(复用修复媒体库同一套
+    # RenamedFile.torrent_hash -> bgm_id逻辑),桶内文件全部指向同一个bgm_id时,
+    # 就把它也当成这个桶的owner——不要求这个bgm_id在family_root家族里。
+    missing_owner_buckets = [b for b in structure if b not in season_owners]
+    if missing_owner_buckets:
+        from services.library_repair import _bgm_id_by_torrent_hash, _same_relpath
+
+        want_rel_paths = {
+            _same_relpath(ep["rel_path"])
+            for bucket in missing_owner_buckets
+            for ep in structure[bucket]
+        }
+        renamed_rows = (
+            db.query(models.RenamedFile)
+            .filter(
+                models.RenamedFile.target_relative_path.isnot(None),
+                models.RenamedFile.status == "done",
+                models.RenamedFile.torrent_hash.isnot(None),
+            )
+            .all()
+        )
+        landed_bgm_by_relpath: dict[str, int] = {}
+        for row in renamed_rows:
+            key = _same_relpath(row.target_relative_path)
+            if key not in want_rel_paths:
+                continue
+            bgm_id = _bgm_id_by_torrent_hash(db, row.torrent_hash)
+            if bgm_id:
+                landed_bgm_by_relpath[key] = bgm_id
+
+        for bucket in missing_owner_buckets:
+            bgm_ids = {
+                landed_bgm_by_relpath.get(_same_relpath(ep["rel_path"]))
+                for ep in structure[bucket]
+            }
+            if len(bgm_ids) != 1 or None in bgm_ids:
+                continue  # 桶里文件来源不一致/查不到,不猜,保持"认不出"的原有行为
+            owner_bgm_id = bgm_ids.pop()
+            # 这个bgm_id多半从没被任何家族流程算过(衍生新番第一次被反查到就是
+            # 这种状态),AnimeFamilyCache/AnimeCatalog都可能还没有它的名字——
+            # 不强求,拿不到名字也要把bgm_id递给前端(纽带是"调整归属"弹窗自己
+            # 会在打开时联网现查一次家族信息,见list_regroup_candidates)。
+            owner_name = (
+                db.query(models.AnimeFamilyCache.name)
+                .filter(models.AnimeFamilyCache.bgm_id == owner_bgm_id)
+                .scalar()
+                or db.query(models.AnimeCatalog.title)
+                .filter(models.AnimeCatalog.bgm_id == owner_bgm_id)
+                .scalar()
+                or bucket
+            )
+            season_owners[bucket] = {"bgm_id": owner_bgm_id, "name": owner_name}
+
     return {
         "folder_name": folder_name,
         "seasons": structure,
