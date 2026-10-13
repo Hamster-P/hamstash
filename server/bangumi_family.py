@@ -274,13 +274,32 @@ async def resolve_family_season_map(main_bgm_id: int | None) -> dict[int, dict]:
     # 并发查(限流8个,跟get_subject_details_batch同一套节流方式),
     # 一层的耗时约等于这一层里最慢的那一个请求,而不是所有请求耗时总和。
     relations_semaphore = asyncio.Semaphore(8)
+    relations_cache: dict[int, list[dict]] = {}
 
     async def _fetch_relations(bgm_id: int) -> tuple[int, list[dict]]:
+        if bgm_id in relations_cache:
+            return bgm_id, relations_cache[bgm_id]
         async with relations_semaphore:
             try:
-                return bgm_id, await bangumi_client.get_subject_relations(bgm_id)
+                relations = await bangumi_client.get_subject_relations(bgm_id)
             except Exception:
-                return bgm_id, []
+                relations = []
+        relations_cache[bgm_id] = relations
+        return bgm_id, relations
+
+    async def _target_disowns_source(target_id: int, source_id: int) -> bool:
+        """跟resolve_root_subject_id同一道反向校验:对方如果反过来把我方标成
+        "衍生",这条边作废——两边各执一词时,以"被打上衍生标签的那一侧明确表态
+        这不算正篇延续"为准。真实案例:"某暗部的少女共栖"自己声明跟"魔法禁书
+        目录"是"主线故事"(会把整个"魔法禁书目录"家族错误地拉进自己的家族树),
+        但"魔法禁书目录"反过来把它标成"衍生"——不拦住这条边,结果就是给一部
+        完全独立的衍生新番的"调整归属"候选列表里意外塞进一整个不相关的原作家族。
+        """
+        _, target_relations = await _fetch_relations(target_id)
+        return any(
+            r.get("relation") == "衍生" and r.get("id") == source_id
+            for r in target_relations
+        )
 
     current_layer = {main_bgm_id}
     while current_layer and len(visited) < max_family_nodes:
@@ -297,6 +316,12 @@ async def resolve_family_season_map(main_bgm_id: int | None) -> dict[int, dict]:
                     continue
                 rid = r.get("id")
                 if not rid:
+                    continue
+                # 这条边会把rid拉进家族树(不管是不是算季度候选),先反查一次对方
+                # 是不是反过来把我方标成"衍生"——是的话整条边作废,rid既不计入
+                # 家族成员、也不竞选季度序号(还没visited过才需要查,已经在家族里
+                # 的节点说明之前已经通过别的边合法进来过,不用再查一遍)。
+                if rid not in visited and await _target_disowns_source(rid, current):
                     continue
                 if relation_name == "不同演绎":
                     different_rendition.setdefault(current, set()).add(rid)
