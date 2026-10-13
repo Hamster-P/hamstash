@@ -107,9 +107,31 @@ async def resolve_root_subject_id(bgm_id: int, max_depth: int = 20) -> int:
        走进它自己的衍生总集篇里,方向整个走反。
     4. 都没有(或者都已经走过了) -> 这就是系列最早的条目,停止。
 
+    每一跳之前还有一道反向校验:Bangumi对同一条边,两端经常各说各话——
+    实测"某暗部的少女共栖"(537738)自己声明跟"魔法禁书目录"(1014)是"主线故事"
+    (会触发第1条往上跳),但1014指回537738用的却是"衍生"。两边谁更权威无从
+    判断,但这种**反向打成"衍生"的边,等同于家族根的那一侧明确表态"这是外传,
+    不算我的正篇延续"**——沿这条边硬跳过去会把一部完全独立的衍生新番错误地
+    收编进家族顶层文件夹(真实案例:537738会被收编进1014,尽管
+    resolve_family_season_map里537738因为同一条"衍生"边根本进不了家族季度表,
+    两边各执一词、互相矛盾)。所以每次打算跳之前,反查一次目标节点自己的关联
+    列表,目标如果反过来把当前节点标成"衍生",这一跳作废,按优先级改看下一种
+    关系;都作废就停在当前节点,把它当独立的一部。
+
     用visited集合记录走过的所有id,一旦下一跳的目标已经走过,
     视为检测到环,立即停止在当前节点,不再继续跳,避免死循环挂死。
     """
+
+    async def _target_disowns_source(target_id: int, source_id: int) -> bool:
+        try:
+            target_relations = await bangumi_client.get_subject_relations(target_id)
+        except Exception:
+            return False  # 查不到就不拦,维持原有行为(宁可误收编,不要误拦截)
+        return any(
+            r.get("relation") == "衍生" and r.get("id") == source_id
+            for r in target_relations
+        )
+
     current = bgm_id
     visited: set[int] = set()
 
@@ -123,28 +145,25 @@ async def resolve_root_subject_id(bgm_id: int, max_depth: int = 20) -> int:
         except Exception:
             break  # 查询失败不影响主流程,就用当前已知的这个id兜底
 
-        main_story = next(
-            (r for r in relations if r.get("relation") == "主线故事"), None
-        )
-        if main_story and main_story.get("id") not in visited:
-            current = main_story["id"]
-            continue
+        candidates = [
+            next((r for r in relations if r.get("relation") == "主线故事"), None),
+            next((r for r in relations if r.get("relation") == "前传"), None),
+            next((r for r in relations if r.get("relation") == "全集"), None),
+        ]
 
-        prequel = next(
-            (r for r in relations if r.get("relation") == "前传"), None
-        )
-        if prequel and prequel.get("id") not in visited:
-            current = prequel["id"]
-            continue
+        next_current = None
+        for candidate in candidates:
+            if not candidate or candidate.get("id") in visited:
+                continue
+            if await _target_disowns_source(candidate["id"], current):
+                continue  # 对方把我方标成"衍生",不认这一跳,改看优先级更低的关系
+            next_current = candidate["id"]
+            break
 
-        compiled_from = next(
-            (r for r in relations if r.get("relation") == "全集"), None
-        )
-        if compiled_from and compiled_from.get("id") not in visited:
-            current = compiled_from["id"]
-            continue
+        if next_current is None:
+            break  # 都没有/都作废了(或者都已经走过了),此即系列最早的条目
 
-        break  # 都没有(或者都已经走过了),此即系列最早的条目
+        current = next_current
 
     # 兜底:链式回溯落脚点(current)本身应该是一部"看起来像正片"的TV条目——
     # 如果不是(比如落在了一部电影上),说明这个入口自己缺少指回正片的关联声明
