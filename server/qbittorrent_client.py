@@ -2,6 +2,7 @@ import asyncio
 import httpx
 import json
 import os
+import re
 
 import config_store
 from database import SessionLocal
@@ -148,8 +149,68 @@ async def add_torrent(magnet: str, save_path: str | None = None, category: str =
 
     # 注意这里用 files= 而不是 data=
     resp = await _request("post", "/api/v2/torrents/add", files=multipart_fields)
+    if resp.status_code == 409:
+        return await _handle_duplicate_add(magnet, resp)
     resp.raise_for_status()
     return resp.text
+
+
+_MAGNET_HASH_RE = re.compile(r"btih:([a-z0-9]+)", re.IGNORECASE)
+# 只续"还没下完、被暂停/停止"的——这类不续的话会永远卡在半成品状态。
+# 刻意不包含pausedUP/stoppedUP(已经下完、只是暂停做种):下完之后要不要继续
+# 做种是用户自己的选择(省带宽/磁盘之类),我们没理由替用户把它重新打开——
+# 这个分支能走到,本来就代表"文件已经到手"这个目的已经达成,不该附带发
+# 一个用户没要求过的"恢复做种"动作。
+_PAUSED_DOWNLOADING_STATES = {"pausedDL", "stoppedDL"}
+# 真正出故障的状态:续上/重新推送都没用,需要人去qBittorrent里看一眼(缺文件/
+# tracker连不上之类)——这种不能装作成功处理,不然问题被悄悄吞掉,用户永远不知道
+# 这一集其实没有在正常下载。
+_BROKEN_STATES = {"error", "missingFiles"}
+
+
+async def _handle_duplicate_add(magnet: str, original_resp: httpx.Response) -> str:
+    """add_torrent收到409(种子已经在qB会话里)之后的分流处理。
+
+    409本身只说明"这个哈希已经存在",不说明它现在是什么状态——之前统一按"已经
+    达成目的"直接吞掉,对正常下载中/已完成的种子没问题,但如果那个已存在的种子
+    其实卡在"下载中途被暂停"或"出错"状态,会把真正需要处理的情况也悄悄当成功
+    放过,用户看不到任何提示,这一集永远不会真正到手。所以这里按实际状态分三类:
+    - 下载中途被暂停/停止(pausedDL/stoppedDL):帮它续上,按成功处理
+      (续上之后它会自己继续下完)。已经下完只是暂停做种的(pausedUP/stoppedUP)
+      不在此列,见_PAUSED_DOWNLOADING_STATES的说明——那是用户自己的选择,不替用户改。
+    - 出错(缺文件/tracker失败等):续上/重推都没用,原样抛出409,让调用方
+      (services/rss_poller.py)照旧记一条失败——这类真故障值得被看见,
+      不该被这个"避免无限重试误报"的修复连带消音。
+    - 查不到hash/查不到这个种子(极端情况,比如磁力链没有btih段):兜底当成功,
+      没有更多信息可用,维持"宁可漏报也不要对着一个空目标反复报错"的取向。
+
+    没有特意处理的情况:这个已存在的种子根本不在我们自己的"anime-hub"分类下
+    (比如用户在qBittorrent里手动加过同一个哈希)——那样后续的整理流程
+    (services/organize.py只按分类扫)永远不会捞到它,会变成静默的孤儿种子。
+    本可以顺手在这里把分类改过去,但没有这么做:那个种子如果开着自动种子管理
+    (Automatic Torrent Management),改分类会触发qBittorrent把它的文件挪到
+    新分类的默认目录,对一个已经整理好、或者正在下载中的种子来说是更大的破坏——
+    为了修一个"手动在qB里加过同哈希种子"这种边缘场景,搭上"可能把已经下好的
+    文件强制搬家"的风险不值得,这种极端情况留给用户自己在qBittorrent里处理。
+    """
+    match = _MAGNET_HASH_RE.search(magnet)
+    info_hash = match.group(1).lower() if match else None
+    if not info_hash:
+        return "Already in qBittorrent (409, hash unknown), treated as success."
+
+    existing = await get_torrents_by_hashes([info_hash])
+    if not existing:
+        return "Already in qBittorrent (409, but not found by hash), treated as success."
+
+    state = existing[0].get("state", "")
+    if state in _BROKEN_STATES:
+        original_resp.raise_for_status()  # 重新抛出,保留原始409错误信息
+    if state in _PAUSED_DOWNLOADING_STATES:
+        try:
+            await resume_torrent(info_hash)
+        except Exception:
+            pass  # 续传失败不阻断——至少不再误报"失败"刷屏,实际状态留给qB界面自己看
+    return f"Already in qBittorrent (409, state={state}), treated as success."
 
 async def ensure_category(name: str, save_path: str = "") -> None:
     """
