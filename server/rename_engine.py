@@ -442,7 +442,11 @@ def preview_rename(anime_title: str, torrent_title: str, library_root: str):
     # 根据传入的 library_root 自动切分 TV 和 独立电影库
     tv_root = library_root
 
-    anime_folder_name = anime_title
+    # 没有走sanitize的anime_title直接拼进路径/文件名——Windows把"/"当路径分隔符,
+    # "乱马1/2"这种标题会被拆成"乱马1"子目录+"2..."文件,结果整个错位。
+    # 复用build_anime_folder_name(bgm_id传None只返回sanitize后的标题本身)保证
+    # 跟有bgm_id那条路径(preview_rename_file)的sanitize规则一致。
+    anime_folder_name = build_anime_folder_name(anime_title, None)
 
     # 2. 提取集数 (针对 12.5 话做特殊正则兼容)
     episode_str = _extract_episode_str(parsed.get("episode_number"), torrent_title)
@@ -457,24 +461,24 @@ def preview_rename(anime_title: str, torrent_title: str, library_root: str):
     # --- 特例 2 (方案A)：剧场版，直接切入独立的电影媒体库 ---
     if media_type == "movie":
         folder_path = f"{tv_root}\\{anime_folder_name}\\剧场版"
-        filename = f"{anime_title}{meta_suffix}.{file_ext}"
-        
+        filename = f"{anime_folder_name}{meta_suffix}.{file_ext}"
+
     # --- 特例 3：OP/ED/花絮，切入 TV 目录下的 Other 文件夹 ---
     elif media_type == "extra":
         folder_path = f"{tv_root}\\{anime_folder_name}\\Other"
         clean_title = torrent_title.split(']')[-1].strip() if ']' in torrent_title else torrent_title
         filename = f"{clean_title}.{file_ext}"
-        
+
     # --- 特例 1 (方案A)：OVA、12.5话，强制划分到 Season 00 ---
     elif media_type == "ova":
         folder_path = f"{tv_root}\\{anime_folder_name}\\Season 00"
-        filename = f"{anime_title} - S00E{episode_str}{meta_suffix}.{file_ext}"
-        
+        filename = f"{anime_folder_name} - S00E{episode_str}{meta_suffix}.{file_ext}"
+
     # --- 常规 TV 正片逻辑 ---
     else:
         season_str = _resolve_season_str(parsed.get("anime_season"), torrent_title)
         folder_path = f"{tv_root}\\{anime_folder_name}\\Season {season_str}"
-        filename = f"{anime_title} - S{season_str}E{episode_str}{meta_suffix}.{file_ext}"
+        filename = f"{anime_folder_name} - S{season_str}E{episode_str}{meta_suffix}.{file_ext}"
 
     # 规范化 Windows 路径
     folder_path = folder_path.replace("/", "\\")
@@ -700,6 +704,12 @@ def preview_rename_file(
 
     anime_folder_name = build_anime_folder_name(anime_title, bgm_id)
     anime_root = f"{tv_root}\\{anime_folder_name}"
+    # 常规TV季分支(下面的else)直接拿anime_title拼文件名,之前没sanitize过——
+    # Windows把"/"当路径分隔符,"乱马1/2"这种标题会被硬生生拆成"乱马1"子目录+
+    # "2 - S03Exx..."文件,改名结果整个错位(这个案例就是这样被发现的)。
+    # 跟build_anime_folder_name一致:先把/ \ :换成全角保留可读性,再兜底去掉
+    # 其余非法字符,不能只用其中一步。
+    safe_anime_title = _sanitize_filename_segment((anime_title or "").translate(_FOLDER_NAME_TRANSLATION))
 
     # 区间(合集包的"[01-12]")不能当作单集回退值:种子里每个"文件名自身没有集数"
     # 的文件都会拿到区间起点01——既是错误集数,又会让这些文件撞成同一个目标路径
@@ -808,7 +818,7 @@ def preview_rename_file(
             season_search_text = f"{season_hint or anime_title} {torrent_title}"
             season_str = _resolve_season_str(torrent_parsed.get("anime_season"), season_search_text)
             folder_path = f"{anime_root}\\Season {season_str}"
-        filename = f"{anime_title} - S{season_str}E{episode_str}{meta_suffix}.{file_ext}"
+        filename = f"{safe_anime_title} - S{season_str}E{episode_str}{meta_suffix}.{file_ext}"
 
     folder_path = folder_path.replace("/", "\\")
     full_path = f"{folder_path}\\{filename}"
