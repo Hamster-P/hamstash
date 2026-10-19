@@ -12,11 +12,16 @@ from sqlalchemy.orm import Session
 import config_store
 from database import get_db
 from models import RssMatchedItem, SubscriptionRule
-from schemas import RssMatchedItemResponse, RssSubscriptionResponse, RssToggleRequest
+from schemas import (
+    RssMatchedItemResponse,
+    RssSubscriptionResponse,
+    RssSubscriptionUpdate,
+    RssToggleRequest,
+)
 from services import rss_poller
 from services.common import get_setting, upsert_setting
 from services.rss_migration import FANSUB_RESET_COUNT_KEY
-from services.rss_poller import poll_subscription
+from services.rss_poller import poll_subscription, poll_subscription_task
 
 router = APIRouter(prefix="/rss-engine", tags=["RSS订阅"])
 
@@ -92,6 +97,34 @@ def toggle_subscription(sub_id: int, payload: RssToggleRequest, db: Session = De
     rule.enabled = payload.enabled
     db.commit()
     db.refresh(rule)
+    return rule
+
+
+@router.put("/subscriptions/{sub_id}", response_model=RssSubscriptionResponse)
+def update_subscription(
+    sub_id: int,
+    payload: RssSubscriptionUpdate,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    """原地改关键词/字幕组/画质等匹配条件,不用先删再加。source/bgm_id/anime_title
+    不在这里改(见 RssSubscriptionUpdate 的说明)。保存后跟创建订阅一样,立即后台
+    跑一轮抓取,不等下一个轮询周期。"""
+    rule = db.query(SubscriptionRule).filter(SubscriptionRule.id == sub_id).first()
+    if not rule:
+        raise HTTPException(status_code=404, detail="订阅不存在")
+
+    rule.keyword = payload.keyword
+    rule.fansub_name = payload.fansub_name
+    rule.quality = payload.quality
+    rule.subtitle = payload.subtitle
+    rule.format = payload.format
+    rule.release_type = payload.release_type
+    db.commit()
+    db.refresh(rule)
+
+    download_root = get_setting(db, "download_root", config_store.DEFAULTS["download_root"])
+    background_tasks.add_task(poll_subscription_task, rule.id, download_root)
     return rule
 
 

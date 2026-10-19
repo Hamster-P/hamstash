@@ -202,6 +202,18 @@ class RssToggleRequest(BaseModel):
     enabled: bool
 
 
+class RssSubscriptionUpdate(BaseModel):
+    """原地编辑订阅的匹配条件。source/bgm_id/anime_title 不可改——源决定抓取方式,
+    改源等于换了一条完全不同的规则,要改请删了重建。"""
+
+    keyword: str
+    fansub_name: Optional[str] = None
+    quality: Optional[str] = None
+    subtitle: Optional[str] = None
+    format: Optional[str] = None
+    release_type: Optional[str] = None
+
+
 class RssMatchedItemResponse(BaseModel):
     """订阅一览页"命中记录"列表的单条记录。"""
 

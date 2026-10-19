@@ -143,7 +143,11 @@ async def _poll_subscription_items(db: Session, rule: SubscriptionRule, download
         # qBittorrent 恢复连接为止——不然一次偶发的连接失败就会永远漏掉这一集。
         if already and already.download_status != "failed":
             continue
-        if not already and not matches_criteria(item, criteria):
+        # 新条目要先过当前条件;已存在但之前失败(failed)的也要重新过一遍——
+        # 不然编辑订阅改了条件之后,旧的失败重试还是按改之前的条件无条件继续重试,
+        # 跟用户刚保存的新条件对不上(matches_criteria是唯一权威判定,不区分
+        # "全新条目"还是"失败重试",语义上本该一视同仁)。
+        if not matches_criteria(item, criteria):
             continue
 
         # 标题去重:guid/磁力链接不能覆盖"同一集内容被不同上游站点各自收录一次"
