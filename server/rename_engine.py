@@ -554,6 +554,16 @@ def parse_file_season(file_name: str) -> str | None:
 _TRAILING_META_RE = re.compile(r"(?:\s*\[[^\]]*\])+$")
 
 
+def _distinguishing_stem(file_name: str) -> str:
+    """原始文件名剥掉字幕组前缀和结尾"[字幕组][分辨率]"块之后剩下的主干——
+    这是这个文件在撞名时唯一还保留着的"跟别的文件不一样"的信息(集数/番名/
+    季号都是调用方传入的公共参数,不能拿来区分同一集的不同文件)。
+    可能是空串(文件名本身就只是个数字/集数)。"""
+    stem = file_name.rsplit(".", 1)[0]
+    stem = _sanitize_filename_segment(_strip_group_prefix(stem))
+    return _TRAILING_META_RE.sub("", stem).strip()
+
+
 def _disambiguate(work_title: str, file_name: str) -> str:
     """给"解析不出集数"的文件名补一段区分后缀。
 
@@ -562,19 +572,111 @@ def _disambiguate(work_title: str, file_name: str) -> str:
     这道安全网会拦住撞车、只放行第一个,所以不会真的丢文件——但其余文件会被标记
     failed 卡在暂存区不动。补一段区分后缀让它们各自都能正常落地。
 
-    用原始文件名主干做区分:它本来就是唯一的。剥掉主干开头的字幕组段和结尾已有的
-    "[字幕组][分辨率]"块(调用方马上会重新拼一遍),避免这些信息重复出现。
+    用原始文件名主干做区分:它本来就是唯一的。
     **必须幂等**——library_repair 会对已经落地的文件重算目标路径,不幂等的话每跑
     一次修复文件名就长一截;主干已经以 work_title 开头时直接沿用、不重复拼前缀。
     """
-    stem = file_name.rsplit(".", 1)[0]
-    stem = _sanitize_filename_segment(_strip_group_prefix(stem))
-    stem = _TRAILING_META_RE.sub("", stem).strip()
+    stem = _distinguishing_stem(file_name)
     if not stem or stem == work_title:
         return work_title
     if stem.startswith(work_title):
         return stem
     return f"{work_title} - {stem}"
+
+
+def apply_disambiguator(preview: dict, extra_stem: str) -> dict:
+    """给一个已经算好的preview(来自preview_rename_file)追加一段区分文字,
+    返回一份新的preview(只改跟文件名/路径相关的几个字段)。
+
+    给resolve_collision_group的"版本相同、内容其实不同"分支用:正常改名规则
+    (字幕组+分辨率)没能区分开的两个文件(典型:同一集的TV版/无修版,字幕组和
+    分辨率标注完全一样),在撞名的那一刻才知道要不要补这段文字,所以不能在
+    preview_rename_file内部直接决定,只能是这种"生成后再patch"的后处理。
+
+    幂等:extra_stem已经出现在文件名里(比如library_repair重算一个之前已经
+    补过区分文字的落地文件)就原样返回,不会越补越长。
+    """
+    if not extra_stem or extra_stem in preview["target_filename"]:
+        return preview
+    old_filename = preview["target_filename"]
+    stem, ext = (old_filename.rsplit(".", 1) + [""])[:2]
+    new_filename = f"{stem} - {extra_stem}.{ext}" if ext else f"{stem} - {extra_stem}"
+
+    def _swap_filename(path: str | None) -> str | None:
+        """path的最后一段(文件名)换成new_filename,前面的目录部分原样保留。
+        preview里的几个path字段分隔符不统一(target_folder/target_full_path是
+        "\\",relative_path/target_relative_path在Windows下也是"\\"),这里统一
+        按"\\"切,跟preview_rename_file自己拼接时用的分隔符一致。"""
+        if not path:
+            return path
+        head, _, _tail = path.rpartition("\\")
+        return f"{head}\\{new_filename}" if head else new_filename
+
+    patched = dict(preview)
+    patched["target_filename"] = new_filename
+    patched["target_full_path"] = _swap_filename(preview.get("target_full_path"))
+    patched["relative_path"] = _swap_filename(preview.get("relative_path"))
+    patched["target_relative_path"] = _swap_filename(preview.get("target_relative_path"))
+    return patched
+
+
+def resolve_collision_group(items: list[dict]) -> list[dict]:
+    """同一批改名建议里,多个文件算出了同一个target_full_path时,决定怎么处理。
+
+    items: 每项至少含 {"preview": <preview_rename_file的返回值>}。
+    返回等长、顺序一致的决策列表,每项 {"action": ..., "preview": ...}:
+      - "keep":原名正常落地(只有一个候选、或者是这组里"赢家"的那个)
+      - "disambiguate":版本一样(不是版本关系,是两个本来就不同的发布撞了名),
+        补上从原始文件名提炼出的区分文字后落地(见apply_disambiguator)
+      - "superseded":版本更低,被同组里另一个更高版本取代,不落地
+
+    判断只看candidates的内容本身(release_version + 原始文件名),不看items的
+    传入顺序——同一组文件不管谁先被扫到,算出来的结果必须一样,这样"刚下载时
+    organize.py整理的结果"和"以后library_repair.py重算的结果"才能对得上,
+    不会出现"文件原地不动但改名建议来回翻烧饼"的情况。
+    """
+    if len(items) <= 1:
+        return [{"action": "keep", "preview": it["preview"]} for it in items]
+
+    versions = {it["preview"]["release_version"] for it in items}
+    if len(versions) > 1:
+        # 真的是版本关系(比如同一个种子里打包了v1和修复过的v2):留最高版本,
+        # 其余视为被取代——跟跨种子/跨轮次的版本冲突判定(_resolve_version_conflict)
+        # 同一个取向,只是这里是同一批次内部比较。
+        best_version = max(versions)
+        return [
+            {"action": "keep", "preview": it["preview"]}
+            if it["preview"]["release_version"] == best_version
+            else {"action": "superseded", "preview": it["preview"]}
+            for it in items
+        ]
+
+    # 版本都一样:不是版本关系,是内容本来就不同的发布(字幕组/分辨率这些
+    # 结构化信息又恰好相同或都没解析出来,比如这次踩到的TV版/无修版案例),
+    # 都要保留。"剥掉字幕组前缀和尾部元数据块之后剩下的区分文字"更短(更接近
+    # "干净"的那个)拿不加后缀的canonical名字,其余各自补上自己的区分文字——
+    # 纯粹按字符串内容比大小,不依赖items的顺序。
+    stems = [_distinguishing_stem(it["preview"]["original_file_name"]) for it in items]
+    canonical_idx = min(range(len(items)), key=lambda i: (len(stems[i]), stems[i]))
+
+    decisions = []
+    for i, it in enumerate(items):
+        if i == canonical_idx:
+            decisions.append({"action": "keep", "preview": it["preview"]})
+            continue
+        stem = stems[i]
+        if not stem or stem == stems[canonical_idx]:
+            # 退化情况(剥掉前后缀之后两边长得一样):原始文件名本身在同一个
+            # 目录里必然互不相同(不可能有两个文件同名),拿它当最终兜底,
+            # 保证肯定能分出来、不会原地踏步继续撞名。
+            stem = _sanitize_filename_segment(
+                it["preview"]["original_file_name"].rsplit(".", 1)[0]
+            )
+        decisions.append({
+            "action": "disambiguate",
+            "preview": apply_disambiguator(it["preview"], stem),
+        })
+    return decisions
 
 
 def _normalize_absolute_episode(

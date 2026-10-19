@@ -317,19 +317,39 @@ def _preview_files_for_organize(
 def _guard_target_path_collisions(plans: list[dict]) -> list[dict]:
     """同一个种子内如果有两个文件算出了相同的target_full_path(改名规则没考虑到的
     冷门场景),原样改名会导致后处理的文件把先处理的物理覆盖掉、静默丢数据。
-    这里做最后一道安全网:按video_path排序保证结果确定性,撞车时只放行第一个,
-    其余的直接标记failed、留在原地不动,不参与实际改名——不是修复根因,是防止
-    "根因还没覆盖到的场景"再次造成不可逆的文件丢失。
+
+    交给rename_engine.resolve_collision_group按内容(而不是谁先被扫到)判:
+    - 真的是版本关系(同种子内混了新旧版本)→ 留最高版本,其余标failed、不改名,
+      留在原地不动,交给collision_with字段给调用方生成报错(字段名沿用旧版,
+      调用方(_apply_organize_plan)按这个字段判断是否标failed)。
+    - 版本一样、内容其实不同(比如这次踩到的TV版/无修版案例)→ 都正常落地,
+      换成补了区分文字的preview,不标failed。
+    判断是纯函数、只看内容,不依赖这里的处理顺序——跟services/library_repair.py
+    重算时用的是同一个resolve_collision_group,保证两边算出一致的结果。
     """
-    seen: dict[str, str] = {}
+    groups: dict[str, list[dict]] = {}
+    for item in plans:
+        groups.setdefault(item["preview"]["target_full_path"], []).append(item)
+
     result = []
-    for item in sorted(plans, key=lambda p: p["video_path"]):
-        target = item["preview"]["target_full_path"]
-        if target in seen:
-            item["collision_with"] = seen[target]
-        else:
-            seen[target] = item["video_path"]
-        result.append(item)
+    for group in groups.values():
+        # 组内按video_path排序只是让下面"collision_with"报错信息里引用的文件名
+        # 稳定、方便人工核查,不影响决策本身(决策在resolve_collision_group里
+        # 只看内容)。
+        group = sorted(group, key=lambda p: p["video_path"])
+        decisions = rename_engine.resolve_collision_group(
+            [{"preview": item["preview"]} for item in group]
+        )
+        winner_video_path = next(
+            (item["video_path"] for item, d in zip(group, decisions) if d["action"] == "keep"),
+            group[0]["video_path"],
+        )
+        for item, decision in zip(group, decisions):
+            if decision["action"] == "superseded":
+                item["collision_with"] = winner_video_path
+            elif decision["action"] == "disambiguate":
+                item["preview"] = decision["preview"]
+            result.append(item)
     return result
 
 
@@ -493,11 +513,13 @@ async def _apply_organize_plan(
             continue
 
         if item.get("collision_with"):
+            # _guard_target_path_collisions只有判定为"真的是版本关系"才会走到这里
+            # (内容不同但撞名的情况已经在那边补了区分文字、正常落地,不会带collision_with)。
             upsert_renamed_file(
                 db, torrent_hash, video_path, status="failed",
-                error=f"目标路径与同种子内另一个文件({item['collision_with']})冲突,需人工核查改名规则,已跳过、原样保留",
+                error=f"版本低于同种子内另一个文件({item['collision_with']}),视为被取代,已跳过、原样保留",
             )
-            print(f"[ORGANIZE] 目标路径撞车,跳过: hash={torrent_hash} file={video_path}")
+            print(f"[ORGANIZE] 版本低于同批次内另一文件,跳过: hash={torrent_hash} file={video_path}")
             continue
 
         this_version = preview["release_version"]

@@ -542,7 +542,12 @@ async def scan_rename_mismatches(
             continue
         all_rel_paths = _list_all_relpaths(anime_path, library_root)
 
-        proposed_targets_seen: dict[str, str] = {}
+        # 这部番本轮算出来的全部候选(两个子循环共用),先不急着判"撞车怎么办"——
+        # 等两边都收集完,按rename_engine.resolve_collision_group统一判一次
+        # (是版本关系就留高版本,不是就都保留、按内容补区分文字),见下面的处理。
+        # 跟organize.py用的是同一个函数,保证"刚下载时整理的结果"和"修复媒体库
+        # 重算的结果"互相印证,不会出现同一组文件两边算出不同答案的情况。
+        media_candidates: list[dict] = []
 
         for bucket_name, episodes in structure.items():
             # "Specials/Others"是"认不出来"的兜底桶,不整体跳过——桶里个别文件可能
@@ -659,49 +664,10 @@ async def scan_rename_mismatches(
                 episode_required = preview.get("media_type") not in ("movie", "ova", "extra")
                 if not target_full_path or (episode_required and preview.get("parsed_episode") == "??"):
                     continue
-
-                proposed_path = Path(target_full_path)
-                if _normcase(current_full_path) == _normcase(proposed_path):
+                if not _is_within(Path(target_full_path), library_root):
                     continue
 
-                proposed_rel = str(proposed_path.relative_to(library_root)).replace("\\", "/") \
-                    if _is_within(proposed_path, library_root) else None
-                if proposed_rel is None:
-                    continue
-
-                blocked = False
-                block_reason = None
-                key = _normcase(proposed_path)
-                # 目标位置被占,但占用它的那个文件本身也在这次的搬走名单里(典型:合集包
-                # 修复时,先把占着 S01E01 的预告片挪去 Other,S01E01 就腾出来给真正片了)
-                # ——不算冲突,交给 apply_rename_fixes 按 results 顺序先挪占用者。
-                occupant_being_moved = any(
-                    not r["blocked"] and _normcase(library_root / r["current_relative_path"]) == key
-                    for r in results
-                )
-                if (
-                    proposed_path.exists()
-                    and _normcase(proposed_path) != _normcase(current_full_path)
-                    and not occupant_being_moved
-                ):
-                    blocked = True
-                    block_reason = "目标位置已存在另一个文件,为避免覆盖不自动处理"
-                elif key in proposed_targets_seen:
-                    blocked = True
-                    block_reason = f"跟同一批次里的另一条改名建议目标冲突({proposed_targets_seen[key]})"
-                else:
-                    proposed_targets_seen[key] = current_rel
-
-                siblings = rename_engine.find_sibling_subtitles(current_rel, all_rel_paths)
-
-                results.append({
-                    "folder_name": media.folder_name,
-                    "current_relative_path": current_rel,
-                    "proposed_relative_path": proposed_rel,
-                    "sibling_subtitles": siblings,
-                    "blocked": blocked,
-                    "block_reason": block_reason,
-                })
+                media_candidates.append({"current_relative_path": current_rel, "preview": preview})
 
         # ---- 孤儿正片回收:整理失败、还躺在种子原始子目录里的文件 ----
         # 典型:多季合集包(VCB「S1+S2」大合集)整理时,正片因为跟花絮撞目标路径全 failed,
@@ -712,7 +678,10 @@ async def scan_rename_mismatches(
         folder_prefix = media.folder_name.replace("\\", "/").rstrip("/") + "/"
         orig_idx = _original_path_index(db, _folder_torrent_hashes(db, media.folder_name))
         default_ord = _member_season_ordinal(db, media.bgm_id)
-        handled_current = {r["current_relative_path"] for r in results}
+        # 用media_candidates(这部番本轮已经收集到的候选)判重,不是results——
+        # 上面的桶循环现在只攒候选、还没写进results(撞车判定挪到两个循环都跑完
+        # 之后统一做,见下面),这里判"有没有处理过"要看的是同一个来源。
+        handled_current = {c["current_relative_path"] for c in media_candidates}
         for rel_path in all_rel_paths:
             if (library_root / rel_path).suffix.lower() not in VIDEO_EXTENSIONS:
                 continue
@@ -773,33 +742,74 @@ async def scan_rename_mismatches(
             episode_required = preview.get("media_type") not in ("movie", "ova", "extra")
             if episode_required and preview.get("parsed_episode") == "??":
                 continue
-
-            proposed_path = Path(tfp)
-            cur_full = library_root / rel_path
-            if _normcase(cur_full) == _normcase(proposed_path):
+            if not _is_within(Path(tfp), library_root):
                 continue
-            if not _is_within(proposed_path, library_root):
-                continue
-            proposed_rel = str(proposed_path.relative_to(library_root)).replace("\\", "/")
 
+            media_candidates.append({"current_relative_path": rel_path, "preview": preview})
+
+        # ---- 两个循环都跑完了,这部番的候选收集齐了,统一判一次撞车 ----
+        # 按target_full_path分组,交给resolve_collision_group(跟organize.py同一个
+        # 函数):是版本关系就留高版本、低版本直接不提议;不是就都保留,补上区分文字。
+        # 判断只看内容,不看这两个候选谁先被收集进来的。
+        groups: dict[str, list[dict]] = {}
+        for cand in media_candidates:
+            groups.setdefault(cand["preview"]["target_full_path"], []).append(cand)
+
+        resolved_candidates: list[dict] = []
+        for group in groups.values():
+            decisions = rename_engine.resolve_collision_group(
+                [{"preview": c["preview"]} for c in group]
+            )
+            for cand, decision in zip(group, decisions):
+                if decision["action"] == "superseded":
+                    # 版本更低,被同批次内另一个更高版本取代——不提议,等同于
+                    # 这个文件"不需要改名"(它本来就该被更高版本盖过去,只是
+                    # 修复工具不碰文件,不会真的删它,维持现状,不提示)。
+                    continue
+                resolved_candidates.append({**cand, "preview": decision["preview"]})
+
+        # 逐个落地检查:是否已经就是目标名(含消歧后缀的情形,幂等)、目标位置是否
+        # 被别的文件占着。这一步要保留顺序依赖(occupant_being_moved要能看到同一批
+        # 里"排在前面、确定会先搬走"的文件腾出来的位置),所以保持跟原来一样的
+        # "边算边加进results"写法,不能并行/无序处理。
+        for cand in resolved_candidates:
+            current_rel = cand["current_relative_path"]
+            preview = cand["preview"]
+            current_full_path = library_root / current_rel
+            proposed_path = Path(preview["target_full_path"])
+            if _normcase(current_full_path) == _normcase(proposed_path):
+                continue  # 已经是目标名(可能是之前跑过一次消歧后落地的),不用再提议
+
+            proposed_rel = str(proposed_path.relative_to(library_root)).replace("\\", "/") \
+                if _is_within(proposed_path, library_root) else None
+            if proposed_rel is None:
+                continue
+
+            blocked = False
+            block_reason = None
             key = _normcase(proposed_path)
-            blocked, block_reason = False, None
+            # 目标位置被占,但占用它的那个文件本身也在这次的搬走名单里(典型:合集包
+            # 修复时,先把占着 S01E01 的预告片挪去 Other,S01E01 就腾出来给真正片了)
+            # ——不算冲突,交给 apply_rename_fixes 按 results 顺序先挪占用者。
             occupant_being_moved = any(
                 not r["blocked"] and _normcase(library_root / r["current_relative_path"]) == key
                 for r in results
             )
-            if proposed_path.exists() and not occupant_being_moved:
-                blocked, block_reason = True, "目标位置已存在另一个文件,为避免覆盖不自动处理"
-            elif key in proposed_targets_seen:
-                blocked, block_reason = True, f"跟同一批次里的另一条改名建议目标冲突({proposed_targets_seen[key]})"
-            else:
-                proposed_targets_seen[key] = rel_path
+            if (
+                proposed_path.exists()
+                and _normcase(proposed_path) != _normcase(current_full_path)
+                and not occupant_being_moved
+            ):
+                blocked = True
+                block_reason = "目标位置已存在另一个文件,为避免覆盖不自动处理"
+
+            siblings = rename_engine.find_sibling_subtitles(current_rel, all_rel_paths)
 
             results.append({
                 "folder_name": media.folder_name,
-                "current_relative_path": rel_path,
+                "current_relative_path": current_rel,
                 "proposed_relative_path": proposed_rel,
-                "sibling_subtitles": rename_engine.find_sibling_subtitles(rel_path, all_rel_paths),
+                "sibling_subtitles": siblings,
                 "blocked": blocked,
                 "block_reason": block_reason,
             })

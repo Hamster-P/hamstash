@@ -533,5 +533,124 @@ class TestSourceLookupPlumbing(unittest.TestCase):
             db.close()
 
 
+class TestCollisionResolution(unittest.TestCase):
+    """resolve_collision_group / apply_disambiguator:同一集多个文件撞名时,
+    "版本不同就覆盖,内容不同就都保留"这套判断逻辑。
+
+    复现案例:同一种子内 TV 版 + 无修版(限制解除版)两个文件,字幕组/分辨率
+    都解析不出区别,过去算出完全相同的目标名,被_guard_target_path_collisions
+    的旧逻辑(先到先得)拦下一个、永久卡在暂存区(见0.9.4前的真实bug报告)。
+    """
+
+    def _preview(self, file_name, torrent_title="[Nekomoe kissaten] 番 [03]"):
+        return R.preview_rename_file(
+            FIXED_TITLE, file_name, torrent_title, FIXED_ROOT,
+            bgm_id=1, season_hint=FIXED_TITLE, season_ordinal="01", platform="TV",
+        )
+
+    def test_different_versions_supersede(self):
+        """v1/v2 是真的版本关系:高版本留,低版本标记 superseded,不落地。"""
+        v1 = self._preview("[Nekomoe kissaten] 番 - 03 [1080p].mp4")
+        v2 = self._preview("[Nekomoe kissaten] 番 - 03v2 [1080p].mp4")
+        self.assertEqual(v1["target_full_path"], v2["target_full_path"])  # 本来就该撞名
+
+        decisions = R.resolve_collision_group([{"preview": v1}, {"preview": v2}])
+        self.assertEqual([d["action"] for d in decisions], ["superseded", "keep"])
+        self.assertEqual(decisions[1]["preview"]["target_full_path"], v1["target_full_path"])
+
+    def test_same_version_different_cut_both_kept_order_independent(self):
+        """版本都一样(默认1)、内容其实不同(TV版 vs 限制解除版撞了名):
+        两个都要保留,且"谁拿干净名字"不能随传入顺序变——这正是本次要修的bug。"""
+        plain = self._preview("【10月】番 03.mp4")
+        uncut = self._preview("【10月】番 03【限制解除版】.mp4")
+        self.assertEqual(
+            plain["target_full_path"], uncut["target_full_path"],
+            "前置条件:这两个文件本来就该撞名(字幕组被誤判成同一个'10月')",
+        )
+
+        forward = R.resolve_collision_group([{"preview": plain}, {"preview": uncut}])
+        backward = R.resolve_collision_group([{"preview": uncut}, {"preview": plain}])
+
+        # 不管传入顺序,"干净名字"永远归区分文字更短的 plain,uncut 永远被加后缀。
+        self.assertEqual(forward[0]["action"], "keep")
+        self.assertEqual(forward[1]["action"], "disambiguate")
+        self.assertEqual(
+            forward[0]["preview"]["target_full_path"], plain["target_full_path"]
+        )
+        self.assertNotEqual(
+            forward[1]["preview"]["target_full_path"], plain["target_full_path"]
+        )
+
+        self.assertEqual(backward[1]["action"], "keep")
+        self.assertEqual(backward[0]["action"], "disambiguate")
+        self.assertEqual(
+            backward[1]["preview"]["target_full_path"],
+            forward[0]["preview"]["target_full_path"],
+            "顺序反过来,'干净名字'的归属不该变",
+        )
+        self.assertEqual(
+            backward[0]["preview"]["target_full_path"],
+            forward[1]["preview"]["target_full_path"],
+            "顺序反过来,消歧后的名字也不该变",
+        )
+        # 两个最终目标必须互不相同,否则等于没修
+        self.assertNotEqual(
+            forward[0]["preview"]["target_full_path"],
+            forward[1]["preview"]["target_full_path"],
+        )
+
+    def test_disambiguate_is_idempotent(self):
+        """library_repair 重算一个已经补过区分文字的落地文件时,不能再叠一次后缀。"""
+        base = self._preview("【10月】番 03.mp4")
+        once = R.apply_disambiguator(base, "番 03【限制解除版】")
+        twice = R.apply_disambiguator(once, "番 03【限制解除版】")
+        self.assertEqual(once["target_filename"], twice["target_filename"])
+
+    def test_single_item_group_is_noop(self):
+        """没有撞车的单个候选,原样放行。"""
+        only = self._preview("[Nekomoe kissaten] 番 - 03 [1080p].mp4")
+        decisions = R.resolve_collision_group([{"preview": only}])
+        self.assertEqual(decisions, [{"action": "keep", "preview": only}])
+
+
+class TestOrganizeCollisionGuard(unittest.TestCase):
+    """services/organize.py::_guard_target_path_collisions 接到真实plans列表时的行为,
+    跟TestCollisionResolution分工:那边测纯判断逻辑,这里测它接进organize流程后
+    plans的collision_with/preview是不是被正确改写。"""
+
+    def _plan(self, video_path, file_name, torrent_title="[Nekomoe kissaten] 番 [03]"):
+        return {
+            "video_path": video_path,
+            "preview": R.preview_rename_file(
+                FIXED_TITLE, file_name, torrent_title, FIXED_ROOT,
+                bgm_id=1, season_hint=FIXED_TITLE, season_ordinal="01", platform="TV",
+            ),
+        }
+
+    def test_same_version_collision_keeps_both_files(self):
+        from services.organize import _guard_target_path_collisions
+
+        plans = [
+            self._plan("dir/【10月】番 03.mp4", "【10月】番 03.mp4"),
+            self._plan("dir/【10月】番 03【限制解除版】.mp4", "【10月】番 03【限制解除版】.mp4"),
+        ]
+        guarded = _guard_target_path_collisions(plans)
+        self.assertEqual(len(guarded), 2)
+        self.assertTrue(all(not g.get("collision_with") for g in guarded), "都不该被标记为被取代")
+        targets = {g["preview"]["target_full_path"] for g in guarded}
+        self.assertEqual(len(targets), 2, "两个文件最终目标必须不同,不能还撞着")
+
+    def test_version_conflict_marks_loser_with_collision_with(self):
+        from services.organize import _guard_target_path_collisions
+
+        plans = [
+            self._plan("dir/a.mp4", "[Nekomoe kissaten] 番 - 03 [1080p].mp4"),
+            self._plan("dir/b.mp4", "[Nekomoe kissaten] 番 - 03v2 [1080p].mp4"),
+        ]
+        guarded = {g["video_path"]: g for g in _guard_target_path_collisions(plans)}
+        self.assertIsNone(guarded["dir/b.mp4"].get("collision_with"))
+        self.assertEqual(guarded["dir/a.mp4"].get("collision_with"), "dir/b.mp4")
+
+
 if __name__ == "__main__":
     unittest.main()
