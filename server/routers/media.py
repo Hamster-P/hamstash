@@ -40,6 +40,13 @@ _EXT_BY_CONTENT_TYPE = {
     "image/png": ".png",
     "image/webp": ".webp",
     "image/gif": ".gif",
+    # TMDB的动漫logo图不少是矢量图(实测『我独自升级』『链锯人』等),之前这里没有
+    # 对应的扩展名,_cache_path_for兜底按.jpg存盘——字节是对的(真的是SVG),但
+    # FileResponse读取缓存文件时是按**文件扩展名**猜content-type的(_image_headers
+    # 没有显式带Content-Type头),.jpg后缀被猜成image/jpeg,SVG文本当JPEG字节发给
+    # 浏览器解码,直接裂图。真正的坑在"缓存住的文件名后缀"而不是这次请求本身——
+    # 不管是不是SVG都会先成功拉到字节,只是存盘/回放时扩展名(进而content-type)记错了。
+    "image/svg+xml": ".svg",
 }
 
 

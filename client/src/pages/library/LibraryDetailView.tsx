@@ -65,6 +65,11 @@ export default function LibraryDetailView({
   const [standalones, setStandalones] = useState<StandaloneItem[]>([]);
   const [entryRequest, setEntryRequest] = useState<EntryPickerRequest | null>(null);
   const [imageKind, setImageKind] = useState<ImageKind | null>(null);
+  // LOGO 图真的加载失败(链接失效/代理拿不到)才退回文字标题——跟剧场版页
+  // HeroLogo组件同一个判法(failedUrl===当前logoUrl才算失败,切到别的番/
+  // 换了新地址天然不再匹配,不需要额外清空)。之前这里没有onError兜底,
+  // 加载失败就一直摆着浏览器自己的裂图图标+alt文字,不会退回标题。
+  const [logoFailedUrl, setLogoFailedUrl] = useState<string | null>(null);
   const [introOpen, setIntroOpen] = useState(false);
   const [introCandidates, setIntroCandidates] = useState<CoverCandidate[]>([]);
   const [introChecking, setIntroChecking] = useState(false);
@@ -323,10 +328,13 @@ export default function LibraryDetailView({
               <div className="min-w-0 flex-1">
                 {/* 固定高度槽位：文字标题换成 LOGO 时，下面的简介不会被顶一下。 */}
                 <div className="mb-2 flex h-16 items-end">
-                  {animeMeta?.status === "resolved" && animeMeta.logo_url ? (
+                  {animeMeta?.status === "resolved" &&
+                  animeMeta.logo_url &&
+                  logoFailedUrl !== animeMeta.logo_url ? (
                     <img
                       src={proxiedImageUrl(animeMeta.logo_url)}
-                      alt={anime.display_title || anime.folder_name}
+                      alt=""
+                      onError={() => setLogoFailedUrl(animeMeta.logo_url ?? null)}
                       className="max-h-16 max-w-full object-contain object-left [filter:drop-shadow(0_1px_1px_rgba(0,0,0,0.55))_drop-shadow(0_0_7px_rgba(0,0,0,0.6))]"
                     />
                   ) : (
