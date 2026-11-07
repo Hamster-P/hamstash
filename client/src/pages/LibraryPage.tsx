@@ -365,6 +365,18 @@ export default function LibraryPage({ onSelectAnime, onManualMatch }: LibraryPag
                   onClick={() => {
                     setMatchMode((value) => !value);
                     setPendingDeleteFolder(null);
+                    if (!matchMode) {
+                      fetch(`${API_BASE}/library/folder-sizes`)
+                        .then((res) => {
+                          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                          return res.json() as Promise<Record<string, number | null>>;
+                        })
+                        .then((sizes) => setAnimes((items) => items.map((anime) => ({
+                          ...anime,
+                          folder_size_bytes: sizes[anime.folder_name] ?? anime.folder_size_bytes,
+                        }))))
+                        .catch((err: unknown) => console.error("读取文件夹大小失败", err));
+                    }
                   }}
                   className={matchMode ? btnPrimary : btnGhost}
                 >
@@ -456,7 +468,7 @@ export default function LibraryPage({ onSelectAnime, onManualMatch }: LibraryPag
                                 }}
                                 className={btnPrimary}
                               >
-                                删除
+                                删除 · {formatFolderSize(anime.folder_size_bytes)}
                               </button>
                             ))}
                         </div>
@@ -519,4 +531,12 @@ function remainingEpisodes(detail: AnimeDetail | null, ep: Episode): Episode[] {
     if (index !== -1) return episodes.slice(index);
   }
   return [ep];
+}
+
+function formatFolderSize(bytes: number | null | undefined): string {
+  if (bytes == null) return "大小待统计";
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB", "TB", "PB"];
+  const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)) - 1, units.length - 1);
+  return `${(bytes / 1024 ** (index + 1)).toFixed(1)} ${units[index]}`;
 }

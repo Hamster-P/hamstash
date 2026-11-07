@@ -11,6 +11,7 @@ export interface LibraryAnime {
   // 本地正片数 / 其中已看数。还没扫过是 null，不要用资料站总话数代替。
   episode_file_count?: number | null;
   watched_episode_count?: number | null;
+  folder_size_bytes?: number | null;
   // 未看集数角标。后端开关关闭，或该文件夹还没扫过集数时，恒为 0。
   unwatched_count: number;
 }

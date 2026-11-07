@@ -161,6 +161,8 @@ class LocalMedia(Base):
     # 需要重新真扫一遍——不然episode_file_count会一直卡在旧数字,只有"从未扫过(NULL)"
     # 才会被刷新是不够的。
     episode_count_signature = Column(String, nullable=True)
+    folder_size_bytes = Column(Integer, nullable=True)
+    folder_size_cache = Column(Text, nullable=True)
 
 class PlaybackRecord(Base):
     """极其轻量的已播放记录表"""

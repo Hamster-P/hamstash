@@ -19,6 +19,7 @@ import config_store
 from database import SessionLocal, get_db
 from services.common import get_setting, upsert_setting
 from services import bgm_series_cache, anime_meta_resolver
+from services.folder_size import refresh_folder_size, refresh_library_sizes
 import tmdb_client
 from bangumi_client import get_subject_detail, normalize_bgm_subject, get_subject_details_batch
 from datetime import datetime, timedelta, timezone
@@ -459,6 +460,7 @@ def recompute_episode_counts(db: Session, folder_name: str) -> None:
     )
     if not media:
         return
+    refresh_folder_size(media, get_library_root(db))
     result = _count_episode_files(db, get_library_root(db), media)
     if result is None:
         return
@@ -1555,7 +1557,15 @@ async def scan_and_update_library(background_tasks: BackgroundTasks, db: Session
     ) == "true":
         background_tasks.add_task(_backfill_missing_episode_counts, library_root)
 
+    background_tasks.add_task(refresh_library_sizes, library_root)
     return {"status": "success", "added": added, "current_total": len(local_folders)}
+
+
+@router.get("/library/folder-sizes")
+def get_library_folder_sizes(db: Session = Depends(get_db)):
+    refresh_library_sizes(get_library_root(db))
+    db.expire_all()
+    return {media.folder_name: media.folder_size_bytes for media in db.query(models.LocalMedia).all()}
 
 
 @router.get("/library/animes")
@@ -1666,6 +1676,7 @@ async def list_library_animes(background_tasks: BackgroundTasks, db: Session = D
             # 进度条分母用本地正片数。资料站总话数和硬盘文件数经常对不上。
             "episode_file_count": media.episode_file_count,
             "watched_episode_count": media.watched_episode_count,
+            "folder_size_bytes": media.folder_size_bytes,
             "unwatched_count": unwatched_count,  # 未看集数角标;开关关闭或还没扫过时恒为0
         })
 
@@ -2070,6 +2081,8 @@ def delete_episode(req: EpisodeDeleteRequest, db: Session = Depends(get_db)):
     rel_parts = _norm_rel(req.rel_path).split("/")
     folder_name = rel_parts[0]
     media = db.query(models.LocalMedia).filter(models.LocalMedia.folder_name == folder_name).first()
+    if media:
+        refresh_folder_size(media, library_root)
     is_real_episode = _is_real_episode  # 删文件前就算好的(见上)
     if media and media.episode_file_count is not None and is_real_episode:
         media.episode_file_count = max(media.episode_file_count - 1, 0)
