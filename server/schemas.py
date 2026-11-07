@@ -70,6 +70,7 @@ class DownloadRequest(BaseModel):
     format: Optional[str] = None
     release_type: Optional[str] = None
     subscribe: bool = False
+    fast_mode: bool = False
     auto_rename: bool = True
     # 是否并进这部作品所属的Bangumi家族(高达/柯南这类系列的最早那个条目)。
     # True(默认,也是历史行为)=同系列共用一个媒体库文件夹、按第几季组织;
@@ -188,6 +189,7 @@ class RssSubscriptionResponse(BaseModel):
     release_type: Optional[str] = None
     auto_rename: bool
     enabled: bool
+    fast_mode: bool = False
     rss_url: Optional[str] = None
     last_error: Optional[str] = None
     created_at: datetime

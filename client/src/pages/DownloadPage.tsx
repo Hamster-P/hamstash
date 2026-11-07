@@ -27,6 +27,17 @@ interface RenamePreview {
   target_full_path: string;
 }
 
+interface FastAnalysis {
+  episode: number | null;
+  status: "candidate" | "duplicate" | "submitted" | "pending" | "unknown";
+}
+
+const fastStatusText = (item: FastAnalysis) => ({
+  candidate: `第 ${item.episode} 集 · 预计下载`, duplicate: `第 ${item.episode} 集 · 同集其他版本`,
+  submitted: `第 ${item.episode} 集 · 本极速订阅已提交`, pending: `第 ${item.episode} 集 · 提交待确认`,
+  unknown: "无法可靠识别正片单集，不自动下载",
+}[item.status]);
+
 interface DownloadPageProps {
   initialKeyword?: string;
   initialBgmId?: number | null;
@@ -45,7 +56,7 @@ const TYPE_OPTIONS = ["不限", "单集(追更)", "合集/全集(完结)"];
 
 // 统一的表单控件样式:自定义焦点环颜色,避免浏览器默认焦点框和主题不搭
 const controlClass =
-  "rounded border border-border bg-surface px-2 py-1.5 font-mono text-xs text-paper outline-none focus:border-vermillion focus:ring-1 focus:ring-vermillion";
+  "rounded border border-border bg-surface px-2 py-1.5 font-mono text-xs text-paper outline-none focus:border-vermillion focus:ring-1 focus:ring-vermillion disabled:cursor-not-allowed disabled:border-dashed disabled:border-control-disabled-border disabled:bg-control-disabled disabled:text-control-disabled-text disabled:opacity-100";
   
 function formatSize(bytes: number | null) {
   if (!bytes) return "—";
@@ -81,7 +92,7 @@ export default function DownloadPage({
   const [quality, setQuality] = useState("不限");
   const [subtitle, setSubtitle] = useState("不限");
   const [format, setFormat] = useState("不限");
-  const [releaseType, setReleaseType] = useState("不限");
+  const [releaseType, setReleaseType] = useState(initialSubscribe ? "单集(追更)" : "不限");
 
   const [results, setResults] = useState<ResourceItem[]>([]);
   // 当前数据源RSS/Feed接口的固定窗口上限——配合results.length(已经翻页累加到手的
@@ -112,12 +123,16 @@ export default function DownloadPage({
   // 字幕组下拉框选项,只从"没按字幕组过滤"的查询结果里采集(见handleSearch里的
   // 更新逻辑),不能直接拿当前results算,不然选中某个字幕组之后下拉框就只剩它自己了。
   const [fansubOptionNames, setFansubOptionNames] = useState<string[]>([]);
-  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [selected, setSelected] = useState<Set<string>>(new Set());
   // 记录最近一次点开的详情页地址(用detail_url本身当key,天然跨源唯一),
   // 让对应那一行的"详情"按钮高亮,方便用户从浏览器切回来后找到自己刚才点的是哪条
   const [lastOpenedDetail, setLastOpenedDetail] = useState<string | null>(null);
 
   const [subscribe, setSubscribe] = useState(initialSubscribe);
+  const [fastMode, setFastMode] = useState(false);
+  const [fastAnalysis, setFastAnalysis] = useState<Record<string, FastAnalysis>>({});
+  const [fastPreviewError, setFastPreviewError] = useState<string | null>(null);
+  const [existingFastId, setExistingFastId] = useState<number | null>(null);
   // 是否并进这部作品所属的Bangumi家族(高达/柯南这类系列的最早那个条目)。
   // 打开(默认)=同系列共用一个媒体库文件夹、按第几季组织,与历史行为一致;
   // 关闭=这一部独立成一部,在媒体库单独成卡(比如高达SEED不想跟初代高达混在一起)。
@@ -172,7 +187,7 @@ export default function DownloadPage({
       const q = filterOverrides?.quality ?? quality;
       const sub = filterOverrides?.subtitle ?? subtitle;
       const fmt = filterOverrides?.format ?? format;
-      const rel = filterOverrides?.release ?? releaseType;
+      const rel = fastMode ? "单集(追更)" : filterOverrides?.release ?? releaseType;
       const params = new URLSearchParams({ keyword: kw, source: src, page: String(currentPage) });
       if (bgmId) params.set("bgm_id", String(bgmId));
       if (fansub !== "全部") params.set("fansub_name", fansub);
@@ -263,30 +278,78 @@ export default function DownloadPage({
   // 过滤已经全部下沉到后端权威谓词 matches_criteria(见 server/sources/base.py),
   // 搜索接口返回的就是过滤后的结果——与 RSS 订阅轮询走同一套判定,保证"看到=下到"。
   // 前端不再本地二次过滤,直接展示后端结果(改任一筛选项时会带着新条件重新请求)。
-  const filteredResults = results;
+  const filteredResults = useMemo(() => [...results].sort((a, b) => {
+    const timestamp = (value: string | null) => {
+      const parsed = value ? Date.parse(value) : NaN;
+      return Number.isFinite(parsed) ? parsed : -Infinity;
+    };
+    const left = timestamp(a.created_at);
+    const right = timestamp(b.created_at);
+    return left === right ? 0 : right > left ? 1 : -1;
+  }), [results]);
+  const selectionLocked = fastMode || (initialSubscribe && subscribe);
+  const activeSelection = useMemo(() => {
+    if (!selectionLocked) return selected;
+    return new Set(filteredResults
+      .filter((item) => !fastMode || fastAnalysis[item.magnet]?.status === "candidate")
+      .map((item) => item.magnet));
+  }, [selectionLocked, selected, filteredResults, fastMode, fastAnalysis]);
+
+  useEffect(() => {
+    if (!fastMode || !bgmId) return;
+    let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    setFastAnalysis({});
+    setFastPreviewError(null);
+    const analyse = () => { fetch(`${API_BASE}/resources/fast-preview`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bgm_id: bgmId, items: filteredResults }),
+    }).then(async (res) => {
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    }).then((data) => {
+      if (cancelled) return;
+      setExistingFastId(data.existing_subscription_id ?? null);
+      if (data.metadata_pending) {
+        setFastPreviewError("季度规则计算中，完成后自动刷新候选");
+        retryTimer = setTimeout(analyse, 5000);
+      } else {
+        setFastPreviewError(null);
+        setFastAnalysis(Object.fromEntries(filteredResults.flatMap((item, index) =>
+          data.analysis?.[index] ? [[item.magnet, data.analysis[index]]] : [])));
+      }
+    }).catch(() => {
+      if (!cancelled) setFastPreviewError("候选分析失败，请重新检索后重试");
+    }); };
+    analyse();
+    return () => { cancelled = true; clearTimeout(retryTimer); };
+  }, [fastMode, bgmId, filteredResults]);
 
   const allChecked =
     filteredResults.length > 0 &&
-    filteredResults.every((_, i) => selected.has(i));
+    filteredResults.every((item) => activeSelection.has(item.magnet));
 
   const toggleAll = () => {
+    if (selectionLocked) return;
     if (allChecked) {
       setSelected(new Set());
     } else {
-      setSelected(new Set(filteredResults.map((_, i) => i)));
+      setSelected(new Set(filteredResults.map((item) => item.magnet)));
     }
   };
 
-  const toggleOne = (index: number) => {
+  const toggleOne = (magnet: string) => {
+    if (selectionLocked) return;
     setSelected((prev) => {
       const next = new Set(prev);
-      if (next.has(index)) next.delete(index);
-      else next.add(index);
+      if (next.has(magnet)) next.delete(magnet);
+      else next.add(magnet);
       return next;
     });
   };
 
-  const selectedItems = filteredResults.filter((_, i) => selected.has(i));
+  const selectedItems = useMemo(() => filteredResults.filter((item) => activeSelection.has(item.magnet)),
+    [filteredResults, activeSelection]);
 
   // 后端最终会用哪个bgm_id(跟handleSubmit里传的那个保持一致)——"合并到主系列"
   // 靠它写归属覆盖,拿不到bgm_id时这个开关没有作用对象,不渲染。
@@ -342,10 +405,10 @@ export default function DownloadPage({
     // mergeToFamily也在依赖里:它决定文件夹归属(合并进系列根 vs 独立成一部),
     // 改了必须重算预览,否则预览显示的目标路径跟提交后真正落地的对不上。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoRename, selected, searchBox, bgmId, mergeToFamily]);
+  }, [autoRename, selectedItems, searchBox, bgmId, mergeToFamily]);
 
   const handleSubmit = async () => {
-    if (selectedItems.length === 0) return;
+    if (!fastMode && selectedItems.length === 0) return;
     setSubmitting(true);
     setResultMessage(null);
     try {
@@ -362,8 +425,9 @@ export default function DownloadPage({
           quality: quality !== "不限" ? quality : null,
           subtitle: subtitle !== "不限" ? subtitle : null,
           format: format !== "不限" ? format : null,
-          release_type: releaseType !== "不限" ? releaseType : null,
+          release_type: fastMode ? "单集(追更)" : releaseType !== "不限" ? releaseType : null,
           subscribe,
+          fast_mode: fastMode,
           auto_rename: autoRename,
           merge_to_family: mergeToFamily,
           items: selectedItems.map((item) => ({
@@ -382,10 +446,11 @@ export default function DownloadPage({
       }
       setResultMessage(
         data.rss_managed
-          ? "已建立RSS订阅规则,qBittorrent会自动抓取并下载匹配的种子"
+          ? "已建立 RSS 订阅，由程序后台抓取并提交符合条件的资源"
           : `已提交 ${data.tasks.length} 个下载任务`,
       );
       setSelected(new Set());
+      if (fastMode && data.subscription_id) setExistingFastId(data.subscription_id);
     } catch (err) {
       setResultMessage("提交失败,请检查后端和qBittorrent连接");
       console.error(err);
@@ -410,6 +475,34 @@ export default function DownloadPage({
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-8 pb-8">
 
+      {initialSubscribe && subscribe && (
+        <div className="mb-4 rounded-md border border-border bg-surface p-3">
+          <button
+            type="button"
+            disabled={!bgmId || loading || Boolean(currentCooldownMs && coolingDown)}
+            aria-pressed={fastMode}
+            onClick={() => {
+              const next = !fastMode;
+              setFastMode(next);
+              setSelected(new Set());
+              if (next) {
+                setResults([]);
+                setFansubFilter("全部");
+                setReleaseType("单集(追更)");
+                handleSearch(undefined, undefined, false, { fansub: "全部", release: "单集(追更)" });
+              }
+            }}
+            className="rounded border border-vermillion px-3 py-2 text-xs text-vermillion disabled:opacity-40"
+          >{fastMode ? "关闭极速追番模式" : "开启极速追番模式"}</button>
+          <p className="mt-2 text-xs text-muted">
+            {bgmId ? "不限字幕组，每集选择当前数据源内最早符合条件的资源；仅在这条极速订阅内去重，不影响普通 RSS 和手动下载。" : "极速模式需要从关联 Bangumi 条目的 RSS 入口打开。"}
+          </p>
+          {fastMode && <p className="mt-2 text-xs text-muted">高亮为当前已加载资源中的预计选择；实际下载会重新核对 RSS 和去重记录。沿用设置中的轮询间隔。</p>}
+          {fastMode && existingFastId && <p className="mt-2 text-xs text-vermillion">已有极速订阅（暂停也占用名额），请在 RSS 一览编辑，或删除后重建。</p>}
+          {fastMode && fastPreviewError && <p className="mt-2 text-xs text-vermillion">{fastPreviewError}</p>}
+        </div>
+      )}
+
       {/* 5. UI 重构：全部替换为规整的下拉菜单 */}
       <div className="mb-4 flex flex-wrap items-center gap-3">
         {/* 数据源:强制二选一 */}
@@ -424,7 +517,7 @@ export default function DownloadPage({
             setQuality("不限");
             setSubtitle("不限");
             setFormat("不限");
-            setReleaseType("不限");
+            setReleaseType(subscribe ? "单集(追更)" : "不限");
             setFansubOptionNames([]);
             setResults([]);
             setSelected(new Set());
@@ -434,7 +527,7 @@ export default function DownloadPage({
             // 却是马上同步调用的——必须显式把刚重置的值传进去,不然这次请求
             // 用的还是切源之前的旧筛选值(界面显示"不限"但实际按旧值查了)。
             handleSearch(undefined, next, false, {
-              fansub: "全部", quality: "不限", subtitle: "不限", format: "不限", release: "不限",
+              fansub: "全部", quality: "不限", subtitle: "不限", format: "不限", release: subscribe ? "单集(追更)" : "不限",
             });
           }}
           className={controlClass}
@@ -450,6 +543,7 @@ export default function DownloadPage({
             用overrides显式传新值,避免拿到setState还没生效的旧闭包值 */}
         <select
           value={fansubFilter}
+          disabled={fastMode}
           onChange={(e) => {
             const next = e.target.value;
             setFansubFilter(next);
@@ -504,7 +598,9 @@ export default function DownloadPage({
             站点搜索表达不了"不包含什么",所以不拼进关键词;但现在由后端权威谓词
             matches_criteria 统一判定(与 RSS 订阅同一套),所以改这个也要带条件重新请求。 */}
         <select
-          value={releaseType}
+          value={fastMode ? "单集(追更)" : releaseType}
+          disabled={fastMode}
+          title={fastMode ? "极速模式按集去重，固定为单集追更" : undefined}
           onChange={(e) => {
             const next = e.target.value;
             setReleaseType(next);
@@ -553,32 +649,40 @@ export default function DownloadPage({
             <input
               type="checkbox"
               checked={allChecked}
+              disabled={selectionLocked}
               onChange={toggleAll}
               className="h-4 w-4 accent-vermillion"
             />
             <span className="font-mono text-xs text-muted">
-              全选({selected.size}/{filteredResults.length})
+              {fastMode ? `预计下载（已选 ${selectedItems.length}/${filteredResults.length}，自动勾选）` :
+                selectionLocked ? `全部匹配资源（已选 ${selectedItems.length}/${filteredResults.length}，自动勾选）` :
+                `全选(${selectedItems.length}/${filteredResults.length})`}
+              <span className="ml-3">按发布时间从新到旧</span>
             </span>
           </div>
           <div className="flex flex-col divide-y divide-border">
-            {filteredResults.map((item, index) => (
+            {filteredResults.map((item) => (
               <label
-                key={index}
-                className="flex cursor-pointer items-center gap-3 px-3 py-2.5 hover:bg-surface"
+                key={item.magnet}
+                className={`flex cursor-pointer items-center gap-3 px-3 py-2.5 hover:bg-surface ${fastMode && fastAnalysis[item.magnet]?.status === "candidate" ? "bg-vermillion/10 ring-1 ring-inset ring-vermillion/40" : ""}`}
               >
                 <input
                   type="checkbox"
-                  checked={selected.has(index)}
-                  onChange={() => toggleOne(index)}
+                  checked={activeSelection.has(item.magnet)}
+                  disabled={selectionLocked}
+                  onChange={() => toggleOne(item.magnet)}
                   className="h-4 w-4 shrink-0 accent-vermillion"
                 />
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-sm">{item.title}</div>
+                  {fastMode && <div className="mt-1 text-xs text-vermillion">{fastAnalysis[item.magnet] ? fastStatusText(fastAnalysis[item.magnet]) : "分析中..."}</div>}
                   <div className="mt-0.5 flex gap-3 font-mono text-[11px] text-muted">
                     <span className="text-vermillion">
                       {item.fansub_name}
                     </span>
                     <span>{formatSize(item.size)}</span>
+                    <span>{item.created_at && Number.isFinite(Date.parse(item.created_at))
+                      ? new Date(item.created_at).toLocaleString("zh-CN", { hour12: false }) : "发布时间未知"}</span>
                     <span className="uppercase">{item.source}</span>
                   </div>
                 </div>
@@ -632,15 +736,25 @@ export default function DownloadPage({
       )}
 
       {/* 订阅与改名开关 */}
-      {filteredResults.length > 0 && (
+      {(filteredResults.length > 0 || subscribe) && (
         <div className="mb-6 flex flex-col gap-3 rounded-md border border-border bg-surface p-4">
           <ToggleRow
             label="RSS订阅"
             description="按当前关键词/字幕组/画质持续订阅,以后新种子自动下载"
             checked={subscribe}
-            onChange={setSubscribe}
+            onChange={(value) => {
+              setSubscribe(value);
+              if (!value) setFastMode(false);
+              if (value) {
+                setReleaseType("单集(追更)");
+                setResults([]);
+                setSelected(new Set());
+                handleSearch(undefined, undefined, false, { release: "单集(追更)" });
+              }
+            }}
           />
-          {subscribe && fansubFilter === "全部" && (
+          {subscribe && <p className="text-xs text-muted">普通 RSS 默认单集追更，可在上方切换为不限或合集；极速模式固定单集。</p>}
+          {subscribe && !fastMode && fansubFilter === "全部" && (
             <div className="rounded border border-vermillion/40 bg-ink p-3 font-mono text-[11px] text-vermillion">
               还没选择字幕组——RSS规则会匹配所有字幕组发布的种子,同一集可能被多个字幕组重复下载,建议先在上面选定一个字幕组再开启订阅
             </div>
@@ -710,13 +824,13 @@ export default function DownloadPage({
 
           <button
             onClick={handleSubmit}
-            disabled={selected.size === 0 || submitting}
+            disabled={submitting || !searchBox.trim() || (fastMode ? !!existingFastId || !!fastPreviewError : selectedItems.length === 0)}
             className="mt-1 self-start rounded-md border border-vermillion px-4 py-2 font-mono text-xs text-vermillion transition-colors hover:bg-vermillion hover:text-ink disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-vermillion"
           >
             {submitting
               ? "提交中..."
-              : `${subscribe ? "订阅并下载" : "单次下载"}(已选${
-                  selected.size
+              : fastMode ? `建立极速 RSS 订阅（预计 ${selectedItems.length} 项）` : `${subscribe ? "订阅并下载" : "单次下载"}(已选${
+                  selectedItems.length
                 }项)`}
           </button>
 

@@ -719,20 +719,39 @@ def _normalize_absolute_episode(
 
 # 合集包标题特征:集数区间("[01-12]"/"01~12TV")或"全集/合集/全N话/BDBOX"字样。
 # 区间左侧不能贴着字母/数字/小数点,否则"x264-10bit"/"H.264-8bit"里的"264-10"会被当成区间。
-_COLLECTION_RANGE_RE = re.compile(r"(?<![A-Za-z\d.])(\d{1,3})\s*[-~～]\s*(\d{1,3})(?!\d)")
-_COLLECTION_KEYWORD_RE = re.compile(r"全集|合集|全\s*\d+\s*[话話集]|BD-?BOX", re.IGNORECASE)
+_COLLECTION_RANGE_RE = re.compile(
+    r"(?<![A-Za-z\d.])(?:EP?|第)?\s*(\d{1,4})\s*[话話集]?\s*[-~～–—至到+&_,、]\s*(?:EP?|第)?\s*(\d{1,4})(?!\d)", re.IGNORECASE
+)
+_COLLECTION_KEYWORD_RE = re.compile(
+    r"全集|合集|全\s*\d+\s*[话話集]|BD[-\s]?BOX|(?<![a-z])(?:batch|pack|complete)(?![a-z])|\bS\d+\s*[+&-]\s*S\d+\b",
+    re.IGNORECASE,
+)
 
 
 def is_collection_title(torrent_title: str) -> bool:
-    """种子标题是不是一个"多集合集包"。只用于下载前预览:此时拿不到种子里的
-    真实文件列表,合集包里每个文件各自该进哪个目录要等下载完看文件名才知道。"""
+    """搜索筛选、RSS 和改名预览共用的多集标题判断；不把 FIN/END 当成合集。"""
     if _COLLECTION_KEYWORD_RE.search(torrent_title):
         return True
     masked = _EPISODE_NOISE_RE.sub(lambda m: " " * len(m.group(0)), torrent_title)
     for m in _COLLECTION_RANGE_RE.finditer(masked):
+        if re.match(r"(?:p|i|bit)\b", masked[m.end():], re.IGNORECASE):
+            continue  # 720-1080p 等分辨率范围不是集数范围。
         if int(m.group(2)) > int(m.group(1)):
             return True
-    return False
+    parsed = anitopy.parse(masked) or {}
+    return _looks_like_range(parsed.get("episode_number"))
+
+
+def is_single_episode_title(torrent_title: str) -> bool:
+    """明确识别出一集才允许自动追更；无法识别不等于单集。"""
+    if is_collection_title(torrent_title):
+        return False
+    masked = _EPISODE_NOISE_RE.sub(" ", torrent_title)
+    episode = parse_file_episode(masked)
+    if episode is None:
+        explicit = _ZH_EPISODE_RE.search(masked)
+        episode = explicit.group(1) if explicit else None
+    return episode is not None and float(episode) > 0
 
 
 def preview_collection(anime_title: str, torrent_title: str, library_root: str,

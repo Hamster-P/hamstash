@@ -17,6 +17,7 @@ interface RssSubscription {
   created_at: string;
   last_polled_at: string | null;
   season_complete?: boolean;
+  fast_mode?: boolean;
 }
 
 // 搜索结果的最小形状,编辑弹窗"预览匹配"用,跟DownloadPage.tsx的ResourceItem同源
@@ -25,6 +26,8 @@ interface PreviewItem {
   title: string;
   fansub_name: string;
   created_at: string | null;
+  magnet?: string | null;
+  fast_status?: string;
 }
 
 const QUALITY_OPTIONS = ["不限", "1080p", "720p", "2160p"];
@@ -34,7 +37,7 @@ const TYPE_OPTIONS = ["不限", "单集(追更)", "合集/全集(完结)"];
 
 // 跟DownloadPage.tsx同款的控件样式
 const controlClass =
-  "rounded border border-border bg-surface px-2 py-1.5 font-mono text-xs text-paper outline-none focus:border-vermillion focus:ring-1 focus:ring-vermillion";
+  "rounded border border-border bg-surface px-2 py-1.5 font-mono text-xs text-paper outline-none focus:border-vermillion focus:ring-1 focus:ring-vermillion disabled:cursor-not-allowed disabled:border-dashed disabled:border-control-disabled-border disabled:bg-control-disabled disabled:text-control-disabled-text disabled:opacity-100";
 
 interface RssMatchedItem {
   id: number;
@@ -328,7 +331,7 @@ export default function RssPage() {
                       {sub.keyword}
                     </td>
                     <td className="px-3 py-2 font-mono text-xs text-vermillion">
-                      {sub.fansub_name ?? "不限"}
+                      {sub.fast_mode ? "极速 · 全部字幕组" : sub.fansub_name ?? "不限"}
                     </td>
                     <td className="px-3 py-2 font-mono text-xs">
                       {sub.quality ?? "不限"}
@@ -514,7 +517,7 @@ function EditSubscriptionDialog({
   const [quality, setQuality] = useState(sub.quality ?? "不限");
   const [subtitle, setSubtitle] = useState(sub.subtitle ?? "不限");
   const [format, setFormat] = useState(sub.format ?? "不限");
-  const [releaseType, setReleaseType] = useState(sub.release_type ?? "不限");
+  const [releaseType, setReleaseType] = useState(sub.fast_mode ? "单集(追更)" : sub.release_type ?? "不限");
 
   // 字幕组下拉选项:后台先用"不限字幕组"搜一次(只带关键词,不带字幕组条件),
   // 从结果里的fansub_name去重收集出"这个关键词下实际有哪些字幕组在发布",
@@ -546,7 +549,7 @@ function EditSubscriptionDialog({
 
   // 打开弹窗即按当前关键词查一次,不用用户先手动点一下才有得选
   useEffect(() => {
-    loadFansubOptions(sub.keyword);
+    if (!sub.fast_mode) loadFansubOptions(sub.keyword);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sub.id]);
 
@@ -594,12 +597,23 @@ function EditSubscriptionDialog({
         if (!b.created_at) return -1;
         return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
       });
+      if (sub.fast_mode && sub.bgm_id) {
+        const response = await fetch(`${API_BASE}/resources/fast-preview`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ bgm_id: sub.bgm_id, subscription_id: sub.id, items: sorted }),
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const preview = await response.json();
+        if (preview.metadata_pending) throw new Error("季度规则计算中，请稍后刷新预览");
+        const analysis = preview.analysis;
+        sorted.forEach((item, index) => { item.fast_status = analysis[index]?.status; });
+      }
       setPreviewItems(sorted);
       setPreviewHasMore(Boolean(data.has_more));
       setPreviewStale(false);
     } catch (err) {
       console.error("预览匹配失败", err);
-      setPreviewError("预览失败,请检查网络/代理后重试");
+      setPreviewError(err instanceof Error ? err.message : "预览失败,请检查网络/代理后重试");
     } finally {
       setPreviewLoading(false);
     }
@@ -652,6 +666,8 @@ function EditSubscriptionDialog({
         </div>
         <div className="mb-4 font-mono text-[11px] text-muted">
           {sub.anime_title} · 数据源: {sub.source}(不可修改)
+          <p className="mt-2">普通 RSS 可修改为不限、单集或合集；极速模式固定单集追更。</p>
+          {sub.fast_mode && <p className="mt-2 text-vermillion">极速模式固定全部字幕组、单集追更；修改条件仅影响未提交的集数，已提交集数不会重下。切换模式请删除后重建。</p>}
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto">
@@ -672,7 +688,7 @@ function EditSubscriptionDialog({
               <span className="font-mono text-[11px] text-muted">字幕组</span>
               <button
                 onClick={() => loadFansubOptions(keyword)}
-                disabled={fansubLoading || !keyword.trim()}
+                disabled={!!sub.fast_mode || fansubLoading || !keyword.trim()}
                 className="font-mono text-[11px] text-muted transition-colors hover:text-vermillion disabled:opacity-40"
               >
                 {fansubLoading ? "搜索中..." : "按当前关键词刷新"}
@@ -680,6 +696,7 @@ function EditSubscriptionDialog({
             </div>
             <select
               value={fansub}
+              disabled={!!sub.fast_mode}
               onChange={(e) => {
                 setFansub(e.target.value);
                 markStale();
@@ -738,6 +755,7 @@ function EditSubscriptionDialog({
             </select>
             <select
               value={releaseType}
+              disabled={!!sub.fast_mode}
               onChange={(e) => {
                 setReleaseType(e.target.value);
                 markStale();
@@ -776,7 +794,7 @@ function EditSubscriptionDialog({
                   <div className="font-mono text-[11px] text-muted">没有匹配到任何种子,检查一下关键词/字幕组是不是改过头了。</div>
                 )}
                 {previewItems.slice(0, 20).map((item, i) => (
-                  <div key={i} className="flex items-baseline gap-2 font-mono text-[11px]">
+                  <div key={i} className={`flex items-baseline gap-2 font-mono text-[11px] ${item.fast_status === "candidate" ? "rounded bg-vermillion/10 p-1 ring-1 ring-vermillion/40" : ""}`}>
                     <span className="shrink-0 text-muted">
                       {item.created_at ? formatDate(item.created_at) : "时间未知"}
                     </span>
@@ -784,6 +802,7 @@ function EditSubscriptionDialog({
                         改为完整换行显示;title属性兼顾想整行复制/鼠标悬停确认的场景。 */}
                     <span className="break-all text-paper" title={`[${item.fansub_name}] ${item.title}`}>
                       [{item.fansub_name}] {item.title}
+                      {item.fast_status && <span className="ml-2 text-vermillion">{({ candidate: "预计下载", duplicate: "同集其他版本", submitted: "本订阅已提交", pending: "提交待确认", unknown: "无法识别，不自动下载" } as Record<string, string>)[item.fast_status]}</span>}
                     </span>
                   </div>
                 ))}

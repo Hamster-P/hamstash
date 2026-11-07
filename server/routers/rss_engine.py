@@ -11,7 +11,8 @@ from sqlalchemy.orm import Session
 
 import config_store
 from database import get_db
-from models import RssMatchedItem, SubscriptionRule
+from models import RssMatchedItem, SubscriptionRule, FastRssEpisode
+from services.fast_rss import SINGLE_RELEASE
 from schemas import (
     RssMatchedItemResponse,
     RssSubscriptionResponse,
@@ -101,12 +102,17 @@ def toggle_subscription(sub_id: int, payload: RssToggleRequest, db: Session = De
 
 
 @router.put("/subscriptions/{sub_id}", response_model=RssSubscriptionResponse)
-def update_subscription(
+async def update_subscription(
     sub_id: int,
     payload: RssSubscriptionUpdate,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
+    async with rss_poller.subscription_lock(sub_id):
+        return _update_subscription(sub_id, payload, background_tasks, db)
+
+
+def _update_subscription(sub_id, payload, background_tasks, db):
     """原地改关键词/字幕组/画质等匹配条件,不用先删再加。source/bgm_id/anime_title
     不在这里改(见 RssSubscriptionUpdate 的说明)。保存后跟创建订阅一样,立即后台
     跑一轮抓取,不等下一个轮询周期。"""
@@ -114,7 +120,11 @@ def update_subscription(
     if not rule:
         raise HTTPException(status_code=404, detail="订阅不存在")
 
-    rule.keyword = payload.keyword
+    if rule.fast_mode and (payload.fansub_name or payload.release_type != SINGLE_RELEASE):
+        raise HTTPException(400, "极速模式固定全部字幕组、单集追更，不能切换模式")
+    if not payload.keyword.strip():
+        raise HTTPException(400, "关键词不能为空")
+    rule.keyword = payload.keyword.strip()
     rule.fansub_name = payload.fansub_name
     rule.quality = payload.quality
     rule.subtitle = payload.subtitle
@@ -129,7 +139,12 @@ def update_subscription(
 
 
 @router.delete("/subscriptions/{sub_id}")
-def delete_subscription(sub_id: int, db: Session = Depends(get_db)):
+async def delete_subscription(sub_id: int, db: Session = Depends(get_db)):
+    async with rss_poller.subscription_lock(sub_id):
+        return _delete_subscription(sub_id, db)
+
+
+def _delete_subscription(sub_id, db):
     """
     删除一条订阅:只删数据库记录(连同它的命中历史),不涉及任何qBittorrent调用——
     新架构下从来没有往qBittorrent的RSS订阅树里注册过东西,天然不存在"清理失败
@@ -139,6 +154,7 @@ def delete_subscription(sub_id: int, db: Session = Depends(get_db)):
     if not rule:
         raise HTTPException(status_code=404, detail="订阅不存在")
 
+    db.query(FastRssEpisode).filter(FastRssEpisode.subscription_id == sub_id).delete()
     db.query(RssMatchedItem).filter(RssMatchedItem.subscription_id == sub_id).delete()
     db.delete(rule)
     db.commit()

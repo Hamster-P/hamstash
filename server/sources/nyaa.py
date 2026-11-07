@@ -126,6 +126,7 @@ class NyaaAdapter(SourceAdapter):
                     fansub_name=extract_fansub_name(title),
                     magnet=build_magnet_from_hash(info_hash, title),
                     guid=(guid_el.text or "").strip(),
+                    created_at=item.findtext("pubDate"),
                     info_hash=info_hash,
                 )
             )

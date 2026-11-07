@@ -129,6 +129,7 @@ class DmhyAdapter(SourceAdapter):
                     fansub_name=extract_fansub_name(title),
                     magnet=magnet,
                     guid=(guid_el.text or "").strip(),
+                    created_at=item.findtext("pubDate"),
                     info_hash=None,
                 )
             )

@@ -269,8 +269,6 @@ _SIMPLIFIED_TERMS = ["简", "chs", "gb"]
 _TRADITIONAL_TERMS = ["繁", "cht", "big5"]
 _JAPANESE_TERMS = ["日", "jp", "japanese"]
 _RAW_TERMS = ["raw", "bilibili", "baha", "cr", "crunchyroll", "web-dl"]
-_BATCH_TERMS = ["合集", "全集", "batch", "pack", "fin"]
-_BATCH_RANGE_RE = re.compile(r"\d+-\d+")
 
 
 def _subtitle_matches(title_lower: str, subtitle: str) -> bool:
@@ -339,10 +337,10 @@ def matches_criteria(item: ResourceItem, criteria: SearchCriteria) -> bool:
         return False
 
     if criteria.release_type:
-        is_batch = any(k in title_lower for k in _BATCH_TERMS) or bool(_BATCH_RANGE_RE.search(title_lower))
-        if criteria.release_type == "单集(追更)" and is_batch:
+        from rename_engine import is_collection_title, is_single_episode_title
+        if criteria.release_type == "单集(追更)" and not is_single_episode_title(item.title):
             return False
-        if criteria.release_type == "合集/全集(完结)" and not is_batch:
+        if criteria.release_type == "合集/全集(完结)" and not is_collection_title(item.title):
             return False
 
     return True

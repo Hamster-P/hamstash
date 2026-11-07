@@ -13,6 +13,9 @@
   --color-paper: var(--tone-paper);
   --color-muted: var(--tone-muted);
   --color-toggle-on: var(--tone-toggle-on);
+  --color-control-disabled: var(--tone-control-disabled);
+  --color-control-disabled-text: var(--tone-control-disabled-text);
+  --color-control-disabled-border: var(--tone-control-disabled-border);
   /* 头图垫字。不跟主题翻，浅色页上也保持深底浅字。 */
   --color-scrim: var(--tone-scrim);
   --color-on-scrim: #f4f7fb;
@@ -35,6 +38,9 @@
   --tone-paper: #eef1f7;
   --tone-muted: #7c88a8;
   --tone-toggle-on: #4f8cff;
+  --tone-control-disabled: #181d28;
+  --tone-control-disabled-text: #8d96a8;
+  --tone-control-disabled-border: #414856;
   --tone-scrim: #070b14;
   --tone-score: #f5c16c;
 }
@@ -51,6 +57,9 @@
   --tone-muted: #6b7690;
   /* 开关打开态专用色,比主强调色更柔和一档,避免浅色背景下过于抢眼 */
   --tone-toggle-on: #8fb4f0;
+  --tone-control-disabled: #e5e8ee;
+  --tone-control-disabled-text: #5e6675;
+  --tone-control-disabled-border: #b5bdca;
   --tone-score: #9a6b12;
 }
 

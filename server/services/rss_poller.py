@@ -19,6 +19,7 @@ RSS引擎:取代qBittorrent自身的RSS订阅+自动下载规则机制。
 之后再统一清理。
 """
 import asyncio
+from weakref import WeakValueDictionary
 from datetime import datetime
 
 from sqlalchemy.orm import Session
@@ -37,6 +38,15 @@ from services.staging import staging_folder, upsert_anime_folder
 # 记录"上次 RSS 轮询"遇到的前置障碍(代理/qB 不可达),给 RSS 页顶部红字用。
 # 空字符串=正常;进程重启即清空(天然对应"还没轮询过,无上次结果")。
 _last_poll_status: str = ""
+_subscription_locks = WeakValueDictionary()
+
+
+def subscription_lock(rule_id: int):
+    lock = _subscription_locks.get(rule_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _subscription_locks[rule_id] = lock
+    return lock
 
 
 def get_last_poll_status() -> str:
@@ -76,11 +86,19 @@ def _criteria_from_rule(rule: SubscriptionRule) -> SearchCriteria:
         quality=rule.quality,
         subtitle=rule.subtitle,
         format=rule.format,
-        release_type=rule.release_type,
+        release_type="单集(追更)" if rule.fast_mode else rule.release_type,
     )
 
 
 async def poll_subscription(db: Session, rule: SubscriptionRule, download_root: str) -> None:
+    async with subscription_lock(rule.id):
+        db.refresh(rule)
+        if not rule.enabled:
+            return
+        await _poll_subscription_locked(db, rule, download_root)
+
+
+async def _poll_subscription_locked(db: Session, rule: SubscriptionRule, download_root: str) -> None:
     """轮询一条订阅:交给对应源 adapter 取候选(dmhy/nyaa 抓 RSS Feed、animegarden 走
     search 同源取数),逐条判重 + 过 matches_criteria,命中的直接发磁力链接下载。
     单条 item 处理失败不能影响同一轮里的其他 item。
@@ -115,7 +133,7 @@ async def _poll_subscription_items(db: Session, rule: SubscriptionRule, download
     except Exception as e:
         print(f"[RSS引擎] 轮询取数失败 subscription={rule.id} source={rule.source}: {e}")
         return
-    if not items:
+    if not items and not rule.fast_mode:
         return
 
     criteria = _criteria_from_rule(rule)
@@ -131,6 +149,17 @@ async def _poll_subscription_items(db: Session, rule: SubscriptionRule, download
         rule.main_bgm_id = main_bgm_id
         db.commit()
     staging_folder_path = staging_folder(download_root, folder_title, main_bgm_id)
+
+    if rule.fast_mode:
+        from services.fast_rss import submit_candidates
+        from models import AnimeFamilyCache
+        if db.query(AnimeFamilyCache).filter_by(bgm_id=rule.bgm_id).first() is None:
+            from services.bgm_series_cache import prefetch_rename_cache_task
+            await prefetch_rename_cache_task(rule.bgm_id, rule.anime_title)
+            db.expire_all()
+        upsert_anime_folder(db, staging_folder_path, folder_title, main_bgm_id, rule.bgm_id, rule.auto_rename)
+        await submit_candidates(db, rule, [item for item in items if matches_criteria(item, criteria)], staging_folder_path)
+        return
 
     for item in items:
         already = (

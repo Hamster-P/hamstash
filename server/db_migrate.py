@@ -52,6 +52,10 @@ def upgrade_db() -> None:
                         )
                     )
 
+    # create_all 不会给已存在的表补索引；新增 fast_mode 列后再创建。
+    for index in models.SubscriptionRule.__table__.indexes:
+        if index.name == "uq_fast_rss_bgm":
+            index.create(bind=engine, checkfirst=True)
     _refresh_stale_caches()
 
 

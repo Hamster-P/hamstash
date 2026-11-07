@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Index, text
 from sqlalchemy.sql import func
 from database import Base
 from sqlalchemy import Boolean
@@ -23,6 +23,8 @@ class SubscriptionRule(Base):
     """RSS订阅规则:某部番+关键词+字幕组组合,长期生效,持续自动下载新种子。"""
 
     __tablename__ = "subscription_rule"
+    __table_args__ = (Index("uq_fast_rss_bgm", "bgm_id", unique=True,
+                            sqlite_where=text("fast_mode = 1")),)
 
     id = Column(Integer, primary_key=True, index=True)
     anime_title = Column(String, nullable=False)
@@ -37,6 +39,7 @@ class SubscriptionRule(Base):
     release_type = Column(String, nullable=True)  # 单集(追更)/合集全集(完结),为空代表不限
     auto_rename = Column(Boolean, default=True)
     enabled = Column(Boolean, default=True)  # RSS开关:是否应该在qBittorrent里保持激活状态
+    fast_mode = Column(Boolean, default=False, server_default="0", nullable=False)
     rss_url = Column(String, nullable=True)  # 提交给qBittorrent的RSS订阅源地址(dmhy关键词RSS)
     rss_path = Column(String, nullable=True)  # 该RSS在qBittorrent订阅目录树里的路径,删除时需要
     rule_name = Column(String, nullable=True)  # 对应qBittorrent"自动下载规则"的名字
@@ -229,6 +232,17 @@ class RelatedAnimeCache(Base):
     root_bgm_id = Column(Integer, unique=True, nullable=False, index=True)  # 家族根,即 AnimeFamilyCache.source_bgm_id
     payload = Column(Text, nullable=False)  # json.dumps(results 列表),结构同 /bangumi/search 的条目
     checked_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class FastRssEpisode(Base):
+    """仅属于一条极速订阅的集数占位。普通订阅和单次下载不读此表。"""
+    __tablename__ = "fast_rss_episode"
+    subscription_id = Column(Integer, ForeignKey("subscription_rule.id"), primary_key=True)
+    episode = Column(Integer, primary_key=True)
+    title = Column(String, nullable=False)
+    magnet = Column(String, nullable=False)
+    guid = Column(String, nullable=False)
+    submitted = Column(Boolean, default=False, nullable=False)
 
 
 class RssMatchedItem(Base):

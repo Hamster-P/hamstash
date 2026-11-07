@@ -1,6 +1,8 @@
 """对应前端 DownloadPage(下载):种子检索、改名预览、提交下载/建立RSS订阅。"""
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
+from pydantic import BaseModel
 
 import config_store
 import rename_engine
@@ -21,8 +23,35 @@ from services.common import get_setting
 from services.rss_season_complete import torrent_hash_of
 from services.staging import staging_folder, upsert_anime_folder
 from services.rss_poller import poll_subscription_task
+from services.fast_rss import analyse_candidates, SINGLE_RELEASE
+from sources.base import ResourceItem
 
 router = APIRouter(tags=["下载"])
+
+
+class FastPreviewItem(BaseModel):
+    title: str
+    magnet: str | None = None
+    created_at: str | None = None
+
+
+class FastPreviewRequest(BaseModel):
+    bgm_id: int
+    subscription_id: int | None = None
+    items: list[FastPreviewItem]
+
+
+@router.post("/resources/fast-preview")
+def fast_preview(payload: FastPreviewRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    rule = db.query(SubscriptionRule).filter_by(bgm_id=payload.bgm_id, fast_mode=True).first()
+    if payload.subscription_id and (not rule or rule.id != payload.subscription_id):
+        raise HTTPException(404, "极速订阅不存在")
+    items = [ResourceItem(source="preview", **item.model_dump()) for item in payload.items]
+    metadata_pending = db.query(AnimeFamilyCache).filter_by(bgm_id=payload.bgm_id).first() is None
+    if metadata_pending:
+        background_tasks.add_task(prefetch_rename_cache_task, payload.bgm_id, rule.anime_title if rule else "未命名番剧")
+    return {"analysis": analyse_candidates(db, payload.bgm_id, items, rule.id if rule else None),
+            "existing_subscription_id": rule.id if rule else None, "metadata_pending": metadata_pending}
 
 
 @router.get("/resources/search")
@@ -179,6 +208,14 @@ async def execute_download(
     - 对每个选中的种子,计算改名预览(如果开启auto_rename,使用Bangumi官方名),
       推送给qBittorrent,并在 download_task 表里留档。
     """
+    if payload.fast_mode:
+        if not payload.keyword.strip():
+            raise HTTPException(400, "关键词不能为空")
+        if not payload.subscribe or not payload.bgm_id:
+            raise HTTPException(400, "极速模式必须开启 RSS 并关联 Bangumi 条目")
+        if payload.fansub_name or payload.release_type != SINGLE_RELEASE:
+            raise HTTPException(400, "极速模式固定全部字幕组、单集追更")
+
     # "是否并进主系列"必须在解析系列归属之前落库:resolve_series_identity内部会
     # 经由resolve_effective_root读这条覆盖,才能返回"这一部自己就是自己的家族根",
     # 后面的暂存目录/媒体库文件夹名全都由它算出来。
@@ -199,23 +236,22 @@ async def execute_download(
 
     if payload.subscribe:
         download_root = get_setting(db, "download_root", config_store.DEFAULTS["download_root"])
-        # 一部番(有bgm_id时按bgm_id,没有就退回按keyword)同时只允许一条生效中的订阅——
-        # 不管换源还是换字幕组,都不能让两条订阅同时对着同一部番各自往qBittorrent
-        # 推送独立的RSS/自动下载规则,那样命中范围重叠会导致同一集被多次抓取,
-        # 而且各自的rss_path/rule_name本来就没有关联,没法互相感知对方的存在。
+        # 普通和极速分别限一条，暂停仍占名额；两种模式互不读取去重记录。
         if payload.bgm_id:
             existing = (
                 db.query(SubscriptionRule)
-                .filter(SubscriptionRule.bgm_id == payload.bgm_id)
+                .filter(SubscriptionRule.bgm_id == payload.bgm_id, SubscriptionRule.fast_mode == payload.fast_mode)
                 .first()
             )
         else:
             existing = (
                 db.query(SubscriptionRule)
-                .filter(SubscriptionRule.keyword == payload.keyword)
+                .filter(SubscriptionRule.keyword == payload.keyword, SubscriptionRule.fast_mode == payload.fast_mode)
                 .first()
             )
         if existing:
+            if payload.fast_mode:
+                raise HTTPException(409, "这部番已存在极速 RSS（暂停也占用名额），请编辑现有订阅或删除后重建")
             same_config = (
                 existing.source == payload.source
                 and existing.fansub_name == payload.fansub_name
@@ -236,6 +272,7 @@ async def execute_download(
                     ),
                 )
             existing.auto_rename = payload.auto_rename
+            existing.release_type = payload.release_type
             existing.enabled = True
             if existing.main_bgm_id is None:
                 # 迁移前创建的老订阅还没有main_bgm_id,借这次重新提交顺手回填
@@ -256,9 +293,14 @@ async def execute_download(
                 format=payload.format,
                 release_type=payload.release_type,
                 auto_rename=payload.auto_rename,
+                fast_mode=payload.fast_mode,
             )
             db.add(rule)
-            db.commit()
+            try:
+                db.commit()
+            except IntegrityError:
+                db.rollback()
+                raise HTTPException(409, "这部番已存在极速 RSS，请删除后重建")
             db.refresh(rule)
 
         # 打开RSS开关那一刻,后台立即跑一轮抓取+匹配+下载,不等下一个自动轮询周期
