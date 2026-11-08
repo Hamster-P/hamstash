@@ -1583,7 +1583,7 @@ dependencies = [
 
 [[package]]
 name = "hamstash-client"
-version = "0.9.5"
+version = "0.9.6"
 dependencies = [
  "reqwest 0.12.28",
  "reqwest 0.13.4",
