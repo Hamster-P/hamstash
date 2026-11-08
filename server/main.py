@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 import config_store
 from db_migrate import consume_family_cache_rewarm_flag, upgrade_db
-from routers import backup, detail, download_submit, download_tasks, library, media, rss_engine, search, settings, setup, tracking
+from routers import backup, detail, download_submit, download_tasks, library, media, rss_engine, search, settings, setup, tracking, subtitles
 from services.proxy import init_proxy_url_cache
 from services.organize import organize_loop
 from services.rss_poller import rss_poll_loop
@@ -105,4 +105,5 @@ app.include_router(settings.router)  # SettingsPage 设置
 app.include_router(setup.router)     # QbittorrentSetupPage 首次引导
 app.include_router(backup.router)    # SettingsPage 备份与迁移
 app.include_router(media.router)     # 通用图片代理,跨页面复用
+app.include_router(subtitles.router)  # 媒体库手动字幕搜索和下载
 

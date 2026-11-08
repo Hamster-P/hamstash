@@ -14,7 +14,7 @@ import tmdb_client
 from database import get_db
 from routers.library import scan_and_update_library
 from schemas import ProxyTestRequest, SettingsUpdate
-from services import bgm_series_cache, changelog, library_health, library_repair
+from services import bgm_series_cache, changelog, library_health, library_repair, subtitle_diagnostics
 from services.common import get_setting, upsert_setting
 from services.proxy import get_proxy_url, get_system_proxy, make_client, set_proxy_url_cache
 
@@ -213,6 +213,7 @@ async def test_proxy(payload: ProxyTestRequest):
     async with make_client(
         proxy,
         timeout=PROXY_PROBE_TIMEOUT,
+        trust_env=False,
         follow_redirects=True,
         headers={"User-Agent": "hamstash/0.1 (personal project)"},
     ) as client:
@@ -254,13 +255,23 @@ async def test_proxy(payload: ProxyTestRequest):
             *[_probe(client, name, url, note) for name, url, note in BANGUMI_PROBES],
             *[_probe(client, p["name"], p["url"], p["note"]) for p in source_probes],
         ]
-        checks = await asyncio.gather(*probes)
+        checks, subtitle_routes = await asyncio.gather(
+            asyncio.gather(*probes),
+            asyncio.gather(subtitle_diagnostics.probe(None, PROXY_PROBE_TIMEOUT),
+                           *([subtitle_diagnostics.probe(proxy, PROXY_PROBE_TIMEOUT)] if proxy else [])),
+        )
+        direct = subtitle_routes[0]
+        proxied = subtitle_routes[1] if proxy else None
+        checks.extend(proxied or direct)
+        if proxied is not None:
+            checks.extend({**item, "name": item["name"] + "（直连对照）"} for item in direct)
 
     return {
         "proxy_in_use": proxy or "",
         "proxy_source": source,  # manual=设置页手填 / system=探测到的系统代理 / none=直连
         "system_proxy_detected": detected or "",
         "checks": checks,
+        "subtitle_proxy_message": subtitle_diagnostics.advice(direct, proxied),
     }
 
 

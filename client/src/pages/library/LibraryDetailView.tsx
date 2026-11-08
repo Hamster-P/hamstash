@@ -8,6 +8,7 @@ import {
   Move,
   Play,
   Settings2,
+  Subtitles,
   Trash2,
   Type,
   Users,
@@ -18,6 +19,7 @@ import { API_BASE } from "../../api";
 import CoverPickerDialog from "./CoverPickerDialog";
 import EntryPickerDialog, { type EntryPickerRequest } from "./EntryPickerDialog";
 import ImagePickerDialog from "./ImagePickerDialog";
+import SubtitleDialog from "./SubtitleDialog";
 import { saveLibraryDetailSession } from "./session";
 import { cleanTitleFromFilename, compareSeasonNames, episodeLabel, isRegularSeasonBucket, sortCoverCandidates } from "./sort";
 import { HERO_BANNER_HEIGHT, type AnimeDetail, type AnimeMeta, type CoverCandidate, type Episode, type ImageKind, type LibraryAnime, type RegroupTarget, type StandaloneItem } from "./types";
@@ -59,6 +61,7 @@ export default function LibraryDetailView({
   const [relatedLoading, setRelatedLoading] = useState(false);
   const [relatedError, setRelatedError] = useState<string | null>(null);
   const [manageMode, setManageMode] = useState(false);
+  const [subtitleTarget, setSubtitleTarget] = useState<{ label: string; title: string; episodes: Episode[]; bgmId: number | null } | null>(null);
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -416,6 +419,17 @@ export default function LibraryDetailView({
                         <span className="text-muted/70">{detail.season_owners[seasonName].name}</span>
                       )}
                       <button
+                        onClick={() => setSubtitleTarget({
+                          label: seasonName,
+                          title: detail?.season_owners?.[seasonName]?.name || anime.display_title || anime.folder_name,
+                          episodes,
+                          bgmId: detail?.season_owners?.[seasonName]?.bgm_id ?? anime.bgm_id,
+                        })}
+                        className={btnGhost}
+                      >
+                        <Subtitles size={14} /> 搜索并下载字幕
+                      </button>
+                      <button
                         onClick={() =>
                           onOpenRegroup({
                             label: seasonName,
@@ -452,6 +466,16 @@ export default function LibraryDetailView({
                         </div>
 
                         {manageMode ? (
+                          <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+                            <button onClick={() => setSubtitleTarget({
+                              label: `${seasonName} · ${label ?? ep.filename}`,
+                              title: detail?.season_owners?.[seasonName]?.name || anime.display_title || anime.folder_name,
+                              episodes: [ep],
+                              bgmId: detail?.season_owners?.[seasonName]?.bgm_id ?? anime.bgm_id,
+                            })} className={btnGhost}>
+                              <Subtitles size={14} /> 搜索并下载字幕
+                            </button>
+                          {
                           pendingDelete === ep.rel_path ? (
                             <div className="flex shrink-0 items-center gap-1.5">
                               <button disabled={deleting === ep.rel_path} onClick={() => deleteEpisode(ep)} className={btnPrimary}>
@@ -467,6 +491,8 @@ export default function LibraryDetailView({
                               删除
                             </button>
                           )
+                          }
+                          </div>
                         ) : (
                           <div className="flex shrink-0 items-center gap-2">
                             {!isRegularSeasonBucket(seasonName) &&
@@ -510,6 +536,7 @@ export default function LibraryDetailView({
         )}
       </div>
 
+      {subtitleTarget && <SubtitleDialog {...subtitleTarget} onClose={() => setSubtitleTarget(null)} />}
       {entryRequest && (
         <EntryPickerDialog request={entryRequest} onClose={() => setEntryRequest(null)} onSaved={loadStandalones} />
       )}

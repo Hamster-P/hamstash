@@ -877,6 +877,7 @@ interface ProxyTestResult {
   proxy_source: "manual" | "system" | "none";
   system_proxy_detected: string;
   checks: ProxyCheck[];
+  subtitle_proxy_message?: string;
 }
 
 const PROXY_SOURCE_LABEL: Record<ProxyTestResult["proxy_source"], string> = {
@@ -892,6 +893,7 @@ function formatProxyReport(result: ProxyTestResult): string {
     `[代理诊断] ${new Date().toLocaleString()}`,
     `实际使用: ${result.proxy_in_use || "(直连)"}  来源: ${PROXY_SOURCE_LABEL[result.proxy_source]}`,
     `探测到的系统代理: ${result.system_proxy_detected || "(无)"}`,
+    ...(result.subtitle_proxy_message ? [`字幕代理判断: ${result.subtitle_proxy_message}`] : []),
     "",
   ];
   for (const c of result.checks) {
@@ -917,7 +919,7 @@ function ProxyTestSection({ proxyUrl, sourceIds }: { proxyUrl: string; sourceIds
       const res = await fetch(`${API_BASE}/settings/proxy-test`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        // 只探当前勾选启用的下载源(能反映还没保存的改动),Bangumi 相关的固定项后端总会探
+        // 下载源按当前勾选测试，Bangumi 和字幕服务后端始终测试。
         body: JSON.stringify({ proxy_url: proxyUrl.trim(), sources: sourceIds }),
       });
       const body = await res.json();
@@ -986,9 +988,10 @@ function ProxyTestSection({ proxyUrl, sourceIds }: { proxyUrl: string; sourceIds
               </span>
             </div>
           </div>
+          {result.subtitle_proxy_message && <p className="mb-3 font-mono text-[11px] text-paper">{result.subtitle_proxy_message}</p>}
           <div className="space-y-1.5">
             {result.checks.map((c) => (
-              <div key={c.url} className="font-mono text-[11px] leading-snug">
+              <div key={`${c.name}-${c.url}`} className="font-mono text-[11px] leading-snug">
                 <div className="flex items-baseline gap-2">
                   {c.level === "ok" && <CheckCircle2 size={12} className="shrink-0 translate-y-0.5 text-gold" />}
                   {c.level === "warn" && <AlertTriangle size={12} className="shrink-0 translate-y-0.5 text-gold" />}
@@ -1004,6 +1007,7 @@ function ProxyTestSection({ proxyUrl, sourceIds }: { proxyUrl: string; sourceIds
                   </span>
                 </div>
                 <div className="pl-[18px] text-muted/70">{c.note}</div>
+                <div className="break-all pl-[18px] text-muted/70">{c.url}</div>
               </div>
             ))}
           </div>
