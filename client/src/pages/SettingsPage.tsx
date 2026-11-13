@@ -155,6 +155,11 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
   const [qbStatus, setQbStatus] = useState<"checking" | "connected" | "failed">(
     "checking",
   );
+  // 连接失败时,后端顺手诊断一下是不是配的端口被Windows保留了(Hyper-V/WSL2
+  // 动态端口占用),是的话带一个推荐端口过来,省得用户自己去猜(见
+  // server/services/port_diagnostics.py)。
+  const [qbFailReason, setQbFailReason] = useState<string | null>(null);
+  const [qbSuggestedPort, setQbSuggestedPort] = useState<number | null>(null);
   const [activeCategory, setActiveCategory] = useState<SettingsCategory>("basic");
 
   useEffect(() => {
@@ -245,9 +250,17 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
 
   const checkQbStatus = () => {
     setQbStatus("checking");
+    setQbFailReason(null);
+    setQbSuggestedPort(null);
     fetch(`${API_BASE}/qbittorrent/status`)
       .then((res) => res.json())
-      .then((data) => setQbStatus(data.connected ? "connected" : "failed"))
+      .then((data) => {
+        setQbStatus(data.connected ? "connected" : "failed");
+        if (!data.connected) {
+          setQbFailReason(data.reason ?? null);
+          setQbSuggestedPort(data.suggested_port ?? null);
+        }
+      })
       .catch(() => setQbStatus("failed"));
   };
 
@@ -843,6 +856,18 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
             重新检测
           </button>
         </div>
+        {qbStatus === "failed" && qbFailReason && (
+          <div className="mt-3 rounded-md border border-vermillion/40 bg-ink/60 p-3 font-mono text-[11px] text-paper/90">
+            <p>{qbFailReason}</p>
+            {qbSuggestedPort && (
+              <p className="mt-1 text-gold">
+                建议把 qBittorrent 的 Web UI 端口和这里的连接端口都改成{" "}
+                <span className="font-bold">{qbSuggestedPort}</span>
+                （这一刻探测确认可用），改完记得重启一下 qBittorrent 让新端口生效。
+              </p>
+            )}
+          </div>
+        )}
         {onReconfigureQbittorrent && (
           <button
             onClick={onReconfigureQbittorrent}

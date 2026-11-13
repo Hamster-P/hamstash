@@ -16,6 +16,7 @@ from routers.library import scan_and_update_library
 from schemas import ProxyTestRequest, SettingsUpdate
 from services import bgm_series_cache, changelog, library_health, library_repair, subtitle_diagnostics
 from services.common import get_setting, upsert_setting
+from services.port_diagnostics import diagnose_unreachable_port
 from services.proxy import get_proxy_url, get_system_proxy, make_client, set_proxy_url_cache
 
 router = APIRouter(tags=["设置"])
@@ -298,9 +299,16 @@ async def update_changelog_all():
 
 
 @router.get("/qbittorrent/status")
-async def qbittorrent_status():
-    """健康检查:确认后端能不能正常登录qBittorrent。"""
+async def qbittorrent_status(db: Session = Depends(get_db)):
+    """健康检查:确认后端能不能正常登录qBittorrent。连不上时顺手诊断一下是不是
+    配置的端口被Windows保留了(Hyper-V/WSL2动态端口占用那个坑,见
+    services/port_diagnostics.py),是的话带上推荐端口,省得用户自己去猜。"""
     ok = await qbittorrent_client.test_connection()
+    if not ok:
+        host = get_setting(db, "qbit_host", config_store.DEFAULTS["qbit_host"])
+        port = int(get_setting(db, "qbit_port", config_store.DEFAULTS["qbit_port"]))
+        diagnosis = diagnose_unreachable_port(host, port)
+        return {"connected": False, **diagnosis}
     return {"connected": ok}
 
 

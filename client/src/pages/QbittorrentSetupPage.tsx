@@ -29,14 +29,28 @@ export default function QbittorrentSetupPage({ onComplete }: QbittorrentSetupPag
 
   const [testState, setTestState] = useState<"idle" | "testing" | "success" | "failed">("idle");
   const [testError, setTestError] = useState<string | null>(null);
+  // 连不上时,后端会诊断一下是不是端口被Windows保留了(Hyper-V/WSL2动态端口
+  // 占用),带一个这一刻确认可用的推荐端口过来,省得用户自己去猜。
+  const [suggestedPort, setSuggestedPort] = useState<number | null>(null);
   const [currentPrefs, setCurrentPrefs] = useState<CurrentPreferences | null>(null);
   const [applyRecommended, setApplyRecommended] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
+  // detail 可能是普通字符串(其他校验错误),也可能是后端新加的
+  // {message, suggested_port}结构(见server/routers/setup.py的连接失败分支)。
+  const parseErrorDetail = (detail: unknown, fallback: string): { message: string; suggestedPort: number | null } => {
+    if (detail && typeof detail === "object") {
+      const d = detail as { message?: string; suggested_port?: number | null };
+      return { message: d.message || fallback, suggestedPort: d.suggested_port ?? null };
+    }
+    return { message: (detail as string) || fallback, suggestedPort: null };
+  };
+
   const handleTest = async () => {
     setTestState("testing");
     setTestError(null);
+    setSuggestedPort(null);
     setCurrentPrefs(null);
     try {
       const res = await fetch(`${API_BASE}/setup/qbittorrent/test`, {
@@ -45,7 +59,11 @@ export default function QbittorrentSetupPage({ onComplete }: QbittorrentSetupPag
         body: JSON.stringify({ host, port: Number(port), username, password }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+      if (!res.ok) {
+        const { message, suggestedPort } = parseErrorDetail(data.detail, `HTTP ${res.status}`);
+        setSuggestedPort(suggestedPort);
+        throw new Error(message);
+      }
       setCurrentPrefs(data.current_preferences ?? null);
       setTestState("success");
     } catch (err: any) {
@@ -70,7 +88,11 @@ export default function QbittorrentSetupPage({ onComplete }: QbittorrentSetupPag
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+      if (!res.ok) {
+        const { message, suggestedPort } = parseErrorDetail(data.detail, `HTTP ${res.status}`);
+        setSuggestedPort(suggestedPort);
+        throw new Error(message);
+      }
       onComplete();
     } catch (err: any) {
       setSaveError(err.message ?? "保存失败");
@@ -117,8 +139,18 @@ export default function QbittorrentSetupPage({ onComplete }: QbittorrentSetupPag
       </button>
 
       {testState === "failed" && (
-        <div className="flex items-center gap-2 font-mono text-xs text-vermillion">
-          <XCircle size={14} /> {testError}
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center gap-2 font-mono text-xs text-vermillion">
+            <XCircle size={14} /> {testError}
+          </div>
+          {suggestedPort && (
+            <button
+              onClick={() => setPort(String(suggestedPort))}
+              className="self-start rounded-md border border-gold/60 px-3 py-1.5 font-mono text-[11px] text-gold transition-colors hover:bg-gold/10"
+            >
+              一键改用推荐端口 {suggestedPort}（还需要去 qBittorrent 的 Web 用户界面设置里同步改成这个端口并重启）
+            </button>
+          )}
         </div>
       )}
 

@@ -6,6 +6,7 @@ import qbittorrent_client
 from database import get_db
 from schemas import QbitApplyRequest, QbitTestRequest
 from services.common import upsert_setting
+from services.port_diagnostics import diagnose_unreachable_port
 
 router = APIRouter(prefix="/setup", tags=["首次引导"])
 
@@ -29,7 +30,14 @@ async def test_qbittorrent_connection(payload: QbitTestRequest):
             payload.host, payload.port, payload.username, payload.password
         )
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"连接失败: {e}")
+        diagnosis = diagnose_unreachable_port(payload.host, payload.port)
+        detail = f"连接失败: {e}"
+        if diagnosis["reason"]:
+            detail = f"{detail}。{diagnosis['reason']}"
+        raise HTTPException(
+            status_code=400,
+            detail={"message": detail, "suggested_port": diagnosis["suggested_port"]},
+        )
 
     base_url = f"http://{payload.host}:{payload.port}"
     try:
@@ -53,7 +61,14 @@ async def apply_qbittorrent_setup(payload: QbitApplyRequest, db: Session = Depen
             payload.host, payload.port, payload.username, payload.password
         )
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"连接失败,未保存: {e}")
+        diagnosis = diagnose_unreachable_port(payload.host, payload.port)
+        detail = f"连接失败,未保存: {e}"
+        if diagnosis["reason"]:
+            detail = f"{detail}。{diagnosis['reason']}"
+        raise HTTPException(
+            status_code=400,
+            detail={"message": detail, "suggested_port": diagnosis["suggested_port"]},
+        )
 
     if payload.apply_recommended:
         base_url = f"http://{payload.host}:{payload.port}"
