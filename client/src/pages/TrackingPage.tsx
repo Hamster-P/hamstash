@@ -52,6 +52,25 @@ function rememberLayout(mode: LayoutMode) {
   }
 }
 
+// 切到别的页这一页会被卸掉，筛选框里的字也留在 sessionStorage，回来还在。
+const TRACKING_FILTER_KEY = "tracking_filter_query_v1";
+
+function readFilterQuery(): string {
+  try {
+    return sessionStorage.getItem(TRACKING_FILTER_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function rememberFilterQuery(value: string) {
+  try {
+    sessionStorage.setItem(TRACKING_FILTER_KEY, value);
+  } catch {
+    // 存不下就只留在这一次挂载里
+  }
+}
+
 function readScrollMap(): Record<LayoutMode, number> {
   try {
     const raw = sessionStorage.getItem(TRACKING_SCROLL_KEY);
@@ -106,6 +125,7 @@ export default function TrackingPage({ onSelectAnime }: TrackingPageProps) {
   // 纵向是七列。横向把七天都按大卡片铺开。
   // 先用上次的排列，避免回来时先画纵版把横版滚动条掐短。
   const [layout, setLayout] = useState<LayoutMode>(readLayoutCache);
+  const [query, setQuery] = useState<string>(readFilterQuery);
   const listRef = useRef<HTMLDivElement>(null);
   const layoutRef = useRef(layout);
   layoutRef.current = layout;
@@ -178,9 +198,15 @@ export default function TrackingPage({ onSelectAnime }: TrackingPageProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const matched = useMemo(() => {
+    const keyword = query.trim().toLowerCase();
+    if (!keyword) return schedule;
+    return schedule.filter((a) => a.title.toLowerCase().includes(keyword));
+  }, [schedule, query]);
+
   const grouped = useMemo(
-    () => days.map((_, index) => schedule.filter((a) => a.weekday === index)),
-    [schedule],
+    () => days.map((_, index) => matched.filter((a) => a.weekday === index)),
+    [matched],
   );
 
   return (
@@ -194,21 +220,32 @@ export default function TrackingPage({ onSelectAnime }: TrackingPageProps) {
               {loading ? "正在获取新番连载时刻表..." : `本季连载 ${schedule.length} 部`}
             </p>
           </div>
-          <div className={`${seg} shrink-0`}>
-            <button
-              type="button"
-              onClick={() => changeLayout("vertical")}
-              className={layout === "vertical" ? segOn : segOff}
-            >
-              纵向
-            </button>
-            <button
-              type="button"
-              onClick={() => changeLayout("horizontal")}
-              className={layout === "horizontal" ? segOn : segOff}
-            >
-              横向
-            </button>
+          <div className="flex shrink-0 items-center gap-2">
+            <input
+              value={query}
+              onChange={(e) => {
+                setQuery(e.target.value);
+                rememberFilterQuery(e.target.value);
+              }}
+              placeholder="筛选番名"
+              className="w-36 rounded-md border border-border bg-surface px-2.5 py-1.5 text-xs text-paper outline-none placeholder:text-muted/60 focus:border-vermillion"
+            />
+            <div className={seg}>
+              <button
+                type="button"
+                onClick={() => changeLayout("vertical")}
+                className={layout === "vertical" ? segOn : segOff}
+              >
+                纵向
+              </button>
+              <button
+                type="button"
+                onClick={() => changeLayout("horizontal")}
+                className={layout === "horizontal" ? segOn : segOff}
+              >
+                横向
+              </button>
+            </div>
           </div>
         </div>
 
